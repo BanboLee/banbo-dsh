@@ -1,18 +1,37 @@
 # dsh-fish-shell bundle: make fish the default shell executor instead of bash.
 #
-# Applied after @deepseek-ai/dsh-base (and any other earlier bundle in the
-# profile), so these disables and the insert land last and win per row id.
-#
-# The base profile runs a sandboxed bash executor (`bash-sandbox`) and exposes
-# the `bash` tool (`tool-bash`). This layer disables both — a composition runs
-# exactly one shell — and inserts this package's own `fish` tool, which runs
-# every command through `fish -c`.
+# The dsh-tui surface composes every agent's model-facing tools from an
+# agent-preset roster whose default is `standard` (which mounts tool-bash and
+# waits on ctx.shell). This layer:
+#   1. disables the base sandboxed bash executor (`bash-sandbox`) and inserts
+#      this package's FishLocalExecutor, which registers `ctx.shell` and runs
+#      every command through `fish -c`;
+#   2. inserts the host-plane `fish` tool (this package's `./tool` module);
+#   3. switches the dsh-tui roster default to the user-authored `fish` preset
+#      (`$DSH_HOME/.agent-presets/fish`), whose composition mounts this
+#      package's `fish` tool instead of `tool-bash`.
 - id: bash-sandbox
-  disabled: true
-
-- id: tool-bash
   disabled: true
 
 - insert:
     - id: fish-shell
       name: dsh-fish-shell
+
+    - id: tool-fish
+      name: dsh-fish-shell/tool
+
+# The dsh-tui roster row ships with `default: standard`. A patch replaces the
+# targeted row's whole `config` (no deep merge), so the system `roots`
+# expression is restated here unchanged.
+- id: dsh-tui-agent-presets
+  config:
+    default: fish
+    roots: !!js >-
+      (() => {
+        const base = ctx.baseUrl
+        if (!base) return undefined
+        const root = new URL('../node_modules/@deepseek-ai/dsh/config/agent-presets/', base)
+        let path = decodeURIComponent(root.pathname)
+        if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1)
+        return [{ path, trust: 'system' }]
+      })()
