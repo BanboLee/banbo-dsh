@@ -1,0 +1,18 @@
+# dsh-fish-shell bundle: make fish the default shell executor instead of bash.
+#
+# Applied after @deepseek-ai/dsh-base (and any other earlier bundle in the
+# profile), so these disables and the insert land last and win per row id.
+#
+# The base profile runs a sandboxed bash executor (`bash-sandbox`) and exposes
+# the `bash` tool (`tool-bash`). This layer disables both — a composition runs
+# exactly one shell — and inserts this package's own `fish` tool, which runs
+# every command through `fish -c`.
+- id: bash-sandbox
+  disabled: true
+
+- id: tool-bash
+  disabled: true
+
+- insert:
+    - id: fish-shell
+      name: dsh-fish-shell

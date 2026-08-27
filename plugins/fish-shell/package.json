@@ -1,0 +1,28 @@
+{
+  "name": "dsh-fish-shell",
+  "version": "0.1.0",
+  "description": "Self-contained fish shell tool for DeepSeek Harness: run commands with fish instead of bash.",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "plugin",
+    "fish",
+    "shell",
+    "bundle"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}
