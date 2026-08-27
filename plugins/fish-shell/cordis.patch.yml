@@ -4,21 +4,21 @@
 # agent-preset roster whose default is `standard` (which mounts tool-bash and
 # waits on ctx.shell). This layer:
 #   1. disables the base sandboxed bash executor (`bash-sandbox`) and inserts
-#      this package's FishLocalExecutor, which registers `ctx.shell` and runs
-#      every command through `fish -c`;
-#   2. inserts the host-plane `fish` tool (this package's `./tool` module);
-#   3. switches the dsh-tui roster default to the user-authored `fish` preset
+#      this package's FishSandboxExecutor, which registers `ctx.shell` and
+#      runs every command through `fish -c` under the configured sandbox;
+#   2. switches the dsh-tui roster default to the user-authored `fish` preset
 #      (`$DSH_HOME/.agent-presets/fish`), whose composition mounts this
-#      package's `fish` tool instead of `tool-bash`.
+#      package's `fish` tool (`dsh-fish-shell/tool`) instead of `tool-bash`.
+#
+# The model-facing `fish` tool row lives ONLY in the `fish` agent preset, not
+# here: preset-owned rows keep the tool out of agents on other presets, and
+# the tool resolves `ctx.shell` (host-plane) so the executor above serves it.
 - id: bash-sandbox
   disabled: true
 
 - insert:
     - id: fish-shell
       name: dsh-fish-shell
-
-    - id: tool-fish
-      name: dsh-fish-shell/tool
 
 # The dsh-tui roster row ships with `default: standard`. A patch replaces the
 # targeted row's whole `config` (no deep merge), so the system `roots`
