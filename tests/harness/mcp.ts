@@ -1,16 +1,72 @@
+import { spawn, type ChildProcess } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-import { connectMcp, isRecord } from '../helpers/mcp'
-
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const fakeMcp = join(root, 'tests/fixtures/fake-mcp-server.mjs')
+
+interface McpConnection {
+  readonly child: ChildProcess
+  readonly request: (req: Record<string, unknown>) => Promise<Record<string, unknown>>
+  close(): void
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 function requireResult(value: Record<string, unknown>): Record<string, unknown> {
   const result = value.result
   if (isRecord(result)) return result
   throw new Error('MCP response result must be a JSON object')
+}
+
+function connectMcp(script: string): McpConnection {
+  const child = spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] })
+  const stdout = child.stdout
+  const stdin = child.stdin
+  if (!stdout || !stdin) {
+    throw new Error('MCP process must expose stdio pipes')
+  }
+  let buffer = ''
+  const pending: Array<(line: string) => void> = []
+  stdout.on('data', (chunk: Buffer) => {
+    buffer += chunk.toString()
+    for (;;) {
+      const index = buffer.indexOf('\n')
+      if (index < 0) break
+      const line = buffer.slice(0, index).trim()
+      buffer = buffer.slice(index + 1)
+      if (line) {
+        const resolve = pending.shift()
+        resolve?.(line)
+      }
+    }
+  })
+  return {
+    child,
+    request(req) {
+      return new Promise((resolve, reject) => {
+        pending.push((line) => {
+          try {
+            const value: unknown = JSON.parse(line)
+            if (isRecord(value)) {
+              resolve(value)
+              return
+            }
+            reject(new Error('MCP response must be a JSON object'))
+          } catch (error) {
+            reject(error)
+          }
+        })
+        stdin.write(`${JSON.stringify(req)}\n`)
+      })
+    },
+    close() {
+      child.kill()
+    },
+  }
 }
 
 describe('fake-mcp-server.mjs', () => {
