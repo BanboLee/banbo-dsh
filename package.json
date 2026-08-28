@@ -1,0 +1,18 @@
+{
+  "name": "banbo-dsh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local DeepSeek Harness plugin bundles (rtk-shell, codegraph-mcp) with a deterministic test harness.",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:harness": "vitest run tests/harness.spec.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

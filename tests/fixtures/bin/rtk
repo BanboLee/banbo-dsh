@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Executable wrapper so final verifiers can prepend "$(pwd)/tests/fixtures/bin"
+# to PATH and call `rtk rewrite '<command>'` without any placeholders.
+# Delegates to the deterministic fake implementation.
+set -euo pipefail
+dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec node "$dir/../fake-rtk.mjs" "$@"
