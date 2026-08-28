@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
-import type { ConfinedArgv, SandboxExecutionPolicy, SandboxMode, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
+import type { ConfinedArgv, SandboxMode, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import RtkShellExecutor, { RTK_ASK_NOTE, RtkDenyError, rtkRewriteDecision } from '../index.js'
@@ -67,10 +67,6 @@ async function setup(config: { mode?: SandboxMode; workspaceRoot?: string; rewri
   ;(ctx.subprocess as LocalSubprocessRuntime).internals = { spillDir }
   await ctx.plugin(RtkShellExecutor, { graceMs: 200, ...execConfig })
   return { ctx, shell: ctx.shell as RtkShellExecutor, calls }
-}
-
-function executionPolicy(mode: SandboxMode, workspaceRoot = resolve(process.cwd())): SandboxExecutionPolicy {
-  return { mode, workspaceRoot }
 }
 
 beforeAll(() => {
