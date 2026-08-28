@@ -10,6 +10,12 @@ const fakeRtkBin = join(repoRoot, 'tests', 'fixtures', 'bin')
 const profileName = 'rtk-codegraph-profile'
 const shellProviderNames = new Set(['dsh-rtk-shell', '@deepseek-ai/dsh-bash-sandbox', '@deepseek-ai/dsh-bash-local'])
 
+interface EnvSnapshot {
+  readonly dshHome?: string
+  readonly path?: string
+  readonly fakeMode?: string
+}
+
 export interface BootedProfile {
   readonly ctx: BootContext
   readonly dshHome: string
@@ -183,6 +189,15 @@ function fakeMcpProcessCount(): number {
   }).length
 }
 
+function restoreEnvironment(snapshot: EnvSnapshot): void {
+  if (snapshot.dshHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = snapshot.dshHome
+  if (snapshot.path === undefined) delete process.env.PATH
+  else process.env.PATH = snapshot.path
+  if (snapshot.fakeMode === undefined) delete process.env.FAKE_RTK_MODE
+  else process.env.FAKE_RTK_MODE = snapshot.fakeMode
+}
+
 export async function waitForNoFakeMcpServer(): Promise<void> {
   const deadline = Date.now() + 1_000
   while (fakeMcpProcessCount() > 0) {
@@ -192,23 +207,39 @@ export async function waitForNoFakeMcpServer(): Promise<void> {
 }
 
 export async function bootProfileWithBundles(bundles: readonly string[]): Promise<BootedProfile> {
-  const previousDshHome = process.env.DSH_HOME
-  const previousPath = process.env.PATH
-  const previousFakeMode = process.env.FAKE_RTK_MODE
-  const dshBin = findExecutable('dsh', previousPath)
+  const previousEnv = {
+    dshHome: process.env.DSH_HOME,
+    path: process.env.PATH,
+    fakeMode: process.env.FAKE_RTK_MODE,
+  } satisfies EnvSnapshot
+  const dshBin = findExecutable('dsh', previousEnv.path)
   const { appBoot, installAnchor } = await loadAppBoot(dshBin)
   const isolated = createIsolatedProfile(profileName)
   process.env.DSH_HOME = isolated.dshHome
-  process.env.PATH = `${fakeRtkBin}:${previousPath ?? ''}`
+  process.env.PATH = `${fakeRtkBin}:${previousEnv.path ?? ''}`
   process.env.FAKE_RTK_MODE = 'rewrite'
-  appBoot.initProfile(isolated.profile, [])
-  installBundles(dshBin, isolated.dshHome, isolated.profile, bundles)
-  appBoot.healProfilesModuleFallback(installAnchor, isolated.dshHome)
-  writeProfilePatch(isolated.profile)
-  const rootConfig = writeTestRoot(isolated.profile)
-  const profile = appBoot.loadProfile('dsh', profileName, installAnchor, isolated.dshHome)
-  const patches = [...profile.layers.flatMap((layer) => layer.patches), ...profile.patches]
-  const ctx = await appBoot.boot('dsh', rootConfig, patches)
+  let ctx: BootContext | undefined
+  let profile: LoadedProfile | undefined
+  try {
+    appBoot.initProfile(isolated.profile, [])
+    installBundles(dshBin, isolated.dshHome, isolated.profile, bundles)
+    appBoot.healProfilesModuleFallback(installAnchor, isolated.dshHome)
+    writeProfilePatch(isolated.profile)
+    const rootConfig = writeTestRoot(isolated.profile)
+    profile = appBoot.loadProfile('dsh', profileName, installAnchor, isolated.dshHome)
+    const patches = [...profile.layers.flatMap((layer) => layer.patches), ...profile.patches]
+    ctx = await appBoot.boot('dsh', rootConfig, patches)
+  } catch (error) {
+    try {
+      await ctx?.fiber.dispose()
+      restoreEnvironment(previousEnv)
+      await isolated.cleanup()
+    } catch {
+      restoreEnvironment(previousEnv)
+      await isolated.cleanup()
+    }
+    throw error
+  }
   const proof = {
     loader: 'dsh-app-boot',
     profileDir: profile.dir,
@@ -221,12 +252,7 @@ export async function bootProfileWithBundles(bundles: readonly string[]): Promis
     if (cleaned) return
     cleaned = true
     await ctx.fiber.dispose()
-    if (previousDshHome === undefined) delete process.env.DSH_HOME
-    else process.env.DSH_HOME = previousDshHome
-    if (previousPath === undefined) delete process.env.PATH
-    else process.env.PATH = previousPath
-    if (previousFakeMode === undefined) delete process.env.FAKE_RTK_MODE
-    else process.env.FAKE_RTK_MODE = previousFakeMode
+    restoreEnvironment(previousEnv)
     await isolated.cleanup()
   }
   return {

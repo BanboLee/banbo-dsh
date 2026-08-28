@@ -1,11 +1,29 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { bootProfileWithBundles, waitForNoFakeMcpServer, type BootedProfile } from './profile-boot'
 
 const RTK_BUNDLE = 'plugins/rtk-shell'
 const CODEGRAPH_BUNDLE = 'plugins/codegraph-mcp'
+const PROFILE_TMP_PREFIX = 'dsh-rtk-codegraph-profile-'
 
 const bootedProfiles: BootedProfile[] = []
+
+function tempProfileHomes(): Set<string> {
+  return new Set(readdirSync(tmpdir())
+    .filter((entry) => entry.startsWith(PROFILE_TMP_PREFIX))
+    .map((entry) => join(tmpdir(), entry)))
+}
+
+function restoreEnv(snapshot: { readonly dshHome?: string; readonly path?: string; readonly fakeMode?: string }): void {
+  if (snapshot.dshHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = snapshot.dshHome
+  if (snapshot.path === undefined) delete process.env.PATH
+  else process.env.PATH = snapshot.path
+  if (snapshot.fakeMode === undefined) delete process.env.FAKE_RTK_MODE
+  else process.env.FAKE_RTK_MODE = snapshot.fakeMode
+}
 
 afterEach(async () => {
   while (bootedProfiles.length > 0) {
@@ -45,6 +63,39 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
     bootedProfiles.push(booted)
 
     expect(booted.shellProviders()).toEqual([])
+  })
+
+  it('restores env and removes temp DSH_HOME when profile setup fails before returning', async () => {
+    const beforeEnv = {
+      dshHome: process.env.DSH_HOME,
+      path: process.env.PATH,
+      fakeMode: process.env.FAKE_RTK_MODE,
+    }
+    const beforeHomes = tempProfileHomes()
+    let thrown: unknown
+
+    try {
+      try {
+        await bootProfileWithBundles(['plugins/does-not-exist'])
+      } catch (error) {
+        thrown = error
+      }
+
+      const afterHomes = tempProfileHomes()
+      const newHomes = [...afterHomes].filter((path) => !beforeHomes.has(path))
+      expect(thrown).toBeInstanceOf(Error)
+      expect((thrown as Error).message).toContain('does-not-exist')
+      expect(process.env.DSH_HOME).toBe(beforeEnv.dshHome)
+      expect(process.env.PATH).toBe(beforeEnv.path)
+      expect(process.env.FAKE_RTK_MODE).toBe(beforeEnv.fakeMode)
+      expect(newHomes).toEqual([])
+    } finally {
+      restoreEnv(beforeEnv)
+      for (const path of tempProfileHomes()) {
+        if (!beforeHomes.has(path)) rmSync(path, { recursive: true, force: true })
+      }
+      await waitForNoFakeMcpServer()
+    }
   })
 
   it('removes temporary DSH_HOME state during cleanup', async () => {
