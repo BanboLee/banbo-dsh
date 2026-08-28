@@ -10,6 +10,9 @@
   },
   "files": [
     "index.js",
+    "executor.js",
+    "rewrite-decision.js",
+    "process-result.js",
     "cordis.patch.yml",
     "README.md"
   ],
