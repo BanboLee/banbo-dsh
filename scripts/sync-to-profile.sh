@@ -22,14 +22,15 @@ mkdir -p "$DST/presets/fish"
 cp "$SRC/presets/fish/agent.cordis.yml" "$DST/presets/fish/agent.cordis.yml"
 echo "synced $SRC -> $DST"
 
-# The fish agent preset must stay a copy of the shipped `standard` preset with
-# only the shell rows swapped. Check drift; refresh when `standard` changed.
+# The bundled fish agent preset must stay a copy of the shipped `standard`
+# preset with only the shell section removed. Check drift on the BUNDLED
+# copy (the one shipped and deployed), not the user-root fallback.
 STANDARD="$DSH_HOME_RESOLVED/profiles/node_modules/@deepseek-ai/dsh/config/agent-presets/standard/agent.cordis.yml"
-PRESET="$DSH_HOME_RESOLVED/.agent-presets/fish/agent.cordis.yml"
+PRESET="$SRC/presets/fish/agent.cordis.yml"
 if [ ! -f "$STANDARD" ]; then
   echo "warning: cannot find shipped standard preset at $STANDARD; skipping drift check"
 elif [ ! -f "$PRESET" ]; then
-  echo "warning: fish preset missing at $PRESET; create it from the standard preset with the shell rows swapped"
+  echo "warning: bundled fish preset missing at $PRESET"
 else
   # Normalize both by blanking the shell section, then diff.
   norm() {
@@ -41,10 +42,9 @@ else
   }
   if ! diff -q <(norm "$STANDARD") <(norm "$PRESET") >/dev/null 2>&1; then
     echo "warning: $PRESET drifted from $STANDARD (outside the shell section)."
-    echo "Refresh it manually: cp \"$STANDARD\" \"$PRESET\" and swap the tool-bash/tool-pwsh rows for:"
-    echo "  - id: tool-fish"
-    echo "    name: dsh-fish-shell/tool"
+    echo "Regenerate it: node scripts/regenerate-fish-preset.mjs (not in this repo yet)"
+    echo "or manually copy \"$STANDARD\" and remove the shell section."
   else
-    echo "fish preset at $PRESET matches standard (shell section aside)."
+    echo "bundled fish preset matches standard (shell section aside)."
   fi
 fi

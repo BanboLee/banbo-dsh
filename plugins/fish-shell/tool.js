@@ -18,10 +18,10 @@
 
 import { isAbsolute, resolve } from 'node:path'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 
 export const name = 'fish-tool'
-export const inject = ['tools', 'shell']
+export const inject = ['tools', 'shell', 'shellEnv']
 
 /**
  * Bundled fish agent preset: a copy of the shipped `standard` preset with
@@ -31,26 +31,27 @@ export const inject = ['tools', 'shell']
 const BUNDLED_PRESET_URL = new URL('./presets/fish/agent.cordis.yml', import.meta.url)
 
 /**
- * Install the bundled fish agent preset under the agent-presets user root
- * (idempotent: no write when the target already matches).
- * @returns the target path, or undefined when auto-install is disabled.
+ * Install the bundled fish agent preset under the agent-presets user root,
+ * create-only: an existing target (even a user-edited one) is left alone,
+ * and a failed write is a warning, never a load failure.
  */
 function installPreset() {
-  const home = process.env.DSH_HOME ?? `${os.homedir()}/.config/dsh`
+  const home = resolveDshHome()
   const targetDir = `${home}/.agent-presets/fish`
   const target = `${targetDir}/agent.cordis.yml`
-  const source = readFileSync(BUNDLED_PRESET_URL, 'utf8')
-  let current = ''
+  let exists = true
   try {
-    current = readFileSync(target, 'utf8')
+    readFileSync(target)
   } catch {
-    current = ''
+    exists = false
   }
-  if (current !== source) {
+  if (exists) return
+  try {
     mkdirSync(targetDir, { recursive: true })
-    writeFileSync(target, source)
+    writeFileSync(target, readFileSync(BUNDLED_PRESET_URL, 'utf8'))
+  } catch (error) {
+    console.warn('dsh-fish-shell: could not install the fish agent preset:', String(error))
   }
-  return target
 }
 
 /**
@@ -76,8 +77,12 @@ const TOOL_DESCRIPTION = `Execute a fish shell command (\`fish -c\`) and return 
  * @returns {string} the model-facing text.
  */
 function renderResult(result) {
-  const streamText = (stream) =>
-    stream.truncated ? `${stream.text}\n[output truncated]` : stream.text
+  const streamText = (stream) => {
+    if (!stream.truncated) return stream.text
+    return `${stream.text}\n[output truncated${stream.spillPath !== undefined
+      ? `; full output: ${stream.spillPath}`
+      : '; full output: (unavailable)'}]`
+  }
   const out = streamText(result.stdout)
   const err = streamText(result.stderr)
 
@@ -150,6 +155,7 @@ const OUTPUT = {
         properties: {
           text: { type: 'string' },
           truncated: { type: 'boolean' },
+          spillPath: { type: 'string' },
         },
       },
       stderr: {
@@ -159,6 +165,7 @@ const OUTPUT = {
         properties: {
           text: { type: 'string' },
           truncated: { type: 'boolean' },
+          spillPath: { type: 'string' },
         },
       },
       sandbox: {
@@ -175,9 +182,10 @@ const OUTPUT = {
   render: (_args, value) => [{ type: 'text', text: renderResult(value) }],
 }
 
-/** Resolve an explicit workdir, making a relative one session-workspace-relative. */
-function resolveWorkdir(modelWorkdir, exec) {
-  const sessionCwd = exec?.agent?.session?.header?.cwd
+/** Resolve an explicit workdir: the sandbox policy's workspace root wins as
+ * the base, then the session cwd; a relative path resolves against it. */
+function resolveWorkdir(modelWorkdir, exec, policyWorkspaceRoot) {
+  const sessionCwd = policyWorkspaceRoot ?? exec?.agent?.session?.header?.cwd
   if (modelWorkdir === undefined) return sessionCwd
   if (sessionCwd !== undefined && !isAbsolute(modelWorkdir)) {
     return resolve(sessionCwd, modelWorkdir)
@@ -195,22 +203,38 @@ function resolveWorkdir(modelWorkdir, exec) {
 export function apply(ctx) {
   installPreset()
 
+  // Mirror dsh-tool-bash's policy path: when the mounted executor confines,
+  // resolve each call's standing policy against the calling session so
+  // /permission switches and the session workspace are honored, and fail loud
+  // at load when the policy owner is missing.
+  const defaultMode = ctx.shell.sandboxMode
+  const sandboxPolicy = defaultMode === undefined ? undefined : ctx.get('sandboxPolicy')
+  if (defaultMode !== undefined && sandboxPolicy === undefined) {
+    throw new Error('tool-fish: the mounted fish executor confines but ctx.sandboxPolicy is missing')
+  }
+  const resolveSandboxPolicy = (exec) => {
+    if (sandboxPolicy === undefined) return undefined
+    return sandboxPolicy.resolve(exec.agent === undefined ? {} : { session: exec.agent.session })
+  }
+
   async function execute(args, exec) {
-    if (args.command.trim().length === 0) {
+    if (typeof args.command !== 'string' || args.command.trim().length === 0) {
       throw new Error('invalid command: expected a non-empty string')
     }
-    if (args.description.trim().length === 0) {
+    if (typeof args.description !== 'string' || args.description.trim().length === 0) {
       throw new Error('invalid description: expected a non-empty string')
     }
     if (args.timeoutMs !== undefined && (!Number.isFinite(args.timeoutMs) || args.timeoutMs <= 0)) {
       throw new Error(`invalid timeoutMs: expected a positive number, got ${JSON.stringify(args.timeoutMs)}`)
     }
+    const standingPolicy = resolveSandboxPolicy(exec)
+    const workdir = resolveWorkdir(args.workdir, exec, standingPolicy?.workspaceRoot)
     const request = {
       command: args.command,
-      ...resolveWorkdir(args.workdir, exec) !== undefined
-        ? { workdir: resolveWorkdir(args.workdir, exec) }
-        : {},
+      ...workdir !== undefined ? { workdir } : {},
       ...args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {},
+      dshEnv: ctx.shellEnv.collect(exec),
+      ...standingPolicy !== undefined ? { sandboxPolicy: standingPolicy } : {},
     }
     const result = await ctx.shell.run(ctx.shell.resolve({
       ...request,
@@ -221,6 +245,11 @@ export function apply(ctx) {
       error.name = 'AbortError'
       throw error
     }
+    const stream = (s) => ({
+      text: s.text,
+      truncated: s.truncated,
+      ...s.spillPath !== undefined ? { spillPath: s.spillPath } : {},
+    })
     return {
       kind: 'foreground',
       exitCode: result.exitCode,
@@ -228,8 +257,8 @@ export function apply(ctx) {
       timedOut: result.timedOut,
       aborted: result.aborted,
       timeoutMs: result.timeoutMs,
-      stdout: { text: result.stdout.text, truncated: result.stdout.truncated },
-      stderr: { text: result.stderr.text, truncated: result.stderr.truncated },
+      stdout: stream(result.stdout),
+      stderr: stream(result.stderr),
       ...result.sandbox !== undefined
         ? { sandbox: { mode: result.sandbox.mode, denied: result.sandbox.denied } }
         : {},
