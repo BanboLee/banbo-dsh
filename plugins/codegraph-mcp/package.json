@@ -1,0 +1,32 @@
+{
+  "name": "dsh-codegraph-mcp",
+  "version": "0.1.0",
+  "description": "CodeGraph MCP bridge bundle for DeepSeek Harness: connects CodeGraph to any DSH profile through the official @deepseek-ai/dsh-mcp-client bridge (codegraph serve --mcp).",
+  "type": "module",
+  "files": [
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-mcp-client": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "yaml": "^2.8.0"
+  },
+  "keywords": [
+    "dsh",
+    "plugin",
+    "codegraph",
+    "mcp",
+    "bundle"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,19 @@
+# The dsh-codegraph-mcp bundle patch: one @deepseek-ai/dsh-mcp-client row that
+# connects the CodeGraph MCP server to any DSH profile.
+#
+# Defaults follow the plan contract: stdio transport launching
+# `codegraph serve --mcp`, with CODEGRAPH_NO_DAEMON=1 so the server never forks
+# a background daemon (deterministic profile use). No project path is pinned:
+# CodeGraph derives it from the client's rootUri at connect time. Profiles that
+# want an explicit project path override this row by id in their profile
+# cordis.patch.yml (whole-config replacement, last write wins) — see README.md.
+- insert:
+    - id: mcp-codegraph
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: codegraph
+        transport: stdio
+        command: codegraph
+        args: ['serve', '--mcp']
+        env:
+          CODEGRAPH_NO_DAEMON: '1'
