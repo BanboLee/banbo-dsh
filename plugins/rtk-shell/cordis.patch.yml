@@ -1,0 +1,14 @@
+# dsh-rtk-shell bundle: make rtk the shell executor instead of bash.
+#
+# Disables the base bash-sandbox executor and mounts the rtk-shell executor
+# (a `SandboxBashExecutor` subclass) as the single `ctx.shell` provider. The
+# sandbox service (`ctx.sandbox`), sandbox policy (`ctx.sandboxPolicy`), and
+# subprocess runtime are untouched, so sandbox confinement and every result
+# fact are inherited. Exactly one shell provider remains mounted; mounting a
+# second would fail loud on a duplicate service registration.
+- id: bash-sandbox
+  disabled: true
+
+- insert:
+    - id: rtk-shell
+      name: dsh-rtk-shell
