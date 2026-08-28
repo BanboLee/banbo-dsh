@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -99,6 +100,14 @@ function readRepoFile(relativePath: string): string {
   return readFileSync(join(repoRoot, relativePath), 'utf8')
 }
 
+function readStringArrayJson(relativePath: string): readonly string[] {
+  const parsed: unknown = JSON.parse(readFileSync(relativePath, 'utf8'))
+  if (!Array.isArray(parsed) || !parsed.every((item): item is string => typeof item === 'string')) {
+    throw new TypeError(`${relativePath} did not contain a JSON string array`)
+  }
+  return parsed
+}
+
 describe('DSH bundle package manifests', () => {
   for (const expected of bundleExpectations) {
     it(`${expected.packageName} declares the installable DSH bundle shape`, () => {
@@ -121,8 +130,8 @@ describe('Task-5 install surface', () => {
   it('documents copy-paste install commands at the root', () => {
     const readme = readRepoFile('README.md')
 
-    expect(readme).toContain('dsh plugin --profile <profile> add ./plugins/rtk-shell')
-    expect(readme).toContain('dsh plugin --profile <profile> add ./plugins/codegraph-mcp')
+    expect(readme).toContain('dsh plugin --profile <profile> add -w ./plugins/rtk-shell')
+    expect(readme).toContain('dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp')
   })
 
   it('provides an observable two-plugin sync script without requiring the real profile in help/error paths', () => {
@@ -138,9 +147,49 @@ describe('Task-5 install surface', () => {
     })
 
     expect(help.status).toBe(0)
-    expect(help.stdout).toContain('dsh plugin --profile <profile> add ./plugins/rtk-shell')
-    expect(help.stdout).toContain('dsh plugin --profile <profile> add ./plugins/codegraph-mcp')
+    expect(help.stdout).toContain('dsh plugin --profile <profile> add -w ./plugins/rtk-shell')
+    expect(help.stdout).toContain('dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp')
     expect(invalid.status).not.toBe(0)
     expect(invalid.stderr).toMatch(/invalid profile/i)
+  })
+
+  it('passes the workspace-root flag before both local bundle paths when invoking dsh plugin add', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'fake-dsh-argv-'))
+    try {
+      const fakeDsh = join(tempDir, 'dsh')
+      const argvFile = join(tempDir, 'argv.json')
+      writeFileSync(fakeDsh, [
+        '#!/usr/bin/env node',
+        "import { writeFileSync } from 'node:fs'",
+        'const out = process.env.FAKE_DSH_ARGV_OUT',
+        'if (out === undefined) process.exit(99)',
+        'writeFileSync(out, JSON.stringify(process.argv.slice(2)))',
+      ].join('\n') + '\n')
+      chmodSync(fakeDsh, 0o755)
+
+      const result = spawnSync('bash', [installScript, 'task5-fake'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          DSH_BIN: fakeDsh,
+          DSH_HOME: join(tempDir, 'dsh-home'),
+          FAKE_DSH_ARGV_OUT: argvFile,
+        },
+      })
+
+      expect(result.status).toBe(0)
+      expect(readStringArrayJson(argvFile)).toEqual([
+        'plugin',
+        '--profile',
+        'task5-fake',
+        'add',
+        '-w',
+        join(repoRoot, 'plugins', 'rtk-shell'),
+        join(repoRoot, 'plugins', 'codegraph-mcp'),
+      ])
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 })

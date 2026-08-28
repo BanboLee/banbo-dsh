@@ -12,8 +12,8 @@ Usage:
   DSH_HOME=\$(mktemp -d) $0 <profile>
 
 Installs both local DSH bundle packages into <profile>:
-  dsh plugin --profile <profile> add ./plugins/rtk-shell
-  dsh plugin --profile <profile> add ./plugins/codegraph-mcp
+  dsh plugin --profile <profile> add -w ./plugins/rtk-shell
+  dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp
 
 Environment:
   DSH_HOME  Required; must point at the Harness home to modify.
@@ -55,6 +55,6 @@ if ! command -v "$DSH_BIN" >/dev/null 2>&1; then
 fi
 
 printf 'Installing local DSH bundles into profile %s under DSH_HOME=%s\n' "$PROFILE" "$DSH_HOME"
-printf '+ %s plugin --profile %s add %s %s\n' "$DSH_BIN" "$PROFILE" "$RTK_BUNDLE" "$CODEGRAPH_BUNDLE"
-"$DSH_BIN" plugin --profile "$PROFILE" add "$RTK_BUNDLE" "$CODEGRAPH_BUNDLE"
+printf '+ %s plugin --profile %s add -w %s %s\n' "$DSH_BIN" "$PROFILE" "$RTK_BUNDLE" "$CODEGRAPH_BUNDLE"
+"$DSH_BIN" plugin --profile "$PROFILE" add -w "$RTK_BUNDLE" "$CODEGRAPH_BUNDLE"
 printf 'Installed dsh-rtk-shell and dsh-codegraph-mcp into profile %s\n' "$PROFILE"

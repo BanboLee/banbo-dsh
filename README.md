@@ -7,8 +7,8 @@ Local DeepSeek Harness profile bundles for this checkout.
 Install either bundle into a DSH profile from the repository root:
 
 ```sh
-dsh plugin --profile <profile> add ./plugins/rtk-shell
-dsh plugin --profile <profile> add ./plugins/codegraph-mcp
+dsh plugin --profile <profile> add -w ./plugins/rtk-shell
+dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp
 ```
 
 To install both local bundles in one command while keeping profile state
