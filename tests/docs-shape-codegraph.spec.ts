@@ -3,22 +3,23 @@
  *
  * Asserts the structural and contract strings a user needs from the README:
  * the six required section headings, the official `@deepseek-ai/dsh-mcp-client`
- * bridge, the server-qualified `mcp__codegraph__*` tool naming, the default
- * row (`CODEGRAPH_NO_DAEMON=1`, stdio `codegraph serve --mcp`, no pinned
- * path), the workspace-root install command form (with `-w`), the `--path`
- * profile override as whole-config replacement (no deep merge), the
- * tools-only bridge limitation (Resources/Prompts not bridged), the
- * deterministic fake-MCP verification story (no live binary/daemon/network),
- * and the telemetry/update-check opt-out env options.
+ * bridge, the server-qualified `mcp__codegraph__*` tool naming, the exact
+ * default row (`CODEGRAPH_NO_DAEMON: '1'`, stdio `codegraph serve --mcp`, no
+ * pinned path), the workspace-root install command form (with `-w`), the
+ * `--path` profile override as whole-config replacement restating every field
+ * (no deep merge), the tools-only bridge limitation (Resources/Prompts not
+ * bridged/deferred), the deterministic fake-MCP acceptance (no live binary,
+ * no network, no daemon), and the telemetry/update-check opt-out env options.
  *
- * The checks are section-scoped and binding, not bare token bags: each
- * required commitment is asserted inside the section that must state it, so
- * a reworded or relocated claim is caught. The mutation regression tests run
- * the same `validateCodegraphReadmeContract` used for the real README and pin
- * the scenarios a loose token-bag predicate would miss: `CODEGRAPH_NO_DAEMON`
- * removed, a resources/prompts-bridged claim, the `-w` flag dropped, the
- * `--path` override gutted, and raw (non-server-qualified) tool names
- * surfaced in Model Experience.
+ * The checks are structural and binding, not bare token bags: the Config
+ * Markdown table is parsed into exact field/value rows, the profile-override
+ * YAML block is parsed line-by-line to require full restatement, and
+ * sentence-scoped negative bindings reject direct contradictions even when
+ * all positive tokens remain (raw MCP names registered alongside qualified
+ * names; Resources/Prompts bridged alongside tools only; wrong default-row
+ * values; incomplete override; no-network claim dropped). Every mutation
+ * regression runs the same `validateCodegraphReadmeContract` used for the
+ * real README, so the checks cannot drift loose.
  */
 
 import { readFileSync } from 'node:fs'
@@ -36,13 +37,162 @@ const REQUIRED_HEADINGS = [
   'Verification',
 ] as const
 
-/** Extract the body of a `## <heading>` section (exclusive of the next one). */
-function section(readme: string, heading: string, nextHeading: string): string {
+/** Raw (newline-preserving) body of a `## <heading>` section. */
+function rawSection(readme: string, heading: string, nextHeading: string): string {
   const start = readme.indexOf(`## ${heading}`)
   if (start === -1) return ''
   const bodyStart = start + `## ${heading}`.length
   const end = nextHeading !== '' ? readme.indexOf(`## ${nextHeading}`, bodyStart) : -1
-  return (end === -1 ? readme.slice(bodyStart) : readme.slice(bodyStart, end)).replace(/\s+/g, ' ').trim()
+  return end === -1 ? readme.slice(bodyStart) : readme.slice(bodyStart, end)
+}
+
+/** Normalized prose body of a `## <heading>` section (single-spaced). */
+function section(readme: string, heading: string, nextHeading: string): string {
+  return rawSection(readme, heading, nextHeading).replace(/\s+/g, ' ').trim()
+}
+
+/** Split normalized prose into sentences on '. ' (period-space). */
+function sentences(text: string): string[] {
+  return text
+    .split('. ')
+    .map((part) => part.trim())
+    .filter((part) => part !== '')
+}
+
+/**
+ * Parse the Config section's Markdown table into exact field/value pairs
+ * (backticks stripped). The `args` cell keeps its bracketed literal and the
+ * env cell keeps its quoted literal, so values are compared verbatim.
+ */
+function parseConfigTable(readme: string): Map<string, string> {
+  const table = new Map<string, string>()
+  const raw = rawSection(readme, 'Config', 'Profile override for project path')
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) continue
+    const cells = trimmed
+      .split('|')
+      .slice(1, -1)
+      .map((cell) => cell.trim().replace(/`/g, ''))
+    if (cells.length < 2) continue
+    const [field, value] = cells
+    if (field === 'Field' || field === '---' || /^-+$/.test(field)) continue
+    table.set(field, value)
+  }
+  return table
+}
+
+/** Bind the Config table's exact required field/value pairs (and no default path). */
+function configRowChecks(readme: string): string[] {
+  const failures: string[] = []
+  const table = parseConfigTable(readme)
+  const required: ReadonlyArray<readonly [field: string, value: string, message: string]> = [
+    ['id', 'mcp-codegraph', 'default row id must be mcp-codegraph'],
+    ['name', '@deepseek-ai/dsh-mcp-client', 'default row must consume the official @deepseek-ai/dsh-mcp-client bridge'],
+    ['serverName', 'codegraph', 'default row serverName must be codegraph'],
+    ['transport', 'stdio', 'default row transport must be stdio'],
+    ['command', 'codegraph', 'default row command must be codegraph'],
+    ['args', "['serve', '--mcp']", "default row args must be exactly ['serve', '--mcp']"],
+    ['env.CODEGRAPH_NO_DAEMON', "'1'", "default row env.CODEGRAPH_NO_DAEMON must be '1'"],
+  ]
+  for (const [field, value, message] of required) {
+    const actual = table.get(field)
+    if (actual === undefined) failures.push(`${message} (missing ${field} row)`)
+    else if (actual !== value) failures.push(`${message} (got ${field}=${actual})`)
+  }
+  const args = table.get('args')
+  if (args !== undefined && args.includes('--path')) failures.push('default row must not pin a project path')
+  return failures
+}
+
+/** Extract the body of the first ```yaml code block in a raw section. */
+function extractYamlBlock(raw: string): string {
+  const match = /```yaml\n([\s\S]*?)```/.exec(raw)
+  return match === null ? '' : match[1]
+}
+
+/**
+ * Bind the profile-override YAML block: whole-config replacement must restate
+ * serverName, transport, command, args (with --path), and CODEGRAPH_NO_DAEMON.
+ */
+function overrideRowChecks(readme: string): string[] {
+  const failures: string[] = []
+  const yaml = extractYamlBlock(rawSection(readme, 'Profile override for project path', 'Model Experience'))
+  const lineValue = (pattern: RegExp): string | undefined => {
+    const match = pattern.exec(yaml)
+    return match === null ? undefined : match[1]
+  }
+  const serverName = lineValue(/^ {4}serverName:\s*(\S+)$/m)
+  const transport = lineValue(/^ {4}transport:\s*(\S+)$/m)
+  const command = lineValue(/^ {4}command:\s*(\S+)$/m)
+  const args = lineValue(/^ {4}args:\s*(\[.*\])$/m)
+  const noDaemon = lineValue(/^ {6}CODEGRAPH_NO_DAEMON:\s*(\S+)$/m)
+  if (serverName !== 'codegraph') failures.push('override must restate serverName: codegraph')
+  if (transport !== 'stdio') failures.push('override must restate transport: stdio')
+  if (command !== 'codegraph') failures.push('override must restate command: codegraph')
+  if (args === undefined || !(args.includes("'serve'") && args.includes("'--mcp'") && args.includes("'--path'"))) {
+    failures.push("override args must restate ['serve', '--mcp', '--path', ...]")
+  }
+  if (noDaemon !== "'1'") failures.push("override must restate CODEGRAPH_NO_DAEMON: '1'")
+  return failures
+}
+
+/**
+ * Bind the negative raw-name claim in Model Experience: a sentence naming
+ * `raw MCP names` must commit to never/not registered/surfaced, and no
+ * sentence may assert raw names are registered/surfaced without negation.
+ */
+function rawNameChecks(experience: string): string[] {
+  const failures: string[] = []
+  const raw = sentences(experience).filter((sentence) => sentence.includes('raw MCP names'))
+  if (raw.length === 0) {
+    failures.push('Model Experience must state that raw MCP names are never directly registered/surfaced')
+    return failures
+  }
+  if (!raw.some((sentence) => /(?:never|no|not|nor)\b/.test(sentence) && /(?:registered|surfaced|exposed)/.test(sentence))) {
+    failures.push('Model Experience must bind raw MCP names to never/not registered/surfaced')
+  }
+  if (raw.some((sentence) => !/(?:never|no|not|nor)\b/.test(sentence) && /(?:registered|surfaced|exposed)/.test(sentence))) {
+    failures.push('Model Experience contradicts itself: raw MCP names asserted as registered/surfaced without negation')
+  }
+  return failures
+}
+
+/**
+ * Bind the tools-only limitation: a sentence naming both Resources and
+ * Prompts must commit to not-bridged/deferred semantics, and no sentence may
+ * assert they are bridged.
+ */
+function resourcesPromptsChecks(limits: string): string[] {
+  const failures: string[] = []
+  const named = sentences(limits).filter((sentence) => sentence.includes('Resources') && sentence.includes('Prompts'))
+  if (named.length === 0) {
+    failures.push('Known Limitations must name MCP Resources and Prompts as not bridged/deferred')
+    return failures
+  }
+  if (!named.some((sentence) => /(?:not bridged|does not bridge|no harness consumer|deferred)/.test(sentence))) {
+    failures.push('Known Limitations must bind Resources/Prompts to not-bridged/deferred semantics')
+  }
+  if (named.some((sentence) => /(?:bridges|bridged|is bridged|are bridged|will bridge|can bridge)\b/.test(sentence))) {
+    failures.push('Known Limitations contradicts itself: Resources/Prompts asserted as bridged')
+  }
+  return failures
+}
+
+/**
+ * Bind the deterministic-acceptance claim: the sentence stating no live
+ * binary must also commit to no network and no daemon.
+ */
+function noNetworkChecks(limits: string): string[] {
+  const failures: string[] = []
+  const acceptance = sentences(limits).find((sentence) => /(?:no|without)\s+live/.test(sentence))
+  if (acceptance === undefined) {
+    failures.push('Known Limitations must state deterministic acceptance needs no live codegraph binary')
+    return failures
+  }
+  if (!/(?:no|without)\s+network/.test(acceptance)) failures.push('Known Limitations must bind deterministic acceptance to no network')
+  if (!/(?:no|without)\s+daemon/.test(acceptance)) failures.push('Known Limitations must bind deterministic acceptance to no daemon')
+  return failures
 }
 
 /**
@@ -67,56 +217,46 @@ function validateCodegraphReadmeContract(readme: string): string[] {
     failures.push('missing the workspace-root (-w) install command')
   }
 
+  // Config: exact default-row field/value pairs plus the direct-mode prose.
+  failures.push(...configRowChecks(readme))
   const config = section(readme, 'Config', 'Profile override for project path')
-  for (const [needle, message] of [
-    ['mcp-codegraph', 'Config must name the row id mcp-codegraph'],
-    ['serverName', 'Config must state the serverName field'],
-    ['codegraph', 'Config must bind serverName/command to codegraph'],
-    ['stdio', 'Config must state the stdio transport'],
-    ['serve --mcp', 'Config must document the `codegraph serve --mcp` args'],
-    ['CODEGRAPH_NO_DAEMON', 'Config must document the default CODEGRAPH_NO_DAEMON env'],
-  ] as const) {
-    if (!config.includes(needle)) failures.push(message)
+  if (!/CODEGRAPH_NO_DAEMON[^.]*direct mode/.test(config)) {
+    failures.push('Config must explain CODEGRAPH_NO_DAEMON pins direct mode (no daemon)')
   }
-  if (config.includes('--path')) {
-    failures.push('Config default row must not pin a project path')
+  if (!/no (?:project )?path (?:is )?pinned/i.test(config)) {
+    failures.push('Config must state the default row pins no project path')
   }
 
+  // Profile override: whole-config replacement restating every field.
   const override = section(readme, 'Profile override for project path', 'Model Experience')
-  for (const [needle, message] of [
-    ['--path', 'profile override section must document the --path flag'],
-    ["['serve', '--mcp', '--path'", 'profile override section must show the args replacement with --path'],
-    ['serverName', 'profile override section must restate the full row (serverName included)'],
-    ['CODEGRAPH_NO_DAEMON', 'profile override section must restate CODEGRAPH_NO_DAEMON in the row env'],
-  ] as const) {
-    if (!override.includes(needle)) failures.push(message)
-  }
   if (!/(?:no deep merge|whole-config replacement|last write wins)/.test(override)) {
     failures.push('profile override section must state whole-config replacement (no deep merge)')
   }
+  failures.push(...overrideRowChecks(readme))
 
+  // Model Experience: only server-qualified tools surfaced; raw names never.
   const experience = section(readme, 'Model Experience', 'Known Limitations and Deferred Work')
-  for (const [needle, message] of [
-    ['server-qualified', 'Model Experience must say only server-qualified tools are surfaced'],
-    ['mcp__codegraph__echo_context', 'Model Experience must give the observed fake-server tool name'],
-    ['codegraph-ok', 'Model Experience must give the observed fake-server output'],
-  ] as const) {
-    if (!experience.includes(needle)) failures.push(message)
+  if (!experience.includes('server-qualified')) {
+    failures.push('Model Experience must say only server-qualified tools are surfaced')
   }
+  if (!experience.includes('mcp__codegraph__echo_context')) {
+    failures.push('Model Experience must give the observed fake-server tool name')
+  }
+  if (!experience.includes('codegraph-ok')) {
+    failures.push('Model Experience must give the observed fake-server output')
+  }
+  failures.push(...rawNameChecks(experience))
 
+  // Known Limitations: tools-only, Resources/Prompts deferred, no live/network/daemon.
   const limits = section(readme, 'Known Limitations and Deferred Work', 'Verification')
-  for (const [needle, message] of [
-    ['tools only', 'Known Limitations must state the bridge covers tools only'],
-    ['Resources', 'Known Limitations must name MCP Resources as not bridged'],
-    ['Prompts', 'Known Limitations must name MCP Prompts as not bridged'],
-    ['authoritative', 'Known Limitations must state the deterministic fake tests are authoritative'],
-    ['optional', 'Known Limitations must state real CodeGraph smoke is optional'],
-    ['without a daemon', 'Known Limitations must state deterministic acceptance runs without a daemon'],
-    ['DO_NOT_TRACK', 'Known Limitations must document the DO_NOT_TRACK opt-out env'],
-    ['CODEGRAPH_TELEMETRY', 'Known Limitations must document the CODEGRAPH_TELEMETRY opt-out env'],
-    ['CODEGRAPH_NO_UPDATE_CHECK', 'Known Limitations must document the CODEGRAPH_NO_UPDATE_CHECK opt-out env'],
-  ] as const) {
-    if (!limits.includes(needle)) failures.push(message)
+  if (!limits.includes('tools only')) failures.push('Known Limitations must state the bridge covers tools only')
+  failures.push(...resourcesPromptsChecks(limits))
+  if (!limits.includes('authoritative')) failures.push('Known Limitations must state the deterministic fake tests are authoritative')
+  if (!limits.includes('optional')) failures.push('Known Limitations must state real CodeGraph smoke is optional')
+  if (!limits.includes('without a daemon')) failures.push('Known Limitations must state deterministic acceptance runs without a daemon')
+  failures.push(...noNetworkChecks(limits))
+  for (const env of ['DO_NOT_TRACK', 'CODEGRAPH_TELEMETRY', 'CODEGRAPH_NO_UPDATE_CHECK']) {
+    if (!limits.includes(env)) failures.push(`Known Limitations must document the ${env} opt-out env`)
   }
 
   const verification = section(readme, 'Verification', '')
@@ -149,14 +289,28 @@ describe('dsh-codegraph-mcp README shape', () => {
     expect(README).toContain('dsh plugin --profile <name> add -w ./plugins/codegraph-mcp')
   })
 
-  it('documents the default row and the --path override contract', () => {
+  it('binds the Config table exact field/value pairs', () => {
+    expect(configRowChecks(README)).toEqual([])
+    const table = parseConfigTable(README)
+    expect(table.get('id')).toBe('mcp-codegraph')
+    expect(table.get('name')).toBe('@deepseek-ai/dsh-mcp-client')
+    expect(table.get('serverName')).toBe('codegraph')
+    expect(table.get('transport')).toBe('stdio')
+    expect(table.get('command')).toBe('codegraph')
+    expect(table.get('args')).toBe("['serve', '--mcp']")
+    expect(table.get('env.CODEGRAPH_NO_DAEMON')).toBe("'1'")
+    expect(table.get('args')).not.toContain('--path')
+  })
+
+  it('explains the CODEGRAPH_NO_DAEMON direct-mode default and no pinned path', () => {
     const config = section(README, 'Config', 'Profile override for project path')
-    expect(config).toContain('mcp-codegraph')
-    expect(config).toContain('CODEGRAPH_NO_DAEMON')
-    expect(config).not.toContain('--path')
+    expect(config).toMatch(/CODEGRAPH_NO_DAEMON[^.]*direct mode/)
+    expect(config).toMatch(/no (?:project )?path (?:is )?pinned/i)
+  })
+
+  it('requires the profile override to restate every row field with --path', () => {
+    expect(overrideRowChecks(README)).toEqual([])
     const override = section(README, 'Profile override for project path', 'Model Experience')
-    expect(override).toContain('--path')
-    expect(override).toContain("['serve', '--mcp', '--path'")
     expect(override).toMatch(/(?:no deep merge|whole-config replacement|last write wins)/)
   })
 
@@ -165,14 +319,15 @@ describe('dsh-codegraph-mcp README shape', () => {
     expect(experience).toContain('server-qualified')
     expect(experience).toContain('mcp__codegraph__echo_context')
     expect(experience).toContain('codegraph-ok')
+    expect(rawNameChecks(experience)).toEqual([])
   })
 
   it('documents the tools-only limitation and telemetry/update-check opt-outs', () => {
     const limits = section(README, 'Known Limitations and Deferred Work', 'Verification')
     expect(limits).toContain('tools only')
-    expect(limits).toContain('Resources')
-    expect(limits).toContain('Prompts')
+    expect(resourcesPromptsChecks(limits)).toEqual([])
     expect(limits).toContain('without a daemon')
+    expect(noNetworkChecks(limits)).toEqual([])
     expect(limits).toContain('DO_NOT_TRACK')
     expect(limits).toContain('CODEGRAPH_TELEMETRY')
     expect(limits).toContain('CODEGRAPH_NO_UPDATE_CHECK')
@@ -215,6 +370,54 @@ describe('dsh-codegraph-mcp README shape', () => {
       'Only server-qualified MCP tools are surfaced',
       'Raw MCP names are surfaced directly',
     )
+    expect(mutated).not.toEqual(README)
+    expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects raw MCP names also registered alongside qualified names while server-qualified tokens remain (mutation regression)', () => {
+    const mutated = README.replace(
+      /raw MCP names are\s+never registered directly/,
+      'raw MCP names are also registered directly alongside server-qualified names',
+    )
+    expect(mutated).not.toEqual(README)
+    expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects Resources/Prompts bridged while tools only/Resources/Prompts tokens remain (mutation regression)', () => {
+    const mutated = README.replace(
+      'so this bundle does not bridge them.',
+      'so this bundle bridges them alongside tools only after startup.',
+    )
+    expect(mutated).not.toEqual(README)
+    expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects a swapped CODEGRAPH_NO_DAEMON table value (mutation regression)', () => {
+    const mutated = README.replace("| `env.CODEGRAPH_NO_DAEMON` | `'1'` |", "| `env.CODEGRAPH_NO_DAEMON` | `'0'` |")
+    expect(mutated).not.toEqual(README)
+    expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects a swapped command table value (mutation regression)', () => {
+    const mutated = README.replace('| `command` | `codegraph` |', '| `command` | `npx` |')
+    expect(mutated).not.toEqual(README)
+    expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects an override that omits the transport restatement (mutation regression)', () => {
+    const mutated = README.replace('    transport: stdio\n', '')
+    expect(mutated).not.toEqual(README)
+    expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects an override that swaps the command restatement (mutation regression)', () => {
+    const mutated = README.replace('    command: codegraph', '    command: npx')
+    expect(mutated).not.toEqual(README)
+    expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects deterministic acceptance that loses the no-network claim (mutation regression)', () => {
+    const mutated = README.replace(', no network', '')
     expect(mutated).not.toEqual(README)
     expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
   })
