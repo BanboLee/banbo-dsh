@@ -46,15 +46,19 @@ interface ConfineCall {
 /**
  * Boot a context with a recording fake `ctx.sandbox` and the executor under
  * test on top of it. Every confine invocation is recorded into `calls` so the
- * tests can prove exactly what the delegated provider received.
+ * tests can prove exactly what the delegated provider received. `confine`
+ * behavior is injectable (e.g. a throwing provider) for delegate-failure tests.
  */
-async function setup(config: { mode?: SandboxMode; workspaceRoot?: string; rewriteTimeoutMs?: number } = {}) {
+async function setup(
+  config: { mode?: SandboxMode; workspaceRoot?: string; rewriteTimeoutMs?: number } = {},
+  confine: (argv: readonly string[], policy: SandboxPolicy) => ConfinedArgv = passthrough,
+) {
   const { mode, workspaceRoot, ...execConfig } = config
   const calls: ConfineCall[] = []
   class FakeSandboxProvider extends SandboxProvider {
     confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
       calls.push({ argv: [...argv], policy })
-      return passthrough(argv)
+      return confine(argv, policy)
     }
   }
   const ctx = new Context()
@@ -258,6 +262,48 @@ describe('background lifecycle (start)', () => {
     expect(calls).toHaveLength(0)
     const read = proc.readOutput()
     expect(read.delta).toContain('denied by rule')
+  })
+
+  it('throws the delegated provider error synchronously from start() when the sandbox provider fails (passthrough)', async () => {
+    process.env.FAKE_RTK_MODE = 'passthrough'
+    const { shell } = await setup(
+      {},
+      () => {
+        throw new Error('sandbox-boom')
+      },
+    )
+
+    let caught: unknown
+    try {
+      shell.start(shell.resolve({ command: 'true' }))
+    } catch (error) {
+      caught = error
+    }
+    // Baseline SandboxBashExecutor.start() throws the provider error from the
+    // start() call itself; the wrapper must match, not return a killed process.
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toBe('sandbox-boom')
+    expect((caught as Error).message).not.toContain('rtk rewrite failed')
+  })
+
+  it('throws the delegated provider error synchronously from start() when the sandbox provider fails (rewrite)', async () => {
+    process.env.FAKE_RTK_MODE = 'rewrite'
+    const { shell } = await setup(
+      {},
+      () => {
+        throw new Error('sandbox-boom')
+      },
+    )
+
+    let caught: unknown
+    try {
+      shell.start(shell.resolve({ command: 'true' }))
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toBe('sandbox-boom')
+    expect((caught as Error).message).not.toContain('rtk rewrite failed')
   })
 })
 
