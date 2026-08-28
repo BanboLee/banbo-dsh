@@ -239,10 +239,87 @@ describe('createIsolatedProfile', () => {
 })
 
 describe('verify-plan-hygiene.mjs', () => {
+  const validPlanSections = [
+    '## Scope',
+    '## Verification strategy',
+    '## Todos',
+    '## Final verification wave',
+    '## Commit strategy',
+    '## Success criteria',
+  ]
+
+  function writeValidPlan(dir: string, filename: string, checkbox: string) {
+    const path = join(dir, filename)
+    writeFileSync(path, [
+      '# Fixture plan',
+      '',
+      ...validPlanSections.map((section) => [section, '', '- placeholder content']).flat(),
+      `${checkbox} 1. Some task`,
+      '  What to do / Must NOT do: do the thing',
+      '  Parallelization: Wave 0 | Blocked by: none | Blocks: 2',
+      '  References: somewhere',
+      '  Interfaces:',
+      '  - produces the thing',
+      '  TDD steps:',
+      '  - Run RED: pnpm exec vitest run x',
+      '  - Run GREEN: pnpm exec vitest run x',
+      '  Acceptance criteria: it works',
+      '  QA scenarios: happy: run it. failure: break it.',
+      '  Commit: Y | `chore(x): do the thing` | Stage exactly `x/**`.',
+      '  Recommended task executor category: quick',
+      '',
+    ].join('\n'))
+    return path
+  }
+
   it('passes on the real plan file', async () => {
     const result = await runNode(planHygiene, [realPlan])
     expect(result.code).toBe(0)
   }, 30000)
+
+  it('accepts a valid open plan whose task rows are all `- [ ]`', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plan-hygiene-open-'))
+    try {
+      const path = writeValidPlan(dir, 'open.md', '- [ ]')
+      const result = await runNode(planHygiene, [path])
+      expect(result.code).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts a valid completed plan whose task rows are all `- [x]`', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plan-hygiene-x-'))
+    try {
+      const path = writeValidPlan(dir, 'completed.md', '- [x]')
+      const result = await runNode(planHygiene, [path])
+      expect(result.code).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('accepts a valid completed plan whose task rows are all `- [X]`', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plan-hygiene-X-'))
+    try {
+      const path = writeValidPlan(dir, 'completed-upper.md', '- [X]')
+      const result = await runNode(planHygiene, [path])
+      expect(result.code).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects an invalid checkbox status so arbitrary checkbox grammar is not accepted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plan-hygiene-z-'))
+    try {
+      const path = writeValidPlan(dir, 'invalid-checkbox.md', '- [z]')
+      const result = await runNode(planHygiene, [path])
+      expect(result.code).not.toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 
   it('fails on a plan missing required per-task fields', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'plan-hygiene-bad-'))

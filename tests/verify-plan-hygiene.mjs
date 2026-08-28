@@ -6,7 +6,8 @@
 //
 // Checks:
 //   1. Required top-level sections exist.
-//   2. Every `- [ ] N. <title>` task row carries all required field labels.
+//   2. Every `- [ ] N.` / `- [x] N.` / `- [X] N. <title>` task row carries all
+//      required field labels.
 //      The matcher follows the plan's actual grammar: `Blocked by:`/`Blocks:`
 //      appear inline on the `Parallelization:` line; `Run RED:`/`Run GREEN:`
 //      may be written as `- Run RED:` bullets; `References`,
@@ -88,11 +89,13 @@ function main() {
     }
   }
 
-  // 2-4. Task rows: collect each row's indented body.
+  // 2-4. Task rows: collect each row's indented body. Top-level implementation
+  // rows are recognized in any valid checkbox lifecycle state (`[ ]` open,
+  // `[x]`/`[X]` completed); any other status inside the brackets is rejected.
   const taskRows = []
   let currentRow = null
   for (const line of lines) {
-    if (/^- \[ \] \d+\.\s/.test(line)) {
+    if (/^- \[[ xX]\] \d+\.\s/.test(line)) {
       currentRow = { start: line, body: [] }
       taskRows.push(currentRow)
       continue
@@ -101,7 +104,7 @@ function main() {
   }
 
   if (taskRows.length === 0) {
-    fail(report, 'no `- [ ] N.` task rows found')
+    fail(report, 'no `- [ ] N.`, `- [x] N.`, or `- [X] N.` task rows found')
   }
 
   for (const row of taskRows) {
