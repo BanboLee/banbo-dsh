@@ -17,7 +17,9 @@ DSH_HOME_RESOLVED="${DSH_HOME:-$HOME/.config/dsh}"
 DST="$DSH_HOME_RESOLVED/profiles/node_modules/dsh-fish-shell"
 
 mkdir -p "$DST"
-cp "$SRC/index.js" "$SRC/tool.js" "$SRC/package.json" "$SRC/cordis.patch.yml" "$SRC/README.md" "$DST/"
+cp "$SRC/index.js" "$SRC/local.js" "$SRC/tool.js" "$SRC/package.json" "$SRC/cordis.patch.yml" "$SRC/README.md" "$DST/"
+mkdir -p "$DST/presets/fish"
+cp "$SRC/presets/fish/agent.cordis.yml" "$DST/presets/fish/agent.cordis.yml"
 echo "synced $SRC -> $DST"
 
 # The fish agent preset must stay a copy of the shipped `standard` preset with

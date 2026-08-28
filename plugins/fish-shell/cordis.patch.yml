@@ -1,37 +1,71 @@
 # dsh-fish-shell bundle: make fish the default shell executor instead of bash.
 #
-# The dsh-tui surface composes every agent's model-facing tools from an
-# agent-preset roster whose default is `standard` (which mounts tool-bash and
-# waits on ctx.shell). This layer:
-#   1. disables the base sandboxed bash executor (`bash-sandbox`) and inserts
-#      this package's FishSandboxExecutor, which registers `ctx.shell` and
-#      runs every command through `fish -c` under the configured sandbox;
-#   2. switches the dsh-tui roster default to the user-authored `fish` preset
-#      (`$DSH_HOME/.agent-presets/fish`), whose composition mounts this
-#      package's `fish` tool (`dsh-fish-shell/tool`) instead of `tool-bash`.
+# Works across every surface:
+#   - dsh-tui / web (agent-preset roster): disables the base bash executor
+#     (`bash-sandbox`) and the host bash tool (`tool-bash`), mounts the fish
+#     executor (ctx.shell) and a host-global `fish` tool, and points the
+#     roster default at the bundled `fish` agent preset (discovered through
+#     the package's own `presets/` directory, registered below as a system
+#     preset root).
+#   - headless (no preset roster; the agent uses host-plane tools): the
+#     host-global `fish` tool and the disabled `tool-bash` already make fish
+#     the agent's only shell tool.
 #
-# The model-facing `fish` tool row lives ONLY in the `fish` agent preset, not
-# here: preset-owned rows keep the tool out of agents on other presets, and
-# the tool resolves `ctx.shell` (host-plane) so the executor above serves it.
+# The model-facing `fish` tool is host-global so every surface sees it; the
+# bundled `fish` preset (standard with the shell rows removed) keeps agents
+# that select it free of a duplicate or bash shell tool.
 - id: bash-sandbox
+  disabled: true
+
+- id: tool-bash
   disabled: true
 
 - insert:
     - id: fish-shell
       name: dsh-fish-shell
 
-# The dsh-tui roster row ships with `default: standard`. A patch replaces the
-# targeted row's whole `config` (no deep merge), so the system `roots`
-# expression is restated here unchanged.
+    - id: tool-fish
+      name: dsh-fish-shell/tool
+
+# Roster default switch for BOTH roster row ids (web: `agent-presets`;
+# dsh-tui: `dsh-tui-agent-presets`). A patch replaces the whole `config`, so
+# the system root expression is restated; the bundle's own `presets/`
+# directory is added as a system root so the `fish` preset ships with the
+# package. A row id absent from the composition is a no-op.
+- id: agent-presets
+  config:
+    default: fish
+    roots: !!js >-
+      (() => {
+        const base = ctx.baseUrl
+        if (!base) return []
+        const resolvePath = (url) => {
+          const path = decodeURIComponent(url.pathname)
+          return /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path
+        }
+        const system = new URL('../node_modules/@deepseek-ai/dsh/config/agent-presets/', base)
+        const own = new URL('./node_modules/dsh-fish-shell/presets/', base)
+        return [
+          { path: resolvePath(system), trust: 'system' },
+          { path: resolvePath(own), trust: 'system' },
+        ]
+      })()
+
 - id: dsh-tui-agent-presets
   config:
     default: fish
     roots: !!js >-
       (() => {
         const base = ctx.baseUrl
-        if (!base) return undefined
-        const root = new URL('../node_modules/@deepseek-ai/dsh/config/agent-presets/', base)
-        let path = decodeURIComponent(root.pathname)
-        if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1)
-        return [{ path, trust: 'system' }]
+        if (!base) return []
+        const resolvePath = (url) => {
+          const path = decodeURIComponent(url.pathname)
+          return /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path
+        }
+        const system = new URL('../node_modules/@deepseek-ai/dsh/config/agent-presets/', base)
+        const own = new URL('./node_modules/dsh-fish-shell/presets/', base)
+        return [
+          { path: resolvePath(system), trust: 'system' },
+          { path: resolvePath(own), trust: 'system' },
+        ]
       })()

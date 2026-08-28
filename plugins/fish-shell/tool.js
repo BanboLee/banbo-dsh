@@ -17,9 +17,41 @@
  */
 
 import { isAbsolute, resolve } from 'node:path'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 
 export const name = 'fish-tool'
 export const inject = ['tools', 'shell']
+
+/**
+ * Bundled fish agent preset: a copy of the shipped `standard` preset with
+ * the shell section removed (the `fish` tool is mounted host-globally by
+ * this plugin, so the preset needs no shell row).
+ */
+const BUNDLED_PRESET_URL = new URL('./presets/fish/agent.cordis.yml', import.meta.url)
+
+/**
+ * Install the bundled fish agent preset under the agent-presets user root
+ * (idempotent: no write when the target already matches).
+ * @returns the target path, or undefined when auto-install is disabled.
+ */
+function installPreset() {
+  const home = process.env.DSH_HOME ?? `${os.homedir()}/.config/dsh`
+  const targetDir = `${home}/.agent-presets/fish`
+  const target = `${targetDir}/agent.cordis.yml`
+  const source = readFileSync(BUNDLED_PRESET_URL, 'utf8')
+  let current = ''
+  try {
+    current = readFileSync(target, 'utf8')
+  } catch {
+    current = ''
+  }
+  if (current !== source) {
+    mkdirSync(targetDir, { recursive: true })
+    writeFileSync(target, source)
+  }
+  return target
+}
 
 /**
  * The model-facing tool description. Written from the model's perspective:
@@ -154,11 +186,15 @@ function resolveWorkdir(modelWorkdir, exec) {
 }
 
 /**
- * Cordis plugin entry: register the `fish` tool once the tool registry and
- * the `fish` executor are up.
+ * Cordis plugin entry: install the bundled fish agent preset (an idempotent
+ * user-root fallback for surfaces whose roster row this bundle does not
+ * patch), then register the `fish` tool once the tool registry and the
+ * `fish` executor are up.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
  */
 export function apply(ctx) {
+  installPreset()
+
   async function execute(args, exec) {
     if (args.command.trim().length === 0) {
       throw new Error('invalid command: expected a non-empty string')
