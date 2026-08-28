@@ -2,7 +2,13 @@ import { existsSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { bootProfileWithBundles, waitForNoFakeMcpServer, type BootedProfile } from './profile-boot'
+import { createIsolatedProfile } from '../helpers/profile'
+import {
+  bootProfileWithBundles,
+  setIsolatedProfileFactoryForTest,
+  waitForNoFakeMcpServer,
+  type BootedProfile,
+} from './profile-boot'
 
 const RTK_BUNDLE = 'plugins/rtk-shell'
 const CODEGRAPH_BUNDLE = 'plugins/codegraph-mcp'
@@ -90,6 +96,51 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
       expect(process.env.FAKE_RTK_MODE).toBe(beforeEnv.fakeMode)
       expect(newHomes).toEqual([])
     } finally {
+      restoreEnv(beforeEnv)
+      for (const path of tempProfileHomes()) {
+        if (!beforeHomes.has(path)) rmSync(path, { recursive: true, force: true })
+      }
+      await waitForNoFakeMcpServer()
+    }
+  })
+
+  it('preserves the original setup error when failure cleanup also throws', async () => {
+    const beforeEnv = {
+      dshHome: process.env.DSH_HOME,
+      path: process.env.PATH,
+      fakeMode: process.env.FAKE_RTK_MODE,
+    }
+    const beforeHomes = tempProfileHomes()
+    const restoreFactory = setIsolatedProfileFactoryForTest((name) => {
+      const isolated = createIsolatedProfile(name)
+      return {
+        ...isolated,
+        cleanup: async () => {
+          await isolated.cleanup()
+          throw new Error('forced cleanup failure')
+        },
+      }
+    })
+    let thrown: unknown
+
+    try {
+      try {
+        await bootProfileWithBundles(['plugins/does-not-exist'])
+      } catch (error) {
+        thrown = error
+      }
+
+      const afterHomes = tempProfileHomes()
+      const newHomes = [...afterHomes].filter((path) => !beforeHomes.has(path))
+      expect(thrown).toBeInstanceOf(Error)
+      expect((thrown as Error).message).toContain('does-not-exist')
+      expect((thrown as Error).message).not.toContain('forced cleanup failure')
+      expect(process.env.DSH_HOME).toBe(beforeEnv.dshHome)
+      expect(process.env.PATH).toBe(beforeEnv.path)
+      expect(process.env.FAKE_RTK_MODE).toBe(beforeEnv.fakeMode)
+      expect(newHomes).toEqual([])
+    } finally {
+      restoreFactory()
       restoreEnv(beforeEnv)
       for (const path of tempProfileHomes()) {
         if (!beforeHomes.has(path)) rmSync(path, { recursive: true, force: true })
