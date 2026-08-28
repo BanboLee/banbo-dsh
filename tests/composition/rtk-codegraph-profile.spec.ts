@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
-import { bootProfileWithBundles, type BootedProfile } from './profile-boot'
+import { bootProfileWithBundles, waitForNoFakeMcpServer, type BootedProfile } from './profile-boot'
 
 const RTK_BUNDLE = 'plugins/rtk-shell'
 const CODEGRAPH_BUNDLE = 'plugins/codegraph-mcp'
@@ -12,6 +12,7 @@ afterEach(async () => {
     const profile = bootedProfiles.pop()
     if (profile !== undefined) await profile.cleanup()
   }
+  await waitForNoFakeMcpServer()
 })
 
 describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
@@ -23,6 +24,10 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
     const toolResult = await booted.callTool('mcp__codegraph__echo_context', {})
 
     expect(booted.shellProviders()).toEqual(['rtk-shell'])
+    expect(booted.realProfilePath()).toMatchObject({
+      loader: 'dsh-app-boot',
+      installedBundles: expect.arrayContaining(['dsh-rtk-shell', 'dsh-codegraph-mcp']),
+    })
     expect(rewritten.stdout.text).toBe('rtk git status\n')
     expect(booted.toolNames()).toEqual(['mcp__codegraph__echo_context'])
     expect(toolResult).toEqual({ content: [{ type: 'text', text: 'codegraph-ok' }] })
@@ -35,6 +40,13 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
     expect(() => booted.assertHasTool('mcp__codegraph__echo_context')).toThrow(/missing MCP tool/)
   })
 
+  it('has no shell provider when the rtk bundle entry is omitted', async () => {
+    const booted = await bootProfileWithBundles([CODEGRAPH_BUNDLE])
+    bootedProfiles.push(booted)
+
+    expect(booted.shellProviders()).toEqual([])
+  })
+
   it('removes temporary DSH_HOME state during cleanup', async () => {
     const booted = await bootProfileWithBundles([RTK_BUNDLE, CODEGRAPH_BUNDLE])
     const dshHome = booted.dshHome
@@ -43,5 +55,6 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
     await booted.cleanup()
 
     expect(existsSync(dshHome)).toBe(false)
+    await waitForNoFakeMcpServer()
   })
 })
