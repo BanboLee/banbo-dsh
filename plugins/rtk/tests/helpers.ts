@@ -79,7 +79,7 @@ export async function createRtkShellHarness(
     ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
   })
   await ctx.plugin(LocalSubprocessRuntime)
-  const spillDir = mkdtempSync(join(tmpdir(), 'dsh-rtk-shell-spec-'))
+  const spillDir = mkdtempSync(join(tmpdir(), 'dsh-rtk-spec-'))
   spillDirs.push(spillDir)
   const subprocess = ctx.subprocess
   if (!(subprocess instanceof LocalSubprocessRuntime)) {

@@ -16,7 +16,7 @@ local package inside the profile's generated workspace and install fails with
 dsh plugin --profile <name> add -w ./plugins/codegraph-mcp
 ```
 
-To install both local bundles (rtk-shell and codegraph-mcp) into one isolated
+To install both local bundles (rtk and codegraph-mcp) into one isolated
 profile with a single command:
 
 ```bash

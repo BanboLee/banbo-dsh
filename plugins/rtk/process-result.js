@@ -5,7 +5,7 @@
  * stderr-note appender. Pure functions over structural process/result shapes;
  * no delegate or oracle logic lives here.
  *
- * @module dsh-rtk-shell/process-result
+ * @module dsh-rtk/process-result
  */
 
 /**

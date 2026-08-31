@@ -29,8 +29,8 @@ interface BundleExpectation {
 
 const bundleExpectations: readonly BundleExpectation[] = [
   {
-    directory: 'plugins/rtk-shell',
-    packageName: 'dsh-rtk-shell',
+    directory: 'plugins/rtk',
+    packageName: 'dsh-rtk',
     files: ['index.js', 'grep-compress.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',
@@ -125,7 +125,7 @@ describe('Task-5 install surface', () => {
   it('documents copy-paste install commands at the root', () => {
     const readme = readRepoFile('README.md')
 
-    expect(readme).toContain('dsh plugin --profile <profile> add -w ./plugins/rtk-shell')
+    expect(readme).toContain('dsh plugin --profile <profile> add -w ./plugins/rtk')
     expect(readme).toContain('dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp')
   })
 
@@ -142,7 +142,7 @@ describe('Task-5 install surface', () => {
     })
 
     expect(help.status).toBe(0)
-    expect(help.stdout).toContain('dsh plugin --profile <profile> add -w ./plugins/rtk-shell')
+    expect(help.stdout).toContain('dsh plugin --profile <profile> add -w ./plugins/rtk')
     expect(help.stdout).toContain('dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp')
     expect(invalid.status).not.toBe(0)
     expect(invalid.stderr).toMatch(/invalid profile/i)
@@ -180,7 +180,7 @@ describe('Task-5 install surface', () => {
         'task5-fake',
         'add',
         '-w',
-        join(repoRoot, 'plugins', 'rtk-shell'),
+        join(repoRoot, 'plugins', 'rtk'),
         join(repoRoot, 'plugins', 'codegraph-mcp'),
       ])
     } finally {

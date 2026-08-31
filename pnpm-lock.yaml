@@ -48,7 +48,7 @@ importers:
         specifier: ^0.1.1-rc.2
         version: 0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))
 
-  plugins/rtk-shell:
+  plugins/rtk:
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1

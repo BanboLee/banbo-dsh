@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-RTK_BUNDLE="$ROOT/plugins/rtk-shell"
+RTK_BUNDLE="$ROOT/plugins/rtk"
 CODEGRAPH_BUNDLE="$ROOT/plugins/codegraph-mcp"
 DSH_BIN="${DSH_BIN:-dsh}"
 
@@ -12,7 +12,7 @@ Usage:
   DSH_HOME=\$(mktemp -d) $0 <profile>
 
 Installs both local DSH bundle packages into <profile>:
-  dsh plugin --profile <profile> add -w ./plugins/rtk-shell
+  dsh plugin --profile <profile> add -w ./plugins/rtk
   dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp
 
 Environment:
@@ -57,4 +57,4 @@ fi
 printf 'Installing local DSH bundles into profile %s under DSH_HOME=%s\n' "$PROFILE" "$DSH_HOME"
 printf '+ %s plugin --profile %s add -w %s %s\n' "$DSH_BIN" "$PROFILE" "$RTK_BUNDLE" "$CODEGRAPH_BUNDLE"
 "$DSH_BIN" plugin --profile "$PROFILE" add -w "$RTK_BUNDLE" "$CODEGRAPH_BUNDLE"
-printf 'Installed dsh-rtk-shell and dsh-codegraph-mcp into profile %s\n' "$PROFILE"
+printf 'Installed dsh-rtk and dsh-codegraph-mcp into profile %s\n' "$PROFILE"

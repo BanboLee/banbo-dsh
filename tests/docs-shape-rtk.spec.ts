@@ -1,5 +1,5 @@
 /**
- * Docs-shape contract test for `plugins/rtk-shell/README.md`.
+ * Docs-shape contract test for `plugins/rtk/README.md`.
  *
  * Asserts the structural and contract strings a user needs from the README:
  * the required section headings, the exact `rtk rewrite` exit-code contract
@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-const README = readFileSync(fileURLToPath(new URL('../plugins/rtk-shell/README.md', import.meta.url)), 'utf8')
+const README = readFileSync(fileURLToPath(new URL('../plugins/rtk/README.md', import.meta.url)), 'utf8')
 
 const REQUIRED_HEADINGS = [
   'Usage',
@@ -126,15 +126,15 @@ function validateRtkReadmeContract(readme: string): string[] {
   }
   failures.push(...exitMappingChecks(readme))
   failures.push(...sandboxPreservationChecks(readme))
-  if (!readme.includes('dsh plugin --profile <name> add -w ./plugins/rtk-shell')) failures.push('missing -w install command')
+  if (!readme.includes('dsh plugin --profile <name> add -w ./plugins/rtk')) failures.push('missing -w install command')
   if (!(readme.includes('user-global') && readme.includes('fake'))) failures.push('missing fake/user-global testing story')
-  if (!readme.includes('pnpm exec vitest run plugins/rtk-shell/tests/*.spec.ts')) failures.push('missing deterministic verification command')
+  if (!readme.includes('pnpm exec vitest run plugins/rtk/tests/*.spec.ts')) failures.push('missing deterministic verification command')
   if (!(readme.includes('grep') && readme.includes('rtk pipe'))) failures.push('missing grep compression documentation (grep piped through rtk pipe)')
   if (!readme.includes('coexist')) failures.push('missing decorate/coexist statement (plugin decorates the mounted shell executor and coexists with it)')
   return failures
 }
 
-describe('dsh-rtk-shell README shape', () => {
+describe('dsh-rtk README shape', () => {
   it('has every required section heading', () => {
     for (const heading of REQUIRED_HEADINGS) {
       expect(README, `missing required heading: ## ${heading}`).toContain(`## ${heading}`)
@@ -150,7 +150,7 @@ describe('dsh-rtk-shell README shape', () => {
   })
 
   it('documents the workspace-root install command with -w', () => {
-    expect(README).toContain('dsh plugin --profile <name> add -w ./plugins/rtk-shell')
+    expect(README).toContain('dsh plugin --profile <name> add -w ./plugins/rtk')
   })
 
   it('documents that deterministic tests never depend on a user-global rtk', () => {
@@ -159,7 +159,7 @@ describe('dsh-rtk-shell README shape', () => {
   })
 
   it('documents the deterministic verification command', () => {
-    expect(README).toContain('pnpm exec vitest run plugins/rtk-shell/tests/*.spec.ts')
+    expect(README).toContain('pnpm exec vitest run plugins/rtk/tests/*.spec.ts')
   })
 
   it('satisfies the full documentation behavior contract', () => {

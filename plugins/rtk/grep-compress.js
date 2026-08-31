@@ -1,7 +1,7 @@
 /**
  * Model-facing grep output compression through `rtk pipe -f grep`.
  *
- * @module dsh-rtk-shell/grep-compress
+ * @module dsh-rtk/grep-compress
  */
 
 import { execFile } from 'node:child_process'

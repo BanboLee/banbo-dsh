@@ -6,7 +6,7 @@ import {
 } from './profile-boot'
 
 const FISH_BUNDLE = 'plugins/fish-shell'
-const RTK_BUNDLE = 'plugins/rtk-shell'
+const RTK_BUNDLE = 'plugins/rtk'
 const CODEGRAPH_BUNDLE = 'plugins/codegraph-mcp'
 
 const bootedProfiles: BootedProfile[] = []

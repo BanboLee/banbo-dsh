@@ -1,7 +1,7 @@
 {
-  "name": "dsh-rtk-shell",
+  "name": "dsh-rtk",
   "version": "0.1.0",
-  "description": "RTK rewrite decorator for DeepSeek Harness: a plain function plugin that wraps the mounted shell executor's `run`/`start` so every command is transparently rewritten through `rtk rewrite` before execution. Decorates the live `ctx.shell`, so it coexists with any shell provider (bash, fish, ...) without a duplicate service registration.",
+  "description": "General-purpose RTK integration for DeepSeek Harness: a plain function plugin that decorates the mounted shell executor's `run`/`start` through `rtk rewrite` and compresses model-facing grep output through `rtk pipe`. Decorates the live `ctx.shell`, so it coexists with any shell provider (bash, fish, ...) without a duplicate service registration.",
   "type": "module",
   "main": "index.js",
   "exports": {

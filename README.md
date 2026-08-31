@@ -2,12 +2,12 @@
 
 Local DeepSeek Harness profile bundles for this checkout.
 
-## Install RTK shell and CodeGraph MCP bundles
+## Install RTK and CodeGraph MCP bundles
 
 Install either bundle into a DSH profile from the repository root:
 
 ```sh
-dsh plugin --profile <profile> add -w ./plugins/rtk-shell
+dsh plugin --profile <profile> add -w ./plugins/rtk
 dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp
 ```
 

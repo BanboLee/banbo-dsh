@@ -10,7 +10,7 @@ import {
   type BootedProfile,
 } from './profile-boot'
 
-const RTK_BUNDLE = 'plugins/rtk-shell'
+const RTK_BUNDLE = 'plugins/rtk'
 const CODEGRAPH_BUNDLE = 'plugins/codegraph-mcp'
 const PROFILE_TMP_PREFIX = 'dsh-rtk-codegraph-profile-'
 
@@ -57,7 +57,7 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
     expect(booted.shellProviders()).toEqual(['@deepseek-ai/dsh-bash-sandbox'])
     expect(booted.realProfilePath()).toMatchObject({
       loader: 'dsh-app-boot',
-      installedBundles: expect.arrayContaining(['dsh-rtk-shell', 'dsh-codegraph-mcp']),
+      installedBundles: expect.arrayContaining(['dsh-rtk', 'dsh-codegraph-mcp']),
     })
     expect(rewritten.stdout.text).toBe('rtk git status\n')
     expect(booted.toolNames()).toEqual(['mcp__codegraph__echo_context'])

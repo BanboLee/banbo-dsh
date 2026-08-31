@@ -1,4 +1,4 @@
-# dsh-rtk-shell
+# dsh-rtk
 
 RTK rewrite decorator for DeepSeek Harness: a plain Cordis function plugin
 (`name`/`inject`/`Config`/`apply`) that decorates the live `ctx.shell`
@@ -17,10 +17,10 @@ local package inside the profile's generated workspace and install fails with
 `ERR_PNPM_ADDING_TO_ROOT`.
 
 ```bash
-dsh plugin --profile <name> add -w ./plugins/rtk-shell
+dsh plugin --profile <name> add -w ./plugins/rtk
 ```
 
-To install both local bundles (rtk-shell and codegraph-mcp) into one isolated
+To install both local bundles (rtk and codegraph-mcp) into one isolated
 profile with a single command:
 
 ```bash
@@ -128,7 +128,7 @@ reduction depends on the real binary, its rules, and the commands being run.
 Deterministic package-local tests (fake `rtk` fixture, no user-global state):
 
 ```bash
-pnpm exec vitest run plugins/rtk-shell/tests/*.spec.ts
+pnpm exec vitest run plugins/rtk/tests/*.spec.ts
 ```
 
 Documentation shape test (required sections and contract strings):
@@ -141,5 +141,5 @@ Optional real-RTK smoke, only when a real `rtk` is on PATH and never a
 required acceptance:
 
 ```bash
-scripts/smoke-rtk-shell.sh
+scripts/smoke-rtk.sh
 ```

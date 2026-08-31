@@ -1,5 +1,5 @@
 /**
- * Public entrypoint of `dsh-rtk-shell`: a general-purpose Cordis function
+ * Public entrypoint of `dsh-rtk`: a general-purpose Cordis function
  * plugin that decorates whatever shell executor the host mounts as `ctx.shell`.
  * Every command is transparently rewritten through `rtk rewrite` before the
  * delegate executes it; sandbox confinement, result facts, and lifecycle
@@ -8,10 +8,10 @@
  * (or replaces) a shell provider, so it coexists with any executor (bash,
  * fish, ...) without a duplicate service registration.
  *
- * Re-exports the {@link module:dsh-rtk-shell/rewrite-decision} oracle and the
- * {@link module:dsh-rtk-shell/process-result} wrappers' public surface.
+ * Re-exports the {@link module:dsh-rtk/rewrite-decision} oracle and the
+ * {@link module:dsh-rtk/process-result} wrappers' public surface.
  *
- * @module dsh-rtk-shell
+ * @module dsh-rtk
  */
 
 import { deniedProcess, withNote, withNoteProcess } from './process-result.js'
@@ -19,7 +19,7 @@ import { createGrepPostExecuteListener } from './grep-compress.js'
 import { RTK_ASK_NOTE, RTK_REWRITE_TIMEOUT_MS, RtkDenyError, rtkRewriteDecision, rtkRewriteDecisionSync } from './rewrite-decision.js'
 
 /** Bundle row id this plugin is mounted under (`cordis.patch.yml`). */
-export const name = 'rtk-shell'
+export const name = 'rtk'
 
 /** Decorates the live shell executor and the model-facing tools pipeline. */
 export const inject = ['shell', 'tools']
@@ -33,7 +33,7 @@ export const inject = ['shell', 'tools']
 export const Config = {
   '~standard': {
     version: 1,
-    vendor: 'dsh-rtk-shell',
+    vendor: 'dsh-rtk',
     validate(value) {
       const input = value ?? {}
       return {
