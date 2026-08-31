@@ -31,14 +31,9 @@ const bundleExpectations: readonly BundleExpectation[] = [
   {
     directory: 'plugins/rtk-shell',
     packageName: 'dsh-rtk-shell',
-    files: ['index.js', 'cordis.patch.yml', 'README.md'],
+    files: ['index.js', 'grep-compress.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',
-      '@deepseek-ai/dsh-bash-local': '^0.1.1-rc.2',
-      '@deepseek-ai/dsh-bash-sandbox': '^0.1.1-rc.2',
-      '@deepseek-ai/dsh-sandbox': '^0.1.1-rc.2',
-      '@deepseek-ai/dsh-sandbox-policy': '^0.1.1-rc.2',
-      '@deepseek-ai/dsh-shell': '^0.1.1-rc.2',
     },
   },
   {

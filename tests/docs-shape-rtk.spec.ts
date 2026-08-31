@@ -129,6 +129,8 @@ function validateRtkReadmeContract(readme: string): string[] {
   if (!readme.includes('dsh plugin --profile <name> add -w ./plugins/rtk-shell')) failures.push('missing -w install command')
   if (!(readme.includes('user-global') && readme.includes('fake'))) failures.push('missing fake/user-global testing story')
   if (!readme.includes('pnpm exec vitest run plugins/rtk-shell/tests/*.spec.ts')) failures.push('missing deterministic verification command')
+  if (!(readme.includes('grep') && readme.includes('rtk pipe'))) failures.push('missing grep compression documentation (grep piped through rtk pipe)')
+  if (!readme.includes('coexist')) failures.push('missing decorate/coexist statement (plugin decorates the mounted shell executor and coexists with it)')
   return failures
 }
 
@@ -164,6 +166,12 @@ describe('dsh-rtk-shell README shape', () => {
     expect(validateRtkReadmeContract(README)).toEqual([])
   })
 
+  it('documents grep compression and the decorate/coexist shape', () => {
+    expect(README).toContain('grep')
+    expect(README).toContain('rtk pipe')
+    expect(README).toContain('coexist')
+  })
+
   it('rejects a swapped exit 0/1 mapping (mutation regression)', () => {
     const mutated = README.replace('- Exit 0, rewrite:', '- Exit 0, passthrough:').replace(
       '- Exit 1, passthrough:',
@@ -178,6 +186,18 @@ describe('dsh-rtk-shell README shape', () => {
       'Sandbox confinement, workdir/env/stdin, timeout, abort, exit code, signal,\nstdout/stderr, sandbox facts, and background-process lifecycle are inherited\nverbatim from the delegated executor.',
       'The sandbox is mentioned here, but this sentence does not preserve the sandbox facts.',
     )
+    expect(mutated).not.toEqual(README)
+    expect(validateRtkReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects a README without the grep compression documentation (mutation regression)', () => {
+    const mutated = README.replaceAll('rtk pipe', 'rtk OTHER')
+    expect(mutated).not.toEqual(README)
+    expect(validateRtkReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects a README without the decorate/coexist statement (mutation regression)', () => {
+    const mutated = README.replaceAll('coexist', 'replace')
     expect(mutated).not.toEqual(README)
     expect(validateRtkReadmeContract(mutated)).not.toEqual([])
   })
