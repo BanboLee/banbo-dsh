@@ -138,6 +138,8 @@ function writeTestRoot(profile: string): string {
     "- id: sandbox\n  name: ./test-seams.mjs\n  config:\n    kind: sandbox",
     `- id: sandbox-policy\n  name: '@deepseek-ai/dsh-sandbox-policy'\n  config:\n    mode: read-only\n    workspaceRoot: ${JSON.stringify(profile)}`,
     "- id: subprocess\n  name: '@deepseek-ai/dsh-subprocess-local'",
+    "- id: bash-sandbox\n  name: '@deepseek-ai/dsh-bash-sandbox'\n  config:\n    timeoutMs: 60000",
+    "- id: shell-env\n  name: '@deepseek-ai/dsh-shell-env'",
   ].join('\n') + '\n')
   return root
 }

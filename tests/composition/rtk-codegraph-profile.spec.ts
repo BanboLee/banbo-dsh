@@ -22,13 +22,20 @@ function tempProfileHomes(): Set<string> {
     .map((entry) => join(tmpdir(), entry)))
 }
 
-function restoreEnv(snapshot: { readonly dshHome?: string; readonly path?: string; readonly fakeMode?: string }): void {
+function restoreEnv(snapshot: {
+  readonly dshHome?: string
+  readonly path?: string
+  readonly fakeMode?: string
+  readonly xdgConfigHome?: string
+}): void {
   if (snapshot.dshHome === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = snapshot.dshHome
   if (snapshot.path === undefined) delete process.env.PATH
   else process.env.PATH = snapshot.path
   if (snapshot.fakeMode === undefined) delete process.env.FAKE_RTK_MODE
   else process.env.FAKE_RTK_MODE = snapshot.fakeMode
+  if (snapshot.xdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+  else process.env.XDG_CONFIG_HOME = snapshot.xdgConfigHome
 }
 
 afterEach(async () => {
@@ -47,7 +54,7 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
     const rewritten = await booted.runShell('rewrite git status')
     const toolResult = await booted.callTool('mcp__codegraph__echo_context', {})
 
-    expect(booted.shellProviders()).toEqual(['rtk-shell'])
+    expect(booted.shellProviders()).toEqual(['@deepseek-ai/dsh-bash-sandbox'])
     expect(booted.realProfilePath()).toMatchObject({
       loader: 'dsh-app-boot',
       installedBundles: expect.arrayContaining(['dsh-rtk-shell', 'dsh-codegraph-mcp']),
@@ -64,11 +71,14 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
     expect(() => booted.assertHasTool('mcp__codegraph__echo_context')).toThrow(/missing MCP tool/)
   })
 
-  it('has no shell provider when the rtk bundle entry is omitted', async () => {
+  it('keeps the base shell provider undecorated when the rtk bundle entry is omitted', async () => {
     const booted = await bootProfileWithBundles([CODEGRAPH_BUNDLE])
     bootedProfiles.push(booted)
 
-    expect(booted.shellProviders()).toEqual([])
+    const baseline = await booted.runShell('printf baseline')
+
+    expect(booted.shellProviders()).toEqual(['@deepseek-ai/dsh-bash-sandbox'])
+    expect(baseline.stdout.text).toBe('baseline')
   })
 
   it('restores env and removes temp DSH_HOME when profile setup fails before returning', async () => {
@@ -76,6 +86,7 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
       dshHome: process.env.DSH_HOME,
       path: process.env.PATH,
       fakeMode: process.env.FAKE_RTK_MODE,
+      xdgConfigHome: process.env.XDG_CONFIG_HOME,
     }
     const beforeHomes = tempProfileHomes()
     let thrown: unknown
@@ -94,6 +105,7 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
       expect(process.env.DSH_HOME).toBe(beforeEnv.dshHome)
       expect(process.env.PATH).toBe(beforeEnv.path)
       expect(process.env.FAKE_RTK_MODE).toBe(beforeEnv.fakeMode)
+      expect(process.env.XDG_CONFIG_HOME).toBe(beforeEnv.xdgConfigHome)
       expect(newHomes).toEqual([])
     } finally {
       restoreEnv(beforeEnv)
@@ -109,6 +121,7 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
       dshHome: process.env.DSH_HOME,
       path: process.env.PATH,
       fakeMode: process.env.FAKE_RTK_MODE,
+      xdgConfigHome: process.env.XDG_CONFIG_HOME,
     }
     const beforeHomes = tempProfileHomes()
     const restoreFactory = setIsolatedProfileFactoryForTest((name) => {
@@ -138,6 +151,7 @@ describe('isolated DSH profile composition for rtk + codegraph bundles', () => {
       expect(process.env.DSH_HOME).toBe(beforeEnv.dshHome)
       expect(process.env.PATH).toBe(beforeEnv.path)
       expect(process.env.FAKE_RTK_MODE).toBe(beforeEnv.fakeMode)
+      expect(process.env.XDG_CONFIG_HOME).toBe(beforeEnv.xdgConfigHome)
       expect(newHomes).toEqual([])
     } finally {
       restoreFactory()

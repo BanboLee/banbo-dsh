@@ -12,13 +12,14 @@ import {
 } from './profile-loader'
 
 const profileName = 'rtk-codegraph-profile'
-const shellProviderNames = new Set(['dsh-rtk-shell', '@deepseek-ai/dsh-bash-sandbox', '@deepseek-ai/dsh-bash-local'])
+const shellProviderNames = new Set(['@deepseek-ai/dsh-bash-sandbox', '@deepseek-ai/dsh-bash-local', 'dsh-fish-shell'])
 let isolatedProfileFactory: (name: string) => IsolatedProfile = createIsolatedProfile
 
 interface EnvSnapshot {
   readonly dshHome?: string
   readonly path?: string
   readonly fakeMode?: string
+  readonly xdgConfigHome?: string
 }
 
 export interface BootedProfile {
@@ -52,6 +53,8 @@ function restoreEnvironment(snapshot: EnvSnapshot): void {
   else process.env.PATH = snapshot.path
   if (snapshot.fakeMode === undefined) delete process.env.FAKE_RTK_MODE
   else process.env.FAKE_RTK_MODE = snapshot.fakeMode
+  if (snapshot.xdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME
+  else process.env.XDG_CONFIG_HOME = snapshot.xdgConfigHome
 }
 
 async function cleanupSetupFailure(ctx: BootContext | undefined, isolated: IsolatedProfile, snapshot: EnvSnapshot): Promise<void> {
@@ -103,9 +106,11 @@ export async function bootProfileWithBundles(bundles: readonly string[]): Promis
     dshHome: process.env.DSH_HOME,
     path: process.env.PATH,
     fakeMode: process.env.FAKE_RTK_MODE,
+    xdgConfigHome: process.env.XDG_CONFIG_HOME,
   } satisfies EnvSnapshot
   const isolated = isolatedProfileFactory(profileName)
   process.env.DSH_HOME = isolated.dshHome
+  process.env.XDG_CONFIG_HOME = join(isolated.dshHome, '.config')
   process.env.PATH = `${fakeRtkBin}:${previousEnv.path ?? ''}`
   process.env.FAKE_RTK_MODE = 'rewrite'
   let ctx: BootContext | undefined
@@ -134,7 +139,7 @@ export async function bootProfileWithBundles(bundles: readonly string[]): Promis
       if (loader === undefined) return []
       return [...loader.entries()]
         .filter((entry) => !entry.disabled && shellProviderNames.has(entry.options.name))
-        .map((entry) => entry.id.split(':').at(-1) ?? entry.id)
+        .map((entry) => entry.options.name)
         .sort()
     },
     toolNames: () => ctx.get('tools')?.schemas().map((schema) => schema.name).sort() ?? [],
