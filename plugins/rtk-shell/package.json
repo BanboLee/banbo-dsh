@@ -10,6 +10,7 @@
   },
   "files": [
     "index.js",
+    "grep-compress.js",
     "rewrite-decision.js",
     "process-result.js",
     "cordis.patch.yml",

@@ -35,6 +35,7 @@ export interface RtkShellHarnessConfig {
   readonly mode?: SandboxMode
   readonly rewriteTimeoutMs?: number
   readonly workspaceRoot?: string
+  readonly grepCompress?: boolean
 }
 
 function passthrough(argv: readonly string[]): ConfinedArgv {
@@ -49,6 +50,7 @@ export function installFakeRtkPathHooks(): void {
   })
   afterEach(() => {
     delete process.env.FAKE_RTK_MODE
+    delete process.env.FAKE_RTK_PIPE_MODE
   })
   afterAll(() => {
     process.env.PATH = originalPath ?? ''
@@ -86,7 +88,11 @@ export async function createRtkShellHarness(
   subprocess.internals = { spillDir }
   // Mount a REAL base shell provider as ctx.shell, then decorate it with the
   // rtk function plugin (design A1: the plugin wraps the live ctx.shell's
-  // run/start instead of replacing the shell provider).
+  // run/start instead of replacing the shell provider). Design B1 also
+  // injects the `tools` runtime, so provide a minimal stand-in here — the
+  // plugin only registers a `tools/post-execute` listener against it and
+  // never invokes a tool through it.
+  await ctx.provide('tools', {})
   await ctx.plugin(SandboxBashExecutor, { graceMs: 200 })
   await ctx.plugin(rtkShellPlugin, execConfig)
   const shell = ctx.shell

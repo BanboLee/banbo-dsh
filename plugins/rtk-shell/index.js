@@ -15,13 +15,14 @@
  */
 
 import { deniedProcess, withNote, withNoteProcess } from './process-result.js'
+import { createGrepPostExecuteListener } from './grep-compress.js'
 import { RTK_ASK_NOTE, RTK_REWRITE_TIMEOUT_MS, RtkDenyError, rtkRewriteDecision, rtkRewriteDecisionSync } from './rewrite-decision.js'
 
 /** Bundle row id this plugin is mounted under (`cordis.patch.yml`). */
 export const name = 'rtk-shell'
 
-/** Decorates the live shell executor, so it loads once `ctx.shell` is up. */
-export const inject = ['shell']
+/** Decorates the live shell executor and the model-facing tools pipeline. */
+export const inject = ['shell', 'tools']
 
 /**
  * Plugin configuration schema: the three rtk oracle knobs. A plain object
@@ -39,6 +40,7 @@ export const Config = {
           rtkBinary: input.rtkBinary ?? 'rtk',
           rewriteTimeoutMs: input.rewriteTimeoutMs ?? RTK_REWRITE_TIMEOUT_MS,
           askNote: input.askNote ?? RTK_ASK_NOTE,
+          grepCompress: input.grepCompress ?? true,
         },
       }
     },
@@ -61,12 +63,14 @@ export const Config = {
  * @param {string} [config.rtkBinary]
  * @param {number} [config.rewriteTimeoutMs]
  * @param {string} [config.askNote]
+ * @param {boolean} [config.grepCompress]
  */
 export default function apply(ctx, config) {
   const shell = ctx.shell
   const rtkBinary = config?.rtkBinary ?? 'rtk'
   const rewriteTimeoutMs = config?.rewriteTimeoutMs ?? RTK_REWRITE_TIMEOUT_MS
   const askNote = config?.askNote ?? RTK_ASK_NOTE
+  const grepCompress = config?.grepCompress ?? true
   const opts = { rtkBinary, timeoutMs: rewriteTimeoutMs, askNote }
   const origRun = shell.run.bind(shell)
   const origStart = shell.start.bind(shell)
@@ -104,6 +108,9 @@ export default function apply(ctx, config) {
     shell.run = origRun
     shell.start = origStart
   })
+  if (grepCompress) {
+    ctx.on('tools/post-execute', createGrepPostExecuteListener({ rtkBinary, timeoutMs: rewriteTimeoutMs }), { prepend: true })
+  }
 }
 
 // Cordis reads plugin metadata off the entry object itself: attach the named
@@ -114,3 +121,4 @@ apply.Config = Config
 
 export { RTK_ASK_NOTE, RTK_REWRITE_TIMEOUT_MS, RtkDenyError, rtkRewriteDecision, rtkRewriteDecisionSync } from './rewrite-decision.js'
 export { deniedProcess, withNote, withNoteProcess } from './process-result.js'
+export { RTK_PIPE_TIMEOUT_MS, createGrepPostExecuteListener, rtkPipeCompress } from './grep-compress.js'
