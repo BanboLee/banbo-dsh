@@ -18,6 +18,22 @@ import { deniedProcess, withNote, withNoteProcess } from './process-result.js'
 import { createGrepPostExecuteListener } from './grep-compress.js'
 import { RTK_ASK_NOTE, RTK_REWRITE_TIMEOUT_MS, RtkDenyError, rtkRewriteDecision, rtkRewriteDecisionSync } from './rewrite-decision.js'
 
+/** Cordis trace proxies expose their stable service target through this symbol. */
+const CORDIS_ORIGINAL = Symbol.for('cordis.original')
+
+/**
+ * Shared ownership for each decorated shell. Weak keys avoid extending a
+ * shell's lifetime or adding plugin-specific properties to a host service.
+ * @type {WeakMap<object, {
+ *   refs: number;
+ *   originalRun: Function;
+ *   originalStart: Function;
+ *   opts: { rtkBinary: string; timeoutMs: number; askNote: string };
+ *   grepCompress: boolean;
+ * }>}
+ */
+const decorations = new WeakMap()
+
 /** Bundle row id this plugin is mounted under (`cordis.patch.yml`). */
 export const name = 'rtk'
 
@@ -32,7 +48,7 @@ export const inject = ['shell', 'tools']
  */
 export const Config = {
   '~standard': {
-    version: 1,
+    version: /** @type {1} */ (1),
     vendor: 'dsh-rtk',
     validate(value) {
       const input = value ?? {}
@@ -57,8 +73,10 @@ export const Config = {
  * like the baseline). Deny fails closed with a deterministic `RtkDenyError`
  * (foreground) or a killed, noted process (background) and zero delegate
  * calls; exit-3 `ask` is implemented as rewrite-with-note. The originals are
- * restored when this plugin unloads (Cordis fiber effect). When enabled, grep
- * results are also compressed after downstream post-execute listeners run.
+ * restored when the last owning plugin fiber unloads. Duplicate mounts share
+ * the first mount's configuration and only increase the ownership reference
+ * count. When enabled, grep results are also compressed exactly once after
+ * downstream post-execute listeners run.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
  * @param {object} [config] - validated config; falls back to defaults.
@@ -69,49 +87,67 @@ export const Config = {
  */
 export default function apply(ctx, config) {
   const shell = ctx.shell
-  const rtkBinary = config?.rtkBinary ?? 'rtk'
-  const rewriteTimeoutMs = config?.rewriteTimeoutMs ?? RTK_REWRITE_TIMEOUT_MS
-  const askNote = config?.askNote ?? RTK_ASK_NOTE
-  const grepCompress = config?.grepCompress ?? true
-  const opts = { rtkBinary, timeoutMs: rewriteTimeoutMs, askNote }
-  const origRun = shell.run.bind(shell)
-  const origStart = shell.start.bind(shell)
-  shell.run = async (spec) => {
-    if (spec.signal?.aborted === true) spec.signal.throwIfAborted()
-    const decision = await rtkRewriteDecision(spec.command, opts)
-    if (decision.kind === 'deny') {
-      throw new RtkDenyError(decision.reason)
+  const shellTarget = shell[CORDIS_ORIGINAL] ?? shell
+  let decoration = decorations.get(shellTarget)
+  if (decoration === undefined) {
+    const rtkBinary = config?.rtkBinary ?? 'rtk'
+    const rewriteTimeoutMs = config?.rewriteTimeoutMs ?? RTK_REWRITE_TIMEOUT_MS
+    const askNote = config?.askNote ?? RTK_ASK_NOTE
+    const originalRun = shellTarget.run
+    const originalStart = shellTarget.start
+    const opts = { rtkBinary, timeoutMs: rewriteTimeoutMs, askNote }
+    decoration = {
+      refs: 0,
+      originalRun,
+      originalStart,
+      opts,
+      grepCompress: config?.grepCompress ?? true,
     }
-    const target = decision.kind === 'rewrite' ? { ...spec, command: decision.command } : spec
-    const result = await origRun(target)
-    if (decision.kind === 'rewrite' && decision.note !== undefined) {
-      return withNote(result, decision.note)
+    decorations.set(shellTarget, decoration)
+    shellTarget.run = async (spec) => {
+      if (spec.signal?.aborted === true) spec.signal.throwIfAborted()
+      const decision = await rtkRewriteDecision(spec.command, opts)
+      if (decision.kind === 'deny') {
+        throw new RtkDenyError(decision.reason)
+      }
+      const target = decision.kind === 'rewrite' ? { ...spec, command: decision.command } : spec
+      const result = await originalRun.call(shellTarget, target)
+      if (decision.kind === 'rewrite' && decision.note !== undefined) {
+        return withNote(result, decision.note)
+      }
+      return result
     }
-    return result
+    shellTarget.start = (spec) => {
+      const decision = rtkRewriteDecisionSync(spec.command, opts)
+      if (decision.kind === 'deny') {
+        return deniedProcess(decision.reason)
+      }
+      const target = decision.kind === 'rewrite' ? { ...spec, command: decision.command } : spec
+      // Delegate startup errors (confine throwing, runner spawn failure) escape
+      // synchronously here with their original type and message, matching the
+      // baseline SandboxBashExecutor.start() contract.
+      const inner = originalStart.call(shellTarget, target)
+      if (decision.kind === 'rewrite' && decision.note !== undefined) {
+        return withNoteProcess(inner, decision.note)
+      }
+      return inner
+    }
   }
-  shell.start = (spec) => {
-    const decision = rtkRewriteDecisionSync(spec.command, opts)
-    if (decision.kind === 'deny') {
-      return deniedProcess(decision.reason)
-    }
-    const target = decision.kind === 'rewrite' ? { ...spec, command: decision.command } : spec
-    // Delegate startup errors (confine throwing, runner spawn failure) escape
-    // synchronously here with their original type and message, matching the
-    // baseline SandboxBashExecutor.start() contract.
-    const inner = origStart(target)
-    if (decision.kind === 'rewrite' && decision.note !== undefined) {
-      return withNoteProcess(inner, decision.note)
-    }
-    return inner
-  }
-  // Restore the originals on unmount via a Cordis fiber effect (the disposer
-  // returned by ctx.effect runs when this plugin's fiber unloads).
+  decoration.refs += 1
+  // Each mount owns one reference. Cordis may unload fibers in any order, so
+  // only the final disposer restores the exact pre-decoration method objects.
   ctx.effect(() => () => {
-    shell.run = origRun
-    shell.start = origStart
+    decoration.refs -= 1
+    if (decoration.refs > 0) return
+    shellTarget.run = decoration.originalRun
+    shellTarget.start = decoration.originalStart
+    decorations.delete(shellTarget)
   })
-  if (grepCompress) {
-    ctx.on('tools/post-execute', createGrepPostExecuteListener({ rtkBinary, timeoutMs: rewriteTimeoutMs }), { prepend: true })
+  // Cordis owns listeners per fiber. Register on each owner so non-LIFO
+  // disposal leaves coverage; the listener's per-execution guard compresses
+  // once, and all registrations use the first mount's shared options.
+  if (decoration.grepCompress) {
+    ctx.on('tools/post-execute', createGrepPostExecuteListener(decoration.opts), { prepend: true })
   }
 }
 

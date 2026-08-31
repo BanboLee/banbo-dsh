@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeAll } from 'vitest'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, type Fiber } from '@deepseek-ai/cordis'
 import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox'
 import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, SandboxMode, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
@@ -12,6 +12,7 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import rtkShellPlugin from '../index.js'
 
 const FIXTURES_BIN = fileURLToPath(new URL('../../../tests/fixtures/bin/', import.meta.url))
+const CORDIS_ORIGINAL = Symbol.for('cordis.original')
 const UNIX_SIGNATURES = ['read-only file system', 'permission denied'] as const
 const RUNNER_FAILURE = [{ fatalSignatures: ['fake-runner: '] }] as const
 const spillDirs: string[] = []
@@ -26,13 +27,18 @@ export interface ConfineCall {
 export interface RtkShellHarness {
   readonly ctx: Context
   readonly shell: SandboxBashExecutor
+  readonly shellTarget: SandboxBashExecutor
   readonly calls: ConfineCall[]
+  readonly mounts: readonly Fiber[]
+  readonly originalRun: SandboxBashExecutor['run']
+  readonly originalStart: SandboxBashExecutor['start']
 }
 
 export type ConfineDelegate = (argv: readonly string[], policy: SandboxPolicy) => ConfinedArgv
 
 export interface RtkShellHarnessConfig {
   readonly mode?: SandboxMode
+  readonly mounts?: number
   readonly rewriteTimeoutMs?: number
   readonly workspaceRoot?: string
   readonly grepCompress?: boolean
@@ -64,7 +70,7 @@ export async function createRtkShellHarness(
   config: RtkShellHarnessConfig = {},
   confine: ConfineDelegate = passthrough,
 ): Promise<RtkShellHarness> {
-  const { mode, workspaceRoot, ...execConfig } = config
+  const { mode, mounts: mountCount = 1, workspaceRoot, ...execConfig } = config
   const calls: ConfineCall[] = []
   class FakeSandboxProvider extends SandboxProvider {
     confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
@@ -94,10 +100,17 @@ export async function createRtkShellHarness(
   // never invokes a tool through it.
   await ctx.provide('tools', {})
   await ctx.plugin(SandboxBashExecutor, { graceMs: 200 })
-  await ctx.plugin(rtkShellPlugin, execConfig)
   const shell = ctx.shell
   if (!(shell instanceof SandboxBashExecutor)) {
     throw new TypeError('expected SandboxBashExecutor')
   }
-  return { ctx, shell, calls }
+  const originalShell = Reflect.get(shell, CORDIS_ORIGINAL)
+  const shellTarget = originalShell instanceof SandboxBashExecutor ? originalShell : shell
+  const originalRun = shellTarget.run
+  const originalStart = shellTarget.start
+  const mounts: Fiber[] = []
+  for (let index = 0; index < mountCount; index += 1) {
+    mounts.push(await ctx.plugin(rtkShellPlugin, execConfig))
+  }
+  return { ctx, shell, shellTarget, calls, mounts, originalRun, originalStart }
 }

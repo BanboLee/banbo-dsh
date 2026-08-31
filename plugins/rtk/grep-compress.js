@@ -14,6 +14,14 @@ export const RTK_PIPE_TIMEOUT_MS = 5_000
 const RTK_PIPE_MAX_BUFFER_BYTES = 10 * 1024 * 1024
 
 /**
+ * Waterfall listeners nest around the same execution object. Track one
+ * in-flight chain so duplicate registrations share a single compression
+ * attempt, then forget it when the outermost listener completes.
+ * @type {WeakMap<object, { depth: number; attempted: boolean }>}
+ */
+const grepCompressionChains = new WeakMap()
+
+/**
  * Execute a file with text supplied on stdin.
  * @param {string} file
  * @param {string[]} args
@@ -62,19 +70,33 @@ export async function rtkPipeCompress(text, { rtkBinary = 'rtk', timeoutMs = RTK
  */
 export function createGrepPostExecuteListener(options = {}) {
   return async (exec, result, next) => {
-    const decision = await next()
-    if (exec.name !== 'grep' || decision.kind !== 'accept' || Object.hasOwn(decision, 'value')) {
-      return decision
+    let chain = grepCompressionChains.get(exec)
+    if (chain === undefined) {
+      chain = { depth: 0, attempted: false }
+      grepCompressionChains.set(exec, chain)
     }
-    const content = decision.content ?? result.content
-    if (content.length !== 1 || content[0]?.type !== 'text') {
-      return decision
+    chain.depth += 1
+    try {
+      const decision = await next()
+      if (chain.attempted || exec.name !== 'grep' || decision.kind !== 'accept' || Object.hasOwn(decision, 'value')) {
+        return decision
+      }
+      const content = decision.content ?? result.content
+      if (content.length !== 1 || content[0]?.type !== 'text') {
+        return decision
+      }
+      chain.attempted = true
+      const text = content[0].text
+      const compressed = await rtkPipeCompress(text, options)
+      if (compressed === text) {
+        return decision
+      }
+      return { ...decision, content: [{ ...content[0], text: compressed }] }
+    } finally {
+      chain.depth -= 1
+      if (chain.depth === 0) {
+        grepCompressionChains.delete(exec)
+      }
     }
-    const text = content[0].text
-    const compressed = await rtkPipeCompress(text, options)
-    if (compressed === text) {
-      return decision
-    }
-    return { ...decision, content: [{ ...content[0], text: compressed }] }
   }
 }
