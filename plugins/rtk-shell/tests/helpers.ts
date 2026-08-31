@@ -4,11 +4,12 @@ import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeAll } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox'
 import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, SandboxMode, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
-import RtkShellExecutor from '../index.js'
+import rtkShellPlugin from '../index.js'
 
 const FIXTURES_BIN = fileURLToPath(new URL('../../../tests/fixtures/bin/', import.meta.url))
 const UNIX_SIGNATURES = ['read-only file system', 'permission denied'] as const
@@ -24,7 +25,7 @@ export interface ConfineCall {
 
 export interface RtkShellHarness {
   readonly ctx: Context
-  readonly shell: RtkShellExecutor
+  readonly shell: SandboxBashExecutor
   readonly calls: ConfineCall[]
 }
 
@@ -83,10 +84,14 @@ export async function createRtkShellHarness(
     throw new TypeError('expected LocalSubprocessRuntime')
   }
   subprocess.internals = { spillDir }
-  await ctx.plugin(RtkShellExecutor, { graceMs: 200, ...execConfig })
+  // Mount a REAL base shell provider as ctx.shell, then decorate it with the
+  // rtk function plugin (design A1: the plugin wraps the live ctx.shell's
+  // run/start instead of replacing the shell provider).
+  await ctx.plugin(SandboxBashExecutor, { graceMs: 200 })
+  await ctx.plugin(rtkShellPlugin, execConfig)
   const shell = ctx.shell
-  if (!(shell instanceof RtkShellExecutor)) {
-    throw new TypeError('expected RtkShellExecutor')
+  if (!(shell instanceof SandboxBashExecutor)) {
+    throw new TypeError('expected SandboxBashExecutor')
   }
   return { ctx, shell, calls }
 }

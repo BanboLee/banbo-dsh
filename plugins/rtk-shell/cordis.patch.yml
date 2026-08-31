@@ -1,14 +1,12 @@
-# dsh-rtk-shell bundle: make rtk the shell executor instead of bash.
+# dsh-rtk-shell bundle: decorate the mounted shell executor with `rtk rewrite`.
 #
-# Disables the base bash-sandbox executor and mounts the rtk-shell executor
-# (a `SandboxBashExecutor` subclass) as the single `ctx.shell` provider. The
-# sandbox service (`ctx.sandbox`), sandbox policy (`ctx.sandboxPolicy`), and
-# subprocess runtime are untouched, so sandbox confinement and every result
-# fact are inherited. Exactly one shell provider remains mounted; mounting a
-# second would fail loud on a duplicate service registration.
-- id: bash-sandbox
-  disabled: true
-
+# This bundle does NOT mount a shell provider. It loads a plain function
+# plugin that injects the live `ctx.shell` and wraps its `run`/`start` methods
+# so every command is transparently rewritten through `rtk rewrite` before the
+# delegate executes it. Because it decorates instead of replacing, it coexists
+# with whichever shell executor the host mounts (bash-sandbox, fish-shell, ...)
+# — exactly one `ctx.shell` provider remains mounted and no duplicate service
+# registration can occur.
 - insert:
     - id: rtk-shell
       name: dsh-rtk-shell
