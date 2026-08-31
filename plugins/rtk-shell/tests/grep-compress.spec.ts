@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import rtkShellPlugin, { Config, createGrepPostExecuteListener, inject, rtkPipeCompress } from '../index.js'
@@ -45,6 +46,23 @@ describe('rtkPipeCompress()', () => {
 
     expect(output).toBe(INPUT)
     expect(performance.now() - startedAt).toBeLessThan(2_000)
+  })
+
+  it('does not crash when the child exits before consuming large input', () => {
+    const moduleUrl = new URL('../grep-compress.js', import.meta.url).href
+    const script = `
+      import { rtkPipeCompress } from ${JSON.stringify(moduleUrl)}
+      const input = 'grep result\\n'.repeat(150_000)
+      const output = await rtkPipeCompress(input, { rtkBinary: '/bin/false', timeoutMs: 100 })
+      if (output !== input) process.exit(2)
+    `
+
+    const child = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
+      encoding: 'utf8',
+      timeout: 2_000,
+    })
+
+    expect(child.status, child.stderr).toBe(0)
   })
 
   it('fails open when rtk is missing', async () => {

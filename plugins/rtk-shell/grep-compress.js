@@ -10,11 +10,14 @@ import { promisify } from 'node:util'
 /** Default bound on a single `rtk pipe` call before failing open. */
 export const RTK_PIPE_TIMEOUT_MS = 5_000
 
+/** Explicit output ceiling matching rtk's own 10 MiB RAW_CAP. */
+const RTK_PIPE_MAX_BUFFER_BYTES = 10 * 1024 * 1024
+
 /**
  * Execute a file with text supplied on stdin.
  * @param {string} file
  * @param {string[]} args
- * @param {{ timeout: number }} options
+ * @param {{ timeout: number; maxBuffer: number }} options
  * @param {string} input
  * @param {(error: Error | null, result?: { stdout: string; stderr: string }) => void} callback
  */
@@ -22,6 +25,7 @@ function execFileWithInput(file, args, options, input, callback) {
   const child = execFile(file, args, options, (error, stdout, stderr) => {
     callback(error, { stdout, stderr })
   })
+  child.stdin.on('error', () => {})
   child.stdin.end(input)
 }
 
@@ -36,7 +40,12 @@ const execFileWithInputAsync = promisify(execFileWithInput)
  */
 export async function rtkPipeCompress(text, { rtkBinary = 'rtk', timeoutMs = RTK_PIPE_TIMEOUT_MS } = {}) {
   try {
-    const result = await execFileWithInputAsync(rtkBinary, ['pipe', '-f', 'grep'], { timeout: timeoutMs }, text)
+    const result = await execFileWithInputAsync(
+      rtkBinary,
+      ['pipe', '-f', 'grep'],
+      { timeout: timeoutMs, maxBuffer: RTK_PIPE_MAX_BUFFER_BYTES },
+      text,
+    )
     return result.stdout
   } catch {
     return text

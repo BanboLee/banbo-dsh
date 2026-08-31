@@ -25,9 +25,10 @@ export const name = 'rtk-shell'
 export const inject = ['shell', 'tools']
 
 /**
- * Plugin configuration schema: the three rtk oracle knobs. A plain object
+ * Plugin configuration schema: four rtk integration knobs. A plain object
  * implementing the standard-schema interface (no external validator): unknown
- * keys are ignored and the three knobs are normalized with their defaults.
+ * keys are ignored; rewrite settings plus grep post-execute compression are
+ * normalized with their defaults.
  */
 export const Config = {
   '~standard': {
@@ -56,7 +57,8 @@ export const Config = {
  * like the baseline). Deny fails closed with a deterministic `RtkDenyError`
  * (foreground) or a killed, noted process (background) and zero delegate
  * calls; exit-3 `ask` is implemented as rewrite-with-note. The originals are
- * restored when this plugin unloads (Cordis fiber effect).
+ * restored when this plugin unloads (Cordis fiber effect). When enabled, grep
+ * results are also compressed after downstream post-execute listeners run.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
  * @param {object} [config] - validated config; falls back to defaults.
