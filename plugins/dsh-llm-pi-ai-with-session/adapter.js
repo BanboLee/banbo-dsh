@@ -6,7 +6,7 @@
  * @module dsh-llm-pi-ai-with-session/adapter
  */
 
-import { attributionHeaders, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
+import { attributionHeaders, contentHasImage, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import { streamSimple } from '@earendil-works/pi-ai/compat'
 import { toContext } from './context.js'
 import { toStreamChunks } from './stream.js'
@@ -21,6 +21,34 @@ const DEFAULT_MAX_TOKENS = 32_768
 const DEFAULT_REASONING_EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
 
 /**
+ * Every thinking level pi-ai knows, in its precedence order. Levels absent
+ * from the advertised efforts are pinned to `null` (unsupported) in the wire
+ * map so the advertised and wire capabilities never diverge.
+ */
+const ALL_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+/**
+ * The wire dispatch for reasoning levels: each advertised level maps to its
+ * own spelling (so xhigh/max are actually sendable), every other level is
+ * pinned to `null`. `off` stays absent — pi-ai reads that as "supported, send
+ * nothing", the correct dispatch where not thinking is the parameter's absence.
+ * @param efforts - advertised reasoning effort ids.
+ * @returns the pi-ai `thinkingLevelMap`, or `undefined` when nothing is advertised.
+ */
+function buildThinkingLevelMap(efforts) {
+  if (efforts.length === 0) return undefined
+  const map = {}
+  for (const level of ALL_THINKING_LEVELS) {
+    if (efforts.includes(level)) {
+      if (level !== 'off') map[level] = level
+    } else {
+      map[level] = null
+    }
+  }
+  return map
+}
+
+/**
  * Build the pi-ai Model descriptor for one request model id. The descriptor
  * carries the route's gateway and the openai-completions wire protocol, so
  * pi-ai's `streamSimple` dispatches to the OpenAI-compatible implementation
@@ -31,6 +59,7 @@ const DEFAULT_REASONING_EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max
  */
 function buildModel(config, modelId) {
   const entry = config.models?.find(model => model.id === modelId)
+  const thinkingLevelMap = buildThinkingLevelMap(config.reasoningEfforts ?? DEFAULT_REASONING_EFFORTS)
   return {
     id: modelId,
     name: entry?.name ?? modelId,
@@ -39,6 +68,7 @@ function buildModel(config, modelId) {
     baseUrl: config.baseURL,
     reasoning: true,
     input: ['text'],
+    ...thinkingLevelMap === undefined ? {} : { thinkingLevelMap },
     cost: NO_COST,
     contextWindow: entry?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     maxTokens: entry?.maxTokens ?? DEFAULT_MAX_TOKENS,
@@ -120,6 +150,12 @@ export class SessionHeaderAdapter extends LlmAdapter {
       )
     }
     const model = buildModel(this.config, options.model)
+    // This route only accepts text, so image content is rejected up front with
+    // a loud UNSUPPORTED_CONTENT instead of being silently dropped or rounded
+    // into an opaque error.
+    if (options.messages.some(message => contentHasImage(message.content)) && !model.input.includes('image')) {
+      throw new LlmError(`dsh-llm-pi-ai-with-session: model "${model.id}" does not accept image input`, 'UNSUPPORTED_CONTENT')
+    }
     const context = toContext(options)
     const events = streamSimple(model, context, {
       apiKey,
@@ -130,6 +166,6 @@ export class SessionHeaderAdapter extends LlmAdapter {
       ...options.temperature === undefined ? {} : { temperature: options.temperature },
       ...options.reasoningEffort === undefined ? {} : { reasoning: options.reasoningEffort },
     })
-    yield* toStreamChunks(events)
+    yield* toStreamChunks(events, model.contextWindow)
   }
 }

@@ -8,6 +8,15 @@
  * @module dsh-llm-pi-ai-with-session/stream
  */
 
+import {
+  CONTEXT_WINDOW_EXCEEDED_CODE,
+  EMPTY_RESPONSE_CODE,
+  isContextWindowExceededError,
+  isQuotaExceededError,
+  QUOTA_EXCEEDED_CODE,
+} from '@deepseek-ai/dsh-llm'
+import { isContextOverflow } from '@earendil-works/pi-ai'
+
 /** Map pi-ai usage into harness token counts. */
 function mapUsage(usage) {
   return {
@@ -22,6 +31,9 @@ function mapUsage(usage) {
 /** Classify a pi-ai error message into a harness LlmError code. */
 function classifyPiAiError(message) {
   if (/\b(?:401|403)\b/.test(message)) return 'AUTH'
+  // Terminal quota/balance wording is not a transient rate limit: resending
+  // cannot succeed, so it must be classified before the 429/rate-limit check.
+  if (isQuotaExceededError(message)) return QUOTA_EXCEEDED_CODE
   if (/rate.?limit|429/i.test(message)) return 'RATE_LIMIT'
   if (/\b413\b|payload too large|request body too large/i.test(message)) return 'INVALID_REQUEST'
   if (/\b400\b|invalid.?request/i.test(message)) return 'INVALID_REQUEST'
@@ -38,15 +50,32 @@ function classifyPiAiError(message) {
 /**
  * Map a terminal pi-ai event to the harness finish reason.
  * @param message - the assistant message carried by the `done` or `error` event.
+ * @param contextWindow - resolved model capacity for usage-based overflow detection.
  * @returns the mapped harness reason.
  */
-function mapStopReason(message) {
+function mapStopReason(message, contextWindow) {
+  // Context overflow must be recognized before the generic error switch: the
+  // harness only auto-compacts on CONTEXT_WINDOW_EXCEEDED, so long sessions
+  // can recover instead of dead-ending on PI_AI_ERROR.
+  const piAiOverflow = isContextOverflow(message, contextWindow)
+  const harnessOverflow = message.stopReason === 'error'
+    && message.errorMessage !== undefined
+    && isContextWindowExceededError(message.errorMessage)
+  if (piAiOverflow || harnessOverflow) {
+    return {
+      kind: 'error',
+      failure: {
+        message: message.errorMessage ?? `pi-ai detected context overflow for model "${message.model}"`,
+        code: CONTEXT_WINDOW_EXCEEDED_CODE,
+      },
+    }
+  }
   switch (message.stopReason) {
     case 'stop':
       if (message.content.length === 0) {
         return {
           kind: 'error',
-          failure: { message: `model "${message.model}" returned a completed response with no content`, code: 'EMPTY_RESPONSE' },
+          failure: { message: `model "${message.model}" returned a completed response with no content`, code: EMPTY_RESPONSE_CODE },
         }
       }
       return { kind: 'stop' }
@@ -67,9 +96,10 @@ function mapStopReason(message) {
 /**
  * Translate the pi-ai event stream into StreamChunks.
  * @param events - one assistant turn's pi-ai event stream.
+ * @param contextWindow - resolved model capacity for usage-based overflow detection.
  * @returns the harness chunks, ending with `usage` then `finish`.
  */
-export async function* toStreamChunks(events) {
+export async function* toStreamChunks(events, contextWindow) {
   const toolIds = new Map()
   for await (const event of events) {
     switch (event.type) {
@@ -126,11 +156,11 @@ export async function* toStreamChunks(events) {
         break
       case 'done':
         yield { type: 'usage', usage: mapUsage(event.message.usage) }
-        yield { type: 'finish', reason: mapStopReason(event.message) }
+        yield { type: 'finish', reason: mapStopReason(event.message, contextWindow) }
         return
       case 'error':
         yield { type: 'usage', usage: mapUsage(event.error.usage) }
-        yield { type: 'finish', reason: mapStopReason(event.error) }
+        yield { type: 'finish', reason: mapStopReason(event.error, contextWindow) }
         return
       default:
         break

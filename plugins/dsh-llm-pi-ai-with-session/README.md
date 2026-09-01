@@ -81,9 +81,10 @@ agent-default-model:
 
 ## 行为细节
 
-- **消息转换**：`GenerateOptions.messages` → pi-ai Context（文本、工具、工具结果、assistant 重放）。系统提示走 `options.system` → pi-ai 的 `systemPrompt` 槽；历史中的 system 消息折叠为 user 消息以保持顺序。图片块会以 `UNSUPPORTED_CONTENT` 风格错误拒绝（当前版本未实现图片上送）。
+- **消息转换**：`GenerateOptions.messages` → pi-ai Context（文本、工具、工具结果、assistant 重放）。系统提示走 `options.system` → pi-ai 的 `systemPrompt` 槽；历史中的 system 消息折叠为 user 消息以保持顺序。图片内容在发请求前被显式拒绝（`UNSUPPORTED_CONTENT`），不会静默丢弃（assistant 图片同样拒绝，作为纵深防御）。
 - **事件转换**：pi-ai 的 `AssistantMessageEventStream` → harness `StreamChunk`（text / reasoning / tool-call 增量、usage、finish）。工具参数从 pi-ai 的已解析对象序列化回 raw JSON 字符串。
-- **错误映射**：把 pi-ai 的错误文案归类为 harness 的 `LlmError` code（`AUTH` / `RATE_LIMIT` / `INVALID_REQUEST` / `SERVER` / `TIMEOUT` / `TRANSPORT` 等）。
+- **错误映射**：把 pi-ai 的错误文案归类为 harness 的 `LlmError` code——上下文超限归 `CONTEXT_WINDOW_EXCEEDED`（触发 harness 自动压缩）、配额/余额耗尽归 `QUOTA`、`429`/限流归 `RATE_LIMIT`，其余按 `AUTH` / `INVALID_REQUEST` / `SERVER` / `TIMEOUT` / `TRANSPORT` 归类。
+- **推理档位**：`reasoningEfforts` 声明的档位与线上能力一致，`xhigh` / `max` 会真实发送（经 pi-ai 的 `thinkingLevelMap`），不会被钳到 `high`。
 - **只支持 openai-completions**：内部固定使用 pi-ai 的 `openai-completions` 线上实现。如果你还需要 `openai-responses` / `anthropic-messages`，需要扩展 `buildModel` 的 `api` 字段。
 
 ## 开发 / 测试
@@ -104,6 +105,6 @@ env -u NODE_ENV npx vitest run plugins/dsh-llm-pi-ai-with-session
 
 ## 限制
 
-- 仅支持文本 + 工具调用；图片上送未实现。
+- 仅支持文本 + 工具调用；图片上送未实现，图片输入会以 `UNSUPPORTED_CONTENT` 显式拒绝。
 - 只复用 pi-ai 的 openai-completions 实现，不支持其它线上协议。
 - provider 路由名不能与其它已注册路由冲突。

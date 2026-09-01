@@ -4,6 +4,8 @@
  * @module dsh-llm-pi-ai-with-session/context
  */
 
+import { LlmError } from '@deepseek-ai/dsh-llm'
+
 /**
  * Join the text blocks of one harness message.
  * @param content - harness content blocks.
@@ -47,7 +49,9 @@ function toPiAssistant(message) {
         break
       }
       case 'image':
-        throw new Error('dsh-llm-pi-ai-with-session: assistant image output is not supported')
+        // Defense in depth: the adapter already rejects image input up front;
+        // an assistant image reaching here still fails loudly, never silently.
+        throw new LlmError('dsh-llm-pi-ai-with-session: assistant image output is not supported', 'UNSUPPORTED_CONTENT')
       default:
         // Unknown merge-extensible block: not representable in pi-ai history.
         break

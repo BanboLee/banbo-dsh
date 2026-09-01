@@ -199,4 +199,73 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     expect(resolved.name).toBe('Demo Model')
     expect(resolved.context).toEqual({ contextWindow: 1_000_000 })
   })
+
+  it('fails loudly with UNSUPPORTED_CONTENT when a user message carries an image', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { stream } = await createHarness({ baseURL: gateway.url })
+
+    const chunks = await stream({
+      provider: 'pi-ai-session',
+      model: 'demo-model',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look at this' },
+          { type: 'image', attachment: { attachmentId: 'a', bytes: 1, mimeType: 'image/png' } },
+        ],
+        id: 'm-img',
+        source: { kind: 'user' },
+      }],
+      sessionId: 'session-1',
+    })
+
+    // The image must never reach the gateway: the adapter rejects it up front.
+    expect(gateway.headers).toHaveLength(0)
+    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
+    const reason = (finish as { reason?: { kind?: string; failure?: { code?: string } } } | undefined)?.reason
+    expect(reason?.kind).toBe('error')
+    expect(reason?.failure?.code).toBe('UNSUPPORTED_CONTENT')
+  })
+
+  it('fails loudly with UNSUPPORTED_CONTENT when an assistant message carries an image', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { stream } = await createHarness({ baseURL: gateway.url })
+
+    const chunks = await stream({
+      provider: 'pi-ai-session',
+      model: 'demo-model',
+      messages: [{
+        role: 'assistant',
+        content: [{ type: 'image', attachment: { attachmentId: 'a', bytes: 1, mimeType: 'image/png' } }],
+        id: 'm-img-assistant',
+        source: { kind: 'model', provider: 'pi-ai-session', model: 'demo-model' },
+      }],
+      sessionId: 'session-1',
+    })
+
+    expect(gateway.headers).toHaveLength(0)
+    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
+    const reason = (finish as { reason?: { kind?: string; failure?: { code?: string } } } | undefined)?.reason
+    expect(reason?.kind).toBe('error')
+    expect(reason?.failure?.code).toBe('UNSUPPORTED_CONTENT')
+  })
+
+  it('sends an xhigh reasoning effort to the gateway instead of clamping it down', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { stream } = await createHarness({ baseURL: gateway.url })
+
+    await stream({
+      provider: 'pi-ai-session',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-1',
+      reasoningEffort: 'xhigh',
+    })
+
+    const body = gateway.requests[0] as { reasoning_effort?: string }
+    expect(body.reasoning_effort).toBe('xhigh')
+  })
 })
