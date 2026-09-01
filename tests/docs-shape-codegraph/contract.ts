@@ -16,6 +16,7 @@ export const REQUIRED_HEADINGS = [
   'Usage',
   'Config',
   'Profile override for project path',
+  'Agent instructions',
   'Model Experience',
   'Known Limitations and Deferred Work',
   'Verification',
@@ -50,7 +51,7 @@ export function configRowChecks(readme: string): string[] {
  */
 export function overrideRowChecks(readme: string): string[] {
   const failures: string[] = []
-  const yaml = extractYamlBlock(rawSection(readme, 'Profile override for project path', 'Model Experience'))
+  const yaml = extractYamlBlock(rawSection(readme, 'Profile override for project path', 'Agent instructions'))
   const lineValue = (pattern: RegExp): string | undefined => {
     const match = pattern.exec(yaml)
     return match === null ? undefined : match[1]
@@ -129,6 +130,38 @@ export function noNetworkChecks(limits: string): string[] {
 }
 
 /**
+ * Bind the Agent-instructions section: it must name the shipped block file and
+ * the idempotent install script, explain WHY the block exists (the DSH bridge
+ * does not consume the MCP initialize instructions), and point agents at the
+ * server-qualified tool. No sentence may claim the bridge surfaces those
+ * instructions to the model.
+ */
+export function agentInstructionsChecks(readme: string): string[] {
+  const failures: string[] = []
+  const sectionText = rawSection(readme, 'Agent instructions', 'Model Experience')
+  const normalized = section(readme, 'Agent instructions', 'Model Experience')
+  if (!sectionText.includes('instructions/CODEGRAPH.md')) {
+    failures.push('Agent instructions must name the shipped block file instructions/CODEGRAPH.md')
+  }
+  if (!sectionText.includes('scripts/install-codegraph-instructions.sh')) {
+    failures.push('Agent instructions must document the install script scripts/install-codegraph-instructions.sh')
+  }
+  if (!sectionText.includes('<!-- CODEGRAPH_START/END -->') && !sectionText.includes('CODEGRAPH_START')) {
+    failures.push('Agent instructions must state the write is marker-fenced (CODEGRAPH_START/END)')
+  }
+  if (!sectionText.includes('mcp__codegraph__codegraph_explore')) {
+    failures.push('Agent instructions must point agents at mcp__codegraph__codegraph_explore')
+  }
+  if (!/does NOT consume those instructions|does not consume.*instructions/i.test(normalized)) {
+    failures.push('Agent instructions must explain the DSH bridge does not consume initialize instructions')
+  }
+  if (/surfaces? (?:those|the|its) instructions|instructions.*reach(?:es)? the model/i.test(normalized)) {
+    failures.push('Agent instructions contradicts itself: initialize instructions asserted as reaching the model')
+  }
+  return failures
+}
+
+/**
  * Validate every documentation behavior contract of the README. Returns a
  * non-empty list of failure messages when any required commitment is missing
  * or wrong; an empty list means the README satisfies the contract.
@@ -161,11 +194,15 @@ export function validateCodegraphReadmeContract(readme: string): string[] {
   }
 
   // Profile override: whole-config replacement restating every field.
-  const override = section(readme, 'Profile override for project path', 'Model Experience')
+  const override = section(readme, 'Profile override for project path', 'Agent instructions')
   if (!/(?:no deep merge|whole-config replacement|last write wins)/.test(override)) {
     failures.push('profile override section must state whole-config replacement (no deep merge)')
   }
   failures.push(...overrideRowChecks(readme))
+
+  // Agent instructions: the marker-fenced block and install script, plus the
+  // reason it exists (DSH bridge does not consume initialize instructions).
+  failures.push(...agentInstructionsChecks(readme))
 
   // Model Experience: only server-qualified tools surfaced; raw names never.
   const experience = section(readme, 'Model Experience', 'Known Limitations and Deferred Work')

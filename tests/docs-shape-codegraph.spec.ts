@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
   REQUIRED_HEADINGS,
+  agentInstructionsChecks,
   configRowChecks,
   noNetworkChecks,
   overrideRowChecks,
@@ -67,8 +68,17 @@ describe('dsh-codegraph-mcp README shape', () => {
 
   it('requires the profile override to restate every row field with --path', () => {
     expect(overrideRowChecks(README)).toEqual([])
-    const override = section(README, 'Profile override for project path', 'Model Experience')
+    const override = section(README, 'Profile override for project path', 'Agent instructions')
     expect(override).toMatch(/(?:no deep merge|whole-config replacement|last write wins)/)
+  })
+
+  it('documents the Agent instructions block, install script, and why it exists', () => {
+    expect(agentInstructionsChecks(README)).toEqual([])
+    const block = section(README, 'Agent instructions', 'Model Experience')
+    expect(block).toContain('instructions/CODEGRAPH.md')
+    expect(block).toContain('scripts/install-codegraph-instructions.sh')
+    expect(block).toContain('mcp__codegraph__codegraph_explore')
+    expect(block).toMatch(/does NOT consume/i)
   })
 
   it('scopes Model Experience to observed server-qualified tools only', () => {
