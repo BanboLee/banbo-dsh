@@ -18,12 +18,40 @@ export interface RealProfileProof {
 }
 
 export interface ShellRunResultLike {
-  readonly stdout: { readonly text: string }
-  readonly stderr: { readonly text: string }
+  readonly exitCode: number | null
+  readonly signal: string | null
+  readonly timedOut: boolean
+  readonly aborted: boolean
+  readonly timeoutMs: number
+  readonly stdout: {
+    readonly text: string
+    readonly truncated: boolean
+    readonly spillPath?: string
+  }
+  readonly stderr: {
+    readonly text: string
+    readonly truncated: boolean
+    readonly spillPath?: string
+  }
+  readonly sandbox?: {
+    readonly mode: string
+    readonly denied: boolean
+    readonly enforcement?: string
+  }
 }
 
 interface ShellLike {
-  resolve(request: { readonly command: string }): unknown
+  resolve(request: {
+    readonly command: string
+    readonly workdir?: string
+    readonly timeoutMs?: number
+    readonly env?: Readonly<Record<string, string>>
+    readonly dshEnv?: Readonly<Record<string, string>>
+    readonly sandboxPolicy?: {
+      readonly mode: string
+      readonly workspaceRoot: string
+    }
+  }): unknown
   run(spec: unknown): Promise<ShellRunResultLike>
 }
 
@@ -32,6 +60,10 @@ interface ToolRuntimeLike {
   execute(input: { readonly callId: string; readonly name: string; readonly arguments: unknown; readonly signal: AbortSignal }): Promise<{
     readonly isError: boolean
     readonly value?: unknown
+    readonly content: readonly {
+      readonly type: string
+      readonly text?: string
+    }[]
     readonly error?: { readonly message: string }
   }>
 }
@@ -53,13 +85,13 @@ export interface BootContext {
   get(name: 'loader'): LoaderLike | undefined
 }
 
-interface LoadedProfile {
+export interface LoadedProfile {
   readonly dir: string
   readonly layers: Array<{ readonly packageName: string; readonly packageDir: string; readonly patchPath: string; readonly patches: unknown[] }>
   readonly patches: unknown[]
 }
 
-interface AppBootModule {
+export interface AppBootModule {
   initProfile(dir: string, bundles: string[]): void
   loadProfile(binName: string, name: string, installAnchor: string, home: string): LoadedProfile
   healProfilesModuleFallback(installAnchor: string, home: string): void
@@ -71,7 +103,7 @@ export interface LoadedDshProfile {
   readonly proof: RealProfileProof
 }
 
-function isAppBootModule(value: unknown): value is AppBootModule {
+export function isAppBootModule(value: unknown): value is AppBootModule {
   if (typeof value !== 'object' || value === null) return false
   const module = value as Partial<Record<keyof AppBootModule, unknown>>
   return typeof module.initProfile === 'function'
@@ -89,7 +121,7 @@ function findExecutable(name: string, pathValue = process.env.PATH ?? ''): strin
   throw new Error(`${name} not found on PATH`)
 }
 
-async function loadAppBoot(dshBin: string): Promise<{ readonly appBoot: AppBootModule; readonly installAnchor: string }> {
+export async function loadAppBoot(dshBin: string): Promise<{ readonly appBoot: AppBootModule; readonly installAnchor: string }> {
   const packageRoot = dirname(dirname(realpathSync(dshBin)))
   const appBootUrl = pathToFileURL(join(packageRoot, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')).href
   const loaded: unknown = await import(appBootUrl)
