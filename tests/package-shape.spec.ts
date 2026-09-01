@@ -45,6 +45,16 @@ const bundleExpectations: readonly BundleExpectation[] = [
       '@deepseek-ai/dsh-mcp-client': '^0.1.1-rc.2',
     },
   },
+  {
+    directory: 'plugins/dsh-llm-session-header',
+    packageName: 'dsh-llm-session-header',
+    files: ['index.js', 'adapter.js', 'context.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
+    peerDependencies: {
+      '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',
+      '@deepseek-ai/dsh-llm': '^0.1.1-rc.2',
+      '@earendil-works/pi-ai': '^0.84.2',
+    },
+  },
 ] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {

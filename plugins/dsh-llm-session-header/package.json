@@ -1,0 +1,48 @@
+{
+  "name": "dsh-llm-session-header",
+  "version": "0.1.0",
+  "description": "LLM session-id header injection for DeepSeek Harness: registers a provider route whose requests carry the live session id in a configurable HTTP header, reusing the pi-ai openai-completions wire implementation so a gateway can correlate every request with its dsh session.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "adapter.js",
+    "context.js",
+    "stream.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.1 <5.0.0-0",
+    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
+    "@earendil-works/pi-ai": "^0.84.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
+    "@earendil-works/pi-ai": "^0.84.2",
+    "@types/node": "^22.20.1",
+    "yaml": "^2.8.0"
+  },
+  "keywords": [
+    "dsh",
+    "plugin",
+    "llm",
+    "session",
+    "header",
+    "bundle"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
+}
