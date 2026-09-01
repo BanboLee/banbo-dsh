@@ -4,9 +4,11 @@
   "private": true,
   "description": "Local DeepSeek Harness plugin bundles (rtk, codegraph-mcp) with a deterministic test harness.",
   "type": "module",
+  "packageManager": "pnpm@9.3.0",
   "scripts": {
     "test": "vitest run",
-    "test:harness": "vitest run tests/harness.spec.ts"
+    "test:harness": "vitest run tests/harness.spec.ts",
+    "test:e2e:headless": "RUN_REAL_HEADLESS_E2E=1 vitest run tests/e2e"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

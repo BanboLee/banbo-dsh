@@ -188,3 +188,28 @@ describe('Task-5 install surface', () => {
     }
   })
 })
+
+describe('real headless E2E discoverability', () => {
+  it('exposes and documents the opt-in fail-loud command and binary overrides', () => {
+    // Given the root package manifest and README
+    const manifest: unknown = JSON.parse(readRepoFile('package.json'))
+    if (!isRecord(manifest)) throw new TypeError('root package.json is not an object')
+    const scripts = stringRecordField(manifest, 'scripts')
+    const packageManager = stringField(manifest, 'packageManager')
+    const readme = readRepoFile('README.md')
+
+    // When the real headless E2E entry point is inspected
+    const command = scripts['test:e2e:headless']
+
+    // Then the gate and every executable override are discoverable
+    expect(command).toBe('RUN_REAL_HEADLESS_E2E=1 vitest run tests/e2e')
+    expect(packageManager).toBe('pnpm@9.3.0')
+    expect(readme).toContain('test:e2e:headless')
+    expect(readme).toContain('corepack pnpm')
+    expect(readme).toContain('DSH_REAL_E2E_DSH_BIN')
+    expect(readme).toContain('DSH_REAL_E2E_NODE_BIN')
+    expect(readme).toContain('DSH_REAL_E2E_RTK_BIN')
+    expect(readme).toContain('DSH_REAL_E2E_CODEGRAPH_BIN')
+    expect(readme).toContain('fail')
+  })
+})
