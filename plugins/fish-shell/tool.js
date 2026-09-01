@@ -66,7 +66,55 @@ const TOOL_DESCRIPTION = `Execute a fish shell command (\`fish -c\`) and return 
 - Command substitution: \`(cmd)\` (fish 3 also accepts \`$(cmd)\`); arithmetic: \`math '1 + 2'\`; string processing: \`string ...\`.
 - Expansion: \`~\`, \`$VAR\`, and globs like \`*.md\` expand; an unmatched glob is an error, not a literal.
 - Commands may run under a file sandbox; a blocked file operation is reported as \`[sandbox: file access denied under <mode> mode]\`.
-- Non-zero exits are reported as \`[exit code: N]\`. Long output is truncated to its tail.`
+- Non-zero exits are reported as \`[exit code: N]\`. Long output is truncated to its tail.
+Bash idioms fish REJECTS with exit 127 — translate before running:
+  \`VAR=x\` / \`export VAR=x\`      → \`set VAR x\` / \`set -gx VAR x\`
+  \`for i in ...; do ...; done\`    → \`for i in ...; ...; end\`
+  \`if [ c ]; then ...; fi\`        → \`if test c; ...; end\`
+  \`cmd <<'EOF' ... EOF\` (heredoc) → \`printf '...' | cmd\` (fish has no heredoc)
+If fish rejects your command, retry with the fish form from the table — failed results carry a [fish syntax] hint naming the exact fix.`
+
+/**
+ * Targeted fish-syntax correction for a failed run. Models default to bash
+ * idioms; when fish rejects a command the stderr carries a diagnostic like
+ * "Unsupported use of '='. In fish, use 'set ...'". Instead of making the
+ * model guess, map the exact diagnostic to the fish form. Returns '' when
+ * there's nothing to correct.
+ */
+const FISH_SYNTAX_HINTS = [
+  {
+    pattern: /Unsupported use of '='\. In fish, please use 'set/i,
+    hint: 'bash assignment `VAR=x` → fish `set VAR x` (export: `set -gx VAR x`)',
+  },
+  {
+    pattern: /Expected a string, but found a redirection/i,
+    hint: 'bash heredoc `cmd <<EOF` has no fish equivalent — use `printf \'...\' | cmd` or `echo ... | cmd`',
+  },
+  {
+    pattern: /Missing end to balance this for loop/i,
+    hint: 'bash `for x in ...; do ...; done` → fish `for x in ...; ...; end`',
+  },
+  {
+    pattern: /Missing end to balance this if/i,
+    hint: 'bash `if [ c ]; then ...; fi` → fish `if test c; ...; end`',
+  },
+  {
+    pattern: /Unexpected end of string, quotes are not balanced/i,
+    hint: 'unbalanced quotes — fish strings must close (`"..."` or `\'...\'`); check escaping',
+  },
+  {
+    pattern: /No matches for wildcard/i,
+    hint: 'unmatched glob is an error in fish — quote the path or check the pattern (e.g. `"*.json"`)',
+  },
+]
+
+/** Find a fish syntax hint for one stderr text, or '' when none applies. */
+function fishSyntaxHint(stderrText) {
+  for (const { pattern, hint } of FISH_SYNTAX_HINTS) {
+    if (pattern.test(stderrText)) return hint
+  }
+  return ''
+}
 
 /**
  * Shape one finished run into the text the model sees: stdout, then a marked
@@ -92,6 +140,15 @@ function renderResult(result) {
     body += `[stderr]\n${err}`
   }
   if (body.length === 0) body = '(no output)'
+
+  // When the command failed and fish named a syntax problem, append the exact
+  // correction so the model retries in fish form instead of guessing. The exit
+  // marker alone ("[exit code: 127]") doesn't say how to fix it.
+  const syntaxHint = result.exitCode !== 0 ? fishSyntaxHint(err) : ''
+  if (syntaxHint.length > 0) {
+    if (!body.endsWith('\n')) body += '\n'
+    body += `[fish syntax] ${syntaxHint}`
+  }
 
   const markers = []
   if (result.sandbox?.denied) {
@@ -273,3 +330,8 @@ export function apply(ctx) {
     execute,
   })
 }
+
+// Deterministic test surface: the tool description and the result renderer are
+// pure, so unit tests can assert the bash→fish guidance and the syntax-hint
+// injection without booting a harness or running a live shell.
+export { FISH_SYNTAX_HINTS, TOOL_DESCRIPTION, fishSyntaxHint, renderResult }
