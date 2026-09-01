@@ -5,7 +5,7 @@
  * raw JSON representation, and reports failures as terminal stream events,
  * which this module maps into harness finish chunks.
  *
- * @module dsh-llm-session-header/stream
+ * @module dsh-llm-pi-ai-with-session/stream
  */
 
 /** Map pi-ai usage into harness token counts. */
@@ -136,5 +136,5 @@ export async function* toStreamChunks(events) {
         break
     }
   }
-  throw new Error('dsh-llm-session-header: pi-ai event stream ended without done/error')
+  throw new Error('dsh-llm-pi-ai-with-session: pi-ai event stream ended without done/error')
 }

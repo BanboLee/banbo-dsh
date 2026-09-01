@@ -13,15 +13,15 @@ installGatewayHooks()
 
 const MESSAGES = [userMessage('hello')]
 
-describe('dsh-llm-session-header adapter', () => {
+describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('sends the live session id in the configured header on the LLM request', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
     const { stream } = await createHarness({ baseURL: gateway.url })
 
     const chunks = await stream({
-      provider: 'light-session',
-      model: 'gpt-5.5',
+      provider: 'pi-ai-session',
+      model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
     })
@@ -36,7 +36,7 @@ describe('dsh-llm-session-header adapter', () => {
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
     const { stream } = await createHarness({ baseURL: gateway.url })
 
-    await stream({ provider: 'light-session', model: 'gpt-5.5', messages: MESSAGES })
+    await stream({ provider: 'pi-ai-session', model: 'demo-model', messages: MESSAGES })
 
     expect(gateway.headers).toHaveLength(1)
     expect(gateway.headers[0]?.['x-session-id']).toBeUndefined()
@@ -51,8 +51,8 @@ describe('dsh-llm-session-header adapter', () => {
     })
 
     await stream({
-      provider: 'light-session',
-      model: 'gpt-5.5',
+      provider: 'pi-ai-session',
+      model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-2',
     })
@@ -67,14 +67,14 @@ describe('dsh-llm-session-header adapter', () => {
     const { stream } = await createHarness({ baseURL: gateway.url })
 
     await stream({
-      provider: 'light-session',
-      model: 'gpt-5.5',
+      provider: 'pi-ai-session',
+      model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
     })
 
     const body = gateway.requests[0] as { model?: string; messages?: unknown[]; stream?: boolean }
-    expect(body.model).toBe('gpt-5.5')
+    expect(body.model).toBe('demo-model')
     expect(body.stream).toBe(true)
     expect(body.messages).toHaveLength(1)
   })
@@ -85,8 +85,8 @@ describe('dsh-llm-session-header adapter', () => {
     const { stream } = await createHarness({ baseURL: gateway.url })
 
     await stream({
-      provider: 'light-session',
-      model: 'gpt-5.5',
+      provider: 'pi-ai-session',
+      model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
     })
@@ -102,8 +102,8 @@ describe('dsh-llm-session-header adapter', () => {
     const { stream } = await createHarness({ baseURL: gateway.url })
 
     const chunks = await stream({
-      provider: 'light-session',
-      model: 'gpt-5.5',
+      provider: 'pi-ai-session',
+      model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
     })
@@ -127,8 +127,8 @@ describe('dsh-llm-session-header adapter', () => {
     const { stream } = await createHarness({ baseURL: gateway.url })
 
     const chunks = await stream({
-      provider: 'light-session',
-      model: 'gpt-5.5',
+      provider: 'pi-ai-session',
+      model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
     })
@@ -147,7 +147,7 @@ describe('dsh-llm-session-header adapter', () => {
     const { ctx } = await createHarness({ baseURL: gateway.url })
 
     const providers = await ctx.llm.listProviders()
-    expect(providers.some(entry => entry.id === 'light-session')).toBe(true)
+    expect(providers.some(entry => entry.id === 'pi-ai-session')).toBe(true)
   })
 
   it('fails with MISSING_CREDENTIAL when the api key env var is unset', async () => {
@@ -155,8 +155,8 @@ describe('dsh-llm-session-header adapter', () => {
     const { stream } = await createHarness({ baseURL: gateway.url })
 
     const chunks = await stream({
-      provider: 'light-session',
-      model: 'gpt-5.5',
+      provider: 'pi-ai-session',
+      model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
     })
@@ -174,8 +174,8 @@ describe('dsh-llm-session-header adapter', () => {
     const { stream } = await createHarness({ baseURL: gateway.url })
 
     await stream({
-      provider: 'light-session',
-      model: 'gpt-5.5',
+      provider: 'pi-ai-session',
+      model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
       reasoningEffort: 'high',
@@ -191,12 +191,12 @@ describe('dsh-llm-session-header adapter', () => {
     const { ctx } = await createHarness({
       baseURL: gateway.url,
       pluginConfig: {
-        models: [{ id: 'gpt-5.5', name: 'GPT-5.5', contextWindow: 1_000_000, maxTokens: 128_000 }],
+        models: [{ id: 'demo-model', name: 'Demo Model', contextWindow: 1_000_000, maxTokens: 128_000 }],
       },
     })
 
-    const resolved = await ctx.llm.resolveModelInfo('light-session', 'gpt-5.5')
-    expect(resolved.name).toBe('GPT-5.5')
+    const resolved = await ctx.llm.resolveModelInfo('pi-ai-session', 'demo-model')
+    expect(resolved.name).toBe('Demo Model')
     expect(resolved.context).toEqual({ contextWindow: 1_000_000 })
   })
 })

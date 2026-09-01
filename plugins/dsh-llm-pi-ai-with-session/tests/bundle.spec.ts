@@ -16,12 +16,12 @@ function patchRows(source: string): PatchRow[] {
   return rows.flatMap(row => row.insert ?? [row])
 }
 
-describe('dsh-llm-session-header bundle patch', () => {
-  it('inserts exactly one llm-session-header row mounting the plugin package', () => {
+describe('dsh-llm-pi-ai-with-session bundle patch', () => {
+  it('inserts exactly one llm-pi-ai-with-session row mounting the plugin package', () => {
     const rows = patchRows(readFileSync(PATCH_PATH, 'utf8'))
-    const matching = rows.filter(row => row.id === 'llm-session-header')
+    const matching = rows.filter(row => row.id === 'llm-pi-ai-with-session')
     expect(matching).toHaveLength(1)
-    expect(matching[0]?.name).toBe('dsh-llm-session-header')
+    expect(matching[0]?.name).toBe('dsh-llm-pi-ai-with-session')
   })
 
   it('does not patch llm-pi-ai or llm-deepseek rows (separate route through the adapter seam)', () => {

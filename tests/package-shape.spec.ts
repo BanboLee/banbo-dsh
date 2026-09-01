@@ -46,8 +46,8 @@ const bundleExpectations: readonly BundleExpectation[] = [
     },
   },
   {
-    directory: 'plugins/dsh-llm-session-header',
-    packageName: 'dsh-llm-session-header',
+    directory: 'plugins/dsh-llm-pi-ai-with-session',
+    packageName: 'dsh-llm-pi-ai-with-session',
     files: ['index.js', 'adapter.js', 'context.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',

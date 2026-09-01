@@ -1,5 +1,5 @@
 /**
- * Test helpers for dsh-llm-session-header: a local openai-completions mock
+ * Test helpers for dsh-llm-pi-ai-with-session: a local openai-completions mock
  * gateway plus a context assembly that mounts LlmRuntime and the plugin.
  */
 
@@ -92,9 +92,9 @@ export async function mockGateway(scripts: {
 }
 
 export interface SessionHeaderHarnessConfig {
-  /** Plugin config passed to the session-header plugin. */
+  /** Plugin config passed to the session wrapper plugin. */
   pluginConfig?: Record<string, unknown>
-  /** Extra plugins to mount before the session-header plugin. */
+  /** Extra plugins to mount before the session wrapper plugin. */
   baseURL?: string
   /** Env var holding the api key; defaults to the plugin default. */
   apiKeyEnv?: string
@@ -106,7 +106,7 @@ export interface SessionHeaderHarness {
   stream: (options: Record<string, unknown>) => Promise<unknown[]>
 }
 
-/** Mount LlmRuntime + the session-header plugin and return a drain helper. */
+/** Mount LlmRuntime + the session wrapper plugin and return a drain helper. */
 export async function createHarness(config: SessionHeaderHarnessConfig = {}): Promise<SessionHeaderHarness> {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)

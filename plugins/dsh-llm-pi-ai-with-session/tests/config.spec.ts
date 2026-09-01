@@ -8,10 +8,10 @@ function parse(value: unknown): unknown {
   return result.value
 }
 
-describe('dsh-llm-session-header Config', () => {
-  it('defaults the provider route to light-session', () => {
+describe('dsh-llm-pi-ai-with-session Config', () => {
+  it('defaults the provider route to pi-ai-session', () => {
     const config = parse({ baseURL: 'http://gateway.test/v1' }) as { provider?: string }
-    expect(config.provider).toBe('light-session')
+    expect(config.provider).toBe('pi-ai-session')
   })
 
   it('defaults the session header name to x-session-id', () => {
@@ -26,14 +26,14 @@ describe('dsh-llm-session-header Config', () => {
 
   it('keeps an explicit provider, session header, and api key env', () => {
     const config = parse({
-      provider: 'my-light',
+      provider: 'my-gateway',
       baseURL: 'http://gateway.test/v1',
       sessionHeader: 'x-dsh-session',
-      apiKeyEnv: 'LIGHT_API_KEY',
+      apiKeyEnv: 'GATEWAY_API_KEY',
     }) as { provider?: string; sessionHeader?: string; apiKeyEnv?: string }
-    expect(config.provider).toBe('my-light')
+    expect(config.provider).toBe('my-gateway')
     expect(config.sessionHeader).toBe('x-dsh-session')
-    expect(config.apiKeyEnv).toBe('LIGHT_API_KEY')
+    expect(config.apiKeyEnv).toBe('GATEWAY_API_KEY')
   })
 
   it('refuses a missing base URL', () => {

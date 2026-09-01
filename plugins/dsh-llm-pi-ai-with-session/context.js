@@ -1,7 +1,7 @@
 /**
- * GenerateOptions → pi-ai Context conversion for the session-header adapter.
+ * GenerateOptions → pi-ai Context conversion for the session wrapper adapter.
  *
- * @module dsh-llm-session-header/context
+ * @module dsh-llm-pi-ai-with-session/context
  */
 
 /**
@@ -47,7 +47,7 @@ function toPiAssistant(message) {
         break
       }
       case 'image':
-        throw new Error('dsh-llm-session-header: assistant image output is not supported')
+        throw new Error('dsh-llm-pi-ai-with-session: assistant image output is not supported')
       default:
         // Unknown merge-extensible block: not representable in pi-ai history.
         break
@@ -56,9 +56,9 @@ function toPiAssistant(message) {
   return {
     role: 'assistant',
     content,
-    api: 'dsh-session-header',
-    provider: message.source?.provider ?? 'dsh-session-header',
-    model: message.source?.model ?? 'dsh-session-header',
+    api: 'dsh-llm-pi-ai-with-session',
+    provider: message.source?.provider ?? 'dsh-llm-pi-ai-with-session',
+    model: message.source?.model ?? 'dsh-llm-pi-ai-with-session',
     usage: {
       input: 0,
       output: 0,

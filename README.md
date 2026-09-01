@@ -2,19 +2,20 @@
 
 Local DeepSeek Harness profile bundles for this checkout.
 
-## Install RTK and CodeGraph MCP bundles
+## Install RTK, CodeGraph MCP, and session wrapper bundles
 
 Install either bundle into a DSH profile from the repository root:
 
 ```sh
 dsh plugin --profile <profile> add -w ./plugins/rtk
 dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp
-dsh plugin --profile <profile> add -w ./plugins/dsh-llm-session-header
+dsh plugin --profile <profile> add -w ./plugins/dsh-llm-pi-ai-with-session
 ```
 
-`dsh-llm-session-header` 注册一个 LLM provider 路由（默认 `light-session`），复用 pi-ai
-的 openai-completions 实现并在每次请求里带上可配置的会话 header（默认 `x-session-id`）；
-见 [plugins/dsh-llm-session-header/README.md](plugins/dsh-llm-session-header/README.md)。
+`dsh-llm-pi-ai-with-session` 是 `llm-pi-ai` 的一个通用 session wrapper：注册一个
+LLM provider 路由（默认 `pi-ai-session`），复用 pi-ai 的 openai-completions 实现并在
+每次请求里带上可配置的会话 header（默认 `x-session-id`）；
+见 [plugins/dsh-llm-pi-ai-with-session/README.md](plugins/dsh-llm-pi-ai-with-session/README.md)。
 
 To install both local bundles in one command while keeping profile state
 explicit, use:

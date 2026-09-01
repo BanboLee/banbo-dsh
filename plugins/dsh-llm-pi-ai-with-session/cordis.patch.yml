@@ -1,16 +1,16 @@
-# dsh-llm-session-header bundle: mount the session-id-header LLM provider route.
+# dsh-llm-pi-ai-with-session bundle: mount the session wrapper LLM provider route.
 #
-# The plugin registers one provider route (default `light-session`) whose
+# The plugin registers one provider route (default `pi-ai-session`) whose
 # requests carry the live dsh session id in a configurable HTTP header
 # (default `x-session-id`). The route reuses pi-ai's openai-completions wire
 # implementation against the configured gateway, so the models configured on
-# the route (e.g. the local `light` gateway's gpt-5.5 family) keep working
-# unchanged while every request additionally identifies its dsh session.
+# the route keep working unchanged while every request additionally
+# identifies its dsh session.
 #
 # The route is INSERTED as a plugin row, not patched into llm-pi-ai: the
-# harness's own adapter owns the `light`/`deepseek` routes and withholds the
+# harness's own adapter owns the existing pi-ai routes and withholds the
 # session-affinity compat switch, so a separate route registered through the
 # public `ctx.llm.registerAdapter` seam is the supported extension point.
 - insert:
-    - id: llm-session-header
-      name: dsh-llm-session-header
+    - id: llm-pi-ai-with-session
+      name: dsh-llm-pi-ai-with-session

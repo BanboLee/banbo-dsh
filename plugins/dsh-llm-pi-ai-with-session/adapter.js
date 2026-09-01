@@ -3,7 +3,7 @@
  * openai-completions wire implementation and stamps the live dsh session id
  * into a configurable request header.
  *
- * @module dsh-llm-session-header/adapter
+ * @module dsh-llm-pi-ai-with-session/adapter
  */
 
 import { attributionHeaders, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
@@ -114,7 +114,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
       : process.env[this.config.apiKeyEnv]
     if (apiKey === undefined || apiKey.length === 0) {
       throw new LlmError(
-        `dsh-llm-session-header: no API key for provider route "${options.provider}";`
+        `dsh-llm-pi-ai-with-session: no API key for provider route "${options.provider}";`
         + ` set ${this.config.apiKeyEnv ?? '<none>'} in the environment`,
         'MISSING_CREDENTIAL',
       )
