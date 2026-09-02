@@ -3,6 +3,10 @@
  * openai-completions wire implementation and stamps the live dsh session id
  * into a configurable request header.
  *
+ * The adapter owns one route per mirrored llm-pi-ai provider (named
+ * `<source><suffix>`); every request dispatches on the hit route back to its
+ * source provider's gateway, credential, models, and reasoning defaults.
+ *
  * @module dsh-llm-pi-ai-with-session/adapter
  */
 
@@ -49,24 +53,51 @@ function buildThinkingLevelMap(efforts) {
 }
 
 /**
- * Build the pi-ai Model descriptor for one request model id. The descriptor
- * carries the route's gateway and the openai-completions wire protocol, so
- * pi-ai's `streamSimple` dispatches to the OpenAI-compatible implementation
- * without any provider registration of its own.
+ * The pi-ai `thinkingLevelMap` for a source model, inherited verbatim from its
+ * declared `reasoningEfforts` dict (level → wire spelling; an undeclared level
+ * is pinned unsupported, `off` with no value stays absent). When the model
+ * declares nothing the default effort list applies; `false` disables reasoning.
+ * @param entry - the mirrored source model entry, when one exists.
+ * @returns the pi-ai `thinkingLevelMap`, or `undefined` when reasoning is off.
+ */
+function thinkingLevelMapFromSource(entry) {
+  const efforts = entry?.reasoningEfforts
+  if (efforts === undefined) return buildThinkingLevelMap(DEFAULT_REASONING_EFFORTS)
+  if (efforts === false) return undefined
+  const map = {}
+  for (const level of ALL_THINKING_LEVELS) {
+    if (efforts[level] === undefined) {
+      map[level] = null
+    } else if (efforts[level] !== null) {
+      map[level] = efforts[level]
+    }
+  }
+  return map
+}
+
+/**
+ * Build the pi-ai Model descriptor for one request model id under one source
+ * provider. The descriptor carries the source provider's gateway and the
+ * openai-completions wire protocol, so pi-ai's `streamSimple` dispatches to
+ * the OpenAI-compatible implementation without any provider registration of
+ * its own. Model metadata (name/context/maxTokens) comes from the source
+ * provider's `models` entry; unrecognized model ids still pass through.
  * @param config - plugin configuration.
+ * @param source - the mirrored source provider name.
  * @param modelId - the request's model id (passthrough when not configured).
  * @returns a pi-ai Model descriptor.
  */
-function buildModel(config, modelId) {
-  const entry = config.models?.find(model => model.id === modelId)
-  const thinkingLevelMap = buildThinkingLevelMap(config.reasoningEfforts ?? DEFAULT_REASONING_EFFORTS)
+function buildModel(config, source, modelId) {
+  const provider = config.providers?.[source] ?? {}
+  const entry = provider.models?.find(model => model.id === modelId)
+  const thinkingLevelMap = thinkingLevelMapFromSource(entry)
   return {
     id: modelId,
     name: entry?.name ?? modelId,
     api: 'openai-completions',
-    provider: config.provider,
-    baseUrl: config.baseURL,
-    reasoning: true,
+    provider: source,
+    baseUrl: provider.baseURL,
+    reasoning: thinkingLevelMap === undefined ? false : true,
     input: ['text'],
     ...thinkingLevelMap === undefined ? {} : { thinkingLevelMap },
     cost: NO_COST,
@@ -90,47 +121,117 @@ function requestHeaders(config, sessionId) {
 
 /**
  * An `LlmAdapter` whose requests carry the live session id in a configured
- * HTTP header. Message serialization and event translation delegate to pi-ai's
+ * HTTP header, dispatching each route back to its mirrored source provider.
+ * Message serialization and event translation delegate to pi-ai's
  * openai-completions implementation; this adapter only assembles the Model
  * descriptor, converts the harness request into pi-ai's Context vocabulary,
  * injects the session header, and maps the event stream back to harness
  * chunks.
  */
 export class SessionHeaderAdapter extends LlmAdapter {
-  /** @param config - validated plugin configuration. */
+  /**
+   * @param config - validated plugin configuration. The harness context may
+   * ride along as `config.ctx` (injected by `apply`) so the credentials
+   * service is resolved lazily at request time; a pre-resolved
+   * `config.credentials` reference is honoured too. When neither yields a
+   * service the adapter falls back to `process.env`, like the native
+   * dsh-llm-pi-ai adapter does without a credentials seam.
+   */
   constructor(config) {
     super()
     this.config = config
+    this.credentials = config.credentials
+    this.ctx = config.ctx
+  }
+
+  /**
+   * Resolve the API key for one mirrored provider, mirroring dsh-llm-pi-ai's
+   * priority: the harness credentials service when it is available, otherwise
+   * the process environment. The service is looked up lazily on every call so
+   * a service mounted after this plugin applies is still honoured. A
+   * reference that yields nothing usable resolves to `undefined`; the caller
+   * turns that into MISSING_CREDENTIAL.
+   * @param ref - the mirrored provider's `apiKeyEnv` reference, when set.
+   * @returns the resolved key, or `undefined` when nothing usable is found.
+   */
+  async resolveApiKey(ref) {
+    if (ref === undefined) return undefined
+    const credentials = this.credentials
+      ?? this.ctx?.get?.('credentials')
+    const hit = credentials !== undefined
+      ? (await credentials.resolve(ref))?.value
+      : process.env[ref]
+    if (hit !== undefined && hit.length > 0) return hit
+    return undefined
+  }
+
+  /**
+   * Recover the mirrored source provider name from a hit route. Routes are
+   * named `<source>-session`; anything else cannot be served by this adapter.
+   * @param providerRoute - the route the request hit.
+   * @returns the source provider name.
+   */
+  sourceProviderFor(providerRoute) {
+    const suffix = '-session'
+    if (typeof providerRoute !== 'string' || !providerRoute.endsWith(suffix)) {
+      throw new LlmError(
+        `dsh-llm-pi-ai-with-session: provider route "${String(providerRoute)}" does not end with the "${suffix}" suffix`,
+        'INVALID_REQUEST',
+      )
+    }
+    const source = providerRoute.slice(0, -suffix.length)
+    if (this.config.providers?.[source] === undefined) {
+      throw new LlmError(
+        `dsh-llm-pi-ai-with-session: provider route "${providerRoute}" mirrors no configured llm-pi-ai provider ("${source}")`,
+        'INVALID_REQUEST',
+      )
+    }
+    return source
   }
 
   providerInfo(provider) {
-    return { id: provider, name: this.config.provider }
+    const source = this.sourceProviderFor(provider)
+    return { id: provider, name: this.config.providers?.[source]?.displayName ?? source }
   }
 
   async resolveModel(provider, model) {
-    const entry = this.config.models?.find(candidate => candidate.id === model)
+    const source = this.sourceProviderFor(provider)
+    const entry = this.config.providers?.[source]?.models?.find(candidate => candidate.id === model)
     return {
       provider,
       id: model,
       name: entry?.name ?? model,
       ...entry?.contextWindow === undefined ? {} : { context: { contextWindow: entry.contextWindow } },
       ...entry?.maxTokens === undefined ? {} : { defaultMaxTokens: entry.maxTokens },
-      ...this.reasoningMetadata() === undefined ? {} : { reasoning: this.reasoningMetadata() },
+      ...this.reasoningMetadata(source, entry) === undefined ? {} : { reasoning: this.reasoningMetadata(source, entry) },
     }
   }
 
-  /** The reasoning capability this route advertises, if any. */
-  reasoningMetadata() {
-    const efforts = this.config.reasoningEfforts ?? DEFAULT_REASONING_EFFORTS
-    if (efforts.length === 0) return undefined
+  /**
+   * The reasoning capability a route advertises, inherited from the mirrored
+   * source provider: the default effort comes from the provider's `reasoning`,
+   * and the offered levels from the source model's declared `reasoningEfforts`
+   * (or the default list when the model declares none).
+   * @param source - the mirrored source provider name.
+   * @param entry - the mirrored source model entry, when one exists.
+   */
+  reasoningMetadata(source, entry) {
+    const efforts = entry?.reasoningEfforts
+    if (efforts === false) return undefined
+    const ids = efforts === undefined || efforts === null
+      ? DEFAULT_REASONING_EFFORTS
+      : Object.keys(efforts)
+    if (ids.length === 0) return undefined
+    const sourceReasoning = this.config.providers?.[source]?.reasoning
     return {
-      efforts: efforts.map(id => ({ id, name: `${id.charAt(0).toUpperCase()}${id.slice(1)}` })),
-      ...this.config.reasoning === undefined ? {} : { defaultEffort: this.config.reasoning },
+      efforts: ids.map(id => ({ id, name: `${id.charAt(0).toUpperCase()}${id.slice(1)}` })),
+      ...sourceReasoning === undefined ? {} : { defaultEffort: sourceReasoning },
     }
   }
 
   async listModels(provider) {
-    return (this.config.models ?? []).map(entry => ({
+    const source = this.sourceProviderFor(provider)
+    return (this.config.providers?.[source]?.models ?? []).map(entry => ({
       provider,
       id: entry.id,
       name: entry.name ?? entry.id,
@@ -139,17 +240,18 @@ export class SessionHeaderAdapter extends LlmAdapter {
   }
 
   async * stream(options) {
-    const apiKey = this.config.apiKeyEnv === undefined
-      ? undefined
-      : process.env[this.config.apiKeyEnv]
+    const source = this.sourceProviderFor(options.provider)
+    const provider = this.config.providers?.[source] ?? {}
+    const apiKey = await this.resolveApiKey(provider.apiKeyEnv)
     if (apiKey === undefined || apiKey.length === 0) {
       throw new LlmError(
-        `dsh-llm-pi-ai-with-session: no API key for provider route "${options.provider}";`
-        + ` set ${this.config.apiKeyEnv ?? '<none>'} in the environment`,
+        `dsh-llm-pi-ai-with-session: no API key for provider route "${options.provider}"`
+        + ` (mirrors llm-pi-ai provider "${source}"); set ${provider.apiKeyEnv ?? '<none>'} through the harness`
+        + ' credentials service or in the environment',
         'MISSING_CREDENTIAL',
       )
     }
-    const model = buildModel(this.config, options.model)
+    const model = buildModel(this.config, source, options.model)
     // This route only accepts text, so image content is rejected up front with
     // a loud UNSUPPORTED_CONTENT instead of being silently dropped or rounded
     // into an opaque error.

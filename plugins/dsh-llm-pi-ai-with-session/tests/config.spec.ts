@@ -9,34 +9,44 @@ function parse(value: unknown): unknown {
 }
 
 describe('dsh-llm-pi-ai-with-session Config', () => {
-  it('defaults the provider route to pi-ai-session', () => {
-    const config = parse({ baseURL: 'http://gateway.test/v1' }) as { provider?: string }
-    expect(config.provider).toBe('pi-ai-session')
-  })
-
   it('defaults the session header name to x-session-id', () => {
-    const config = parse({ baseURL: 'http://gateway.test/v1' }) as { sessionHeader?: string }
+    const config = parse({}) as { sessionHeader?: string }
     expect(config.sessionHeader).toBe('x-session-id')
   })
 
-  it('defaults the api key env var to DEEPSEEK_API_KEY', () => {
-    const config = parse({ baseURL: 'http://gateway.test/v1' }) as { apiKeyEnv?: string }
-    expect(config.apiKeyEnv).toBe('DEEPSEEK_API_KEY')
-  })
-
-  it('keeps an explicit provider, session header, and api key env', () => {
-    const config = parse({
-      provider: 'my-gateway',
-      baseURL: 'http://gateway.test/v1',
-      sessionHeader: 'x-dsh-session',
-      apiKeyEnv: 'GATEWAY_API_KEY',
-    }) as { provider?: string; sessionHeader?: string; apiKeyEnv?: string }
-    expect(config.provider).toBe('my-gateway')
+  it('keeps an explicit session header', () => {
+    const config = parse({ sessionHeader: 'x-dsh-session' }) as { sessionHeader?: string }
     expect(config.sessionHeader).toBe('x-dsh-session')
-    expect(config.apiKeyEnv).toBe('GATEWAY_API_KEY')
   })
 
-  it('refuses a missing base URL', () => {
-    expect(() => parse({})).toThrow()
+  it('passes through a providers table without validation', () => {
+    const config = parse({
+      providers: {
+        light: { apiKeyEnv: 'LIGHT_API_KEY', baseURL: 'http://gateway.test/v1' },
+      },
+    }) as { providers?: Record<string, unknown> }
+    expect(config.providers?.light).toEqual({ apiKeyEnv: 'LIGHT_API_KEY', baseURL: 'http://gateway.test/v1' })
+  })
+
+  it('carries no gateway, credential, model, suffix, or reasoning config — all inherited from the mirrored llm-pi-ai provider', () => {
+    const config = parse({}) as Record<string, unknown>
+    expect(config).not.toHaveProperty('baseURL')
+    expect(config).not.toHaveProperty('provider')
+    expect(config).not.toHaveProperty('apiKeyEnv')
+    expect(config).not.toHaveProperty('models')
+    expect(config).not.toHaveProperty('suffix')
+    expect(config).not.toHaveProperty('reasoning')
+    expect(config).not.toHaveProperty('reasoningEfforts')
+  })
+
+  it('drops suffix/reasoning/reasoningEfforts even when a caller passes them', () => {
+    const config = parse({
+      suffix: '-mirror',
+      reasoning: 'high',
+      reasoningEfforts: ['off', 'high'],
+    }) as Record<string, unknown>
+    expect(config).not.toHaveProperty('suffix')
+    expect(config).not.toHaveProperty('reasoning')
+    expect(config).not.toHaveProperty('reasoningEfforts')
   })
 })

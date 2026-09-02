@@ -1,12 +1,22 @@
 /**
  * Test helpers for dsh-llm-pi-ai-with-session: a local openai-completions mock
- * gateway plus a context assembly that mounts LlmRuntime and the plugin.
+ * gateway plus harness assemblies that mount LlmRuntime and the plugin.
+ *
+ * Two assembly styles mirror the two injection paths the plugin supports:
+ * - `createHarness({ providers })` passes the llm-pi-ai-shaped providers table
+ *   directly as the plugin config (way A) — exercises adapter dispatch without
+ *   any settings service.
+ * - `createSettingsHarness(providers)` mounts a minimal in-memory settings
+ *   provider plus a stub plugin that registers the `llm-pi-ai` namespace, so
+ *   the plugin reads providers through `ctx.settings.get('llm-pi-ai')` (way B).
  */
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
+import { installSettingsSection, SettingsProvider } from '@deepseek-ai/dsh-settings'
+import z from '@deepseek-ai/schemastery'
 import { afterEach, vi } from 'vitest'
 import sessionHeaderPlugin from '../index.js'
 
@@ -16,6 +26,26 @@ export function userMessage(text: string) {
     content: [{ type: 'text', text }] satisfies ContentBlock[],
     source: { kind: 'user' },
   })
+}
+
+/**
+ * One provider profile in the llm-pi-ai `providers` dict shape. Only the fields
+ * this plugin mirrors are meaningful here; extra fields are tolerated.
+ */
+export interface ProviderProfile {
+  apiKeyEnv?: string
+  baseURL: string
+  api?: string
+  reasoning?: string
+  displayName?: string
+  models?: Array<{
+    id: string
+    name?: string
+    contextWindow?: number
+    maxTokens?: number
+    input?: string[]
+    reasoningEfforts?: Record<string, string | null> | false
+  }>
 }
 
 export interface MockGateway {
@@ -91,13 +121,24 @@ export async function mockGateway(scripts: {
   return { url: `http://127.0.0.1:${address.port}`, paths, requests, headers }
 }
 
+/** The harness credentials service shape the adapter consumes. */
+export interface CredentialsStub {
+  resolve: (ref: string) => Promise<{ value?: string } | undefined>
+}
+
 export interface SessionHeaderHarnessConfig {
-  /** Plugin config passed to the session wrapper plugin. */
+  /**
+   * llm-pi-ai-shaped providers table passed straight into the plugin config as
+   * `providers` (way A). Every key becomes a route named `<key><suffix>`.
+   */
+  providers?: Record<string, ProviderProfile>
+  /** Extra plugin config merged over the providers (sessionHeader/suffix/...). */
   pluginConfig?: Record<string, unknown>
-  /** Extra plugins to mount before the session wrapper plugin. */
-  baseURL?: string
-  /** Env var holding the api key; defaults to the plugin default. */
-  apiKeyEnv?: string
+  /**
+   * Stub credentials service registered on the context before the plugin
+   * mounts, so the adapter resolves keys through the harness seam.
+   */
+  credentials?: CredentialsStub
 }
 
 export interface SessionHeaderHarness {
@@ -106,13 +147,13 @@ export interface SessionHeaderHarness {
   stream: (options: Record<string, unknown>) => Promise<unknown[]>
 }
 
-/** Mount LlmRuntime + the session wrapper plugin and return a drain helper. */
+/** Mount LlmRuntime + the session wrapper plugin (way A: providers in config). */
 export async function createHarness(config: SessionHeaderHarnessConfig = {}): Promise<SessionHeaderHarness> {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
+  if (config.credentials !== undefined) ctx.provide('credentials', config.credentials)
   await ctx.plugin(sessionHeaderPlugin, {
-    baseURL: config.baseURL,
-    ...(config.apiKeyEnv === undefined ? {} : { apiKeyEnv: config.apiKeyEnv }),
+    ...(config.providers === undefined ? {} : { providers: config.providers }),
     ...(config.pluginConfig === undefined ? {} : config.pluginConfig),
   })
   return {
@@ -136,4 +177,91 @@ export function installGatewayHooks(): void {
 /** Stub the api key env var for one spec. */
 export function stubApiKey(name: string, value: string): void {
   vi.stubEnv(name, value)
+}
+
+// ---------------------------------------------------------------------------
+// Way B: in-memory settings provider + a stub plugin registering the
+// `llm-pi-ai` namespace, so `ctx.settings.get('llm-pi-ai')` resolves.
+// ---------------------------------------------------------------------------
+
+/** The settings namespace llm-pi-ai owns; the mirror source. */
+export const LLM_PI_AI_NS = 'llm-pi-ai'
+
+/** Minimal in-memory settings provider: stores one raw document in memory. */
+export class MemorySettingsProvider extends SettingsProvider {
+  readonly writable = true
+
+  private doc: Record<string, unknown>
+
+  constructor(ctx: Context, config: Record<string, unknown> = {}) {
+    super(ctx)
+    this.doc = config
+  }
+
+  protected async load(): Promise<Record<string, unknown>> {
+    return this.doc
+  }
+
+  protected async persist(ns: string, section: Record<string, unknown>): Promise<void> {
+    this.doc[ns] = section
+  }
+}
+
+/** Loose schema for the stub llm-pi-ai namespace: a dict of provider profiles. */
+export const llmPiAiSchema = z.object({
+  providers: z.dict(z.object({
+    apiKeyEnv: z.string(),
+    baseURL: z.string().required(),
+    api: z.string(),
+    reasoning: z.string(),
+    displayName: z.string(),
+    models: z.array(z.object({
+      id: z.string().required(),
+      name: z.string(),
+      contextWindow: z.number(),
+      maxTokens: z.number(),
+    })),
+  })).default({}),
+})
+
+/**
+ * Minimal llm-pi-ai stand-in: registers the `llm-pi-ai` settings namespace so
+ * `ctx.settings.get('llm-pi-ai')` resolves. The plugin config acts as the
+ * composition base layer, so `{ providers }` passed here is what the session
+ * wrapper plugin will read back through the settings service.
+ */
+export const stubLlmPiAiPlugin = {
+  name: 'stub-llm-pi-ai',
+  inject: ['settings'],
+  apply(ctx: Context, config: { providers?: Record<string, ProviderProfile> }): void {
+    installSettingsSection(ctx, LLM_PI_AI_NS, llmPiAiSchema, config ?? {}, {
+      setSource: () => {},
+      onChange: () => {},
+    })
+  },
+}
+
+/**
+ * Mount the full way-B path: LlmRuntime + in-memory settings provider + the
+ * stub llm-pi-ai namespace plugin + the session wrapper plugin with no
+ * providers in its own config. The wrapper must mirror what the stub's
+ * settings section supplies.
+ */
+export async function createSettingsHarness(
+  providers: Record<string, ProviderProfile>,
+  pluginConfig: Record<string, unknown> = {},
+): Promise<SessionHeaderHarness> {
+  const ctx = new Context()
+  await ctx.plugin(LlmRuntime)
+  await ctx.plugin(MemorySettingsProvider, {})
+  await ctx.plugin(stubLlmPiAiPlugin, { providers })
+  await ctx.plugin(sessionHeaderPlugin, pluginConfig)
+  return {
+    ctx,
+    stream: async (options) => {
+      const chunks: unknown[] = []
+      for await (const chunk of ctx.llm.stream(options)) chunks.push(chunk)
+      return chunks
+    },
+  }
 }

@@ -1,14 +1,14 @@
 /**
- * dsh-llm-pi-ai-with-session: a Cordis plugin that registers an LLM provider
- * route whose requests carry the live dsh session id in a configurable HTTP
+ * dsh-llm-pi-ai-with-session: a Cordis plugin that registers LLM provider
+ * routes whose requests carry the live dsh session id in a configurable HTTP
  * header.
  *
- * The route reuses pi-ai's openai-completions wire implementation, so the
- * models configured on the route keep working exactly as they would through
- * `llm-pi-ai`, while every request additionally identifies its dsh session.
- * It is a generic session wrapper around the pi-ai LLM path: the gateway,
- * models, credential, and header name are all configuration, with no
- * environment-specific defaults.
+ * The plugin mirrors every provider profile registered under the `llm-pi-ai`
+ * settings namespace: each source provider becomes a route named
+ * `<provider><suffix>` (default `-session`) served by the same openai-
+ * completions wire path, with every request additionally identifying its dsh
+ * session. Gateway, models, credential, and reasoning defaults are inherited
+ * from the mirrored provider rather than restated here.
  *
  * @module dsh-llm-pi-ai-with-session
  */
@@ -18,15 +18,19 @@ import { SessionHeaderAdapter } from './adapter.js'
 /** Bundle row id this plugin is mounted under (`cordis.patch.yml`). */
 export const name = 'llm-pi-ai-with-session'
 
-/** The plugin registers on the harness LLM service. */
+/** The plugin registers on the harness LLM service; settings is optional. */
 export const inject = ['llm']
 
 /**
- * Plugin configuration: the provider route to register, its gateway, the
- * credential reference, the session header name, and optional model metadata.
+ * Plugin configuration: only the session header name. Every other knob —
+ * gateway, credential, models, reasoning, and the route suffix — is inherited
+ * from the mirrored llm-pi-ai provider rather than restated here: each source
+ * provider becomes a route named `<provider>-session`.
  *
  * A plain object implementing the standard-schema interface (no external
- * validator): unknown keys are ignored; defaults fill the omitted fields.
+ * validator): unknown keys are ignored; defaults fill the omitted fields. A
+ * `providers` table may ride through for explicit/local injection (tests or a
+ * settings-less composition); it is validated nowhere here.
  */
 export const Config = {
   '~standard': {
@@ -34,23 +38,10 @@ export const Config = {
     vendor: 'dsh-llm-pi-ai-with-session',
     validate(value) {
       const input = value ?? {}
-      const baseURL = input.baseURL
-      if (typeof baseURL !== 'string' || baseURL.length === 0) {
-        return {
-          issues: [
-            { message: 'dsh-llm-pi-ai-with-session: baseURL is required', path: '/baseURL' },
-          ],
-        }
-      }
       return {
         value: {
-          provider: input.provider ?? 'pi-ai-session',
-          baseURL,
-          apiKeyEnv: input.apiKeyEnv ?? 'DEEPSEEK_API_KEY',
           sessionHeader: input.sessionHeader ?? 'x-session-id',
-          models: input.models ?? [],
-          reasoning: input.reasoning,
-          reasoningEfforts: input.reasoningEfforts,
+          ...input.providers === undefined ? {} : { providers: input.providers },
         },
       }
     },
@@ -58,13 +49,36 @@ export const Config = {
 }
 
 /**
- * Register the session wrapper adapter for the configured provider route.
+ * Register one session-wrapper adapter owning one `-session` route per source
+ * provider. When the plugin config carries an explicit `providers` table it is
+ * mirrored directly (local injection); otherwise the table is read from the
+ * `llm-pi-ai` settings namespace — an absent namespace or empty table leaves
+ * the plugin dormant with zero routes, never an error.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
  * @param {object} config - validated plugin configuration.
  */
 export default function apply(ctx, config) {
-  const adapter = new SessionHeaderAdapter(config)
-  ctx.llm.registerAdapter([config.provider], adapter)
+  const mount = (providers) => {
+    const routes = Object.keys(providers).map(name => `${name}-session`)
+    if (routes.length === 0) return
+    // Hand the harness context to the adapter so it can resolve the
+    // credentials service lazily at request time (it may not be mounted yet
+    // while this plugin applies), exactly like the native dsh-llm-pi-ai
+    // adapter, before falling back to the environment.
+    ctx.llm.registerAdapter(routes, new SessionHeaderAdapter({
+      ...config,
+      providers,
+      ctx,
+    }))
+  }
+  if (config.providers !== undefined) {
+    mount(config.providers)
+    return
+  }
+  ctx.inject(['settings'], (settingsCtx) => {
+    const piAi = settingsCtx.settings.get('llm-pi-ai')
+    mount(piAi?.providers ?? {})
+  })
 }
 
 apply.inject = inject
