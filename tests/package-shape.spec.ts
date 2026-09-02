@@ -51,7 +51,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'adapter.js', 'context.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',
-      '@deepseek-ai/dsh-llm': '^0.1.1-rc.2',
+      '@deepseek-ai/dsh-llm': '^0.1.1-rc.2 || ^0.1.2-alpha.4',
       '@earendil-works/pi-ai': '^0.84.2',
     },
   },
