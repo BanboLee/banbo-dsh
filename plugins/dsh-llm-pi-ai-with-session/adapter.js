@@ -3,9 +3,9 @@
  * openai-completions wire implementation and stamps the live dsh session id
  * into a configurable request header.
  *
- * The adapter owns one route per mirrored llm-pi-ai provider (named
- * `<source><suffix>`); every request dispatches on the hit route back to its
- * source provider's gateway, credential, models, and reasoning defaults.
+ * The adapter owns only configured routes; every request dispatches on the hit
+ * route back to its source provider's gateway, credential, models, headers, and
+ * reasoning defaults.
  *
  * @module dsh-llm-pi-ai-with-session/adapter
  */
@@ -108,13 +108,15 @@ function buildModel(config, source, modelId) {
 
 /**
  * The adapter's fixed header set plus the live session header.
- * @param config - plugin configuration.
- * @param sessionId - the request's session id, when present.
+ * @param provider - source provider profile.
+ * @param sessionHeader - configured header name for the live session id.
+ * @param sessionId - the request's session id.
  * @returns the request headers.
  */
-function requestHeaders(config, sessionId) {
+function requestHeaders(provider, sessionHeader, sessionId) {
   return {
-    ...sessionId === undefined ? {} : { [config.sessionHeader]: String(sessionId) },
+    ...(provider.headers ?? {}),
+    [sessionHeader]: String(sessionId),
     ...attributionHeaders(),
   }
 }
@@ -142,6 +144,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
     this.config = config
     this.credentials = config.credentials
     this.ctx = config.ctx
+    this.routeByName = new Map(config.routes.map(route => [route.route, route]))
   }
 
   /**
@@ -165,37 +168,30 @@ export class SessionHeaderAdapter extends LlmAdapter {
     return undefined
   }
 
-  /**
-   * Recover the mirrored source provider name from a hit route. Routes are
-   * named `<source>-session`; anything else cannot be served by this adapter.
-   * @param providerRoute - the route the request hit.
-   * @returns the source provider name.
-   */
-  sourceProviderFor(providerRoute) {
-    const suffix = '-session'
-    if (typeof providerRoute !== 'string' || !providerRoute.endsWith(suffix)) {
+  routeFor(providerRoute) {
+    const route = this.routeByName.get(providerRoute)
+    if (route === undefined) {
       throw new LlmError(
-        `dsh-llm-pi-ai-with-session: provider route "${String(providerRoute)}" does not end with the "${suffix}" suffix`,
+        `dsh-llm-pi-ai-with-session: provider route "${String(providerRoute)}" is not configured`,
         'INVALID_REQUEST',
       )
     }
-    const source = providerRoute.slice(0, -suffix.length)
-    if (this.config.providers?.[source] === undefined) {
+    if (this.config.providers?.[route.source] === undefined) {
       throw new LlmError(
-        `dsh-llm-pi-ai-with-session: provider route "${providerRoute}" mirrors no configured llm-pi-ai provider ("${source}")`,
+        `dsh-llm-pi-ai-with-session: provider route "${providerRoute}" references missing llm-pi-ai provider "${route.source}"`,
         'INVALID_REQUEST',
       )
     }
-    return source
+    return route
   }
 
   providerInfo(provider) {
-    const source = this.sourceProviderFor(provider)
-    return { id: provider, name: this.config.providers?.[source]?.displayName ?? source }
+    const route = this.routeFor(provider)
+    return { id: provider, name: route.displayName ?? this.config.providers?.[route.source]?.displayName ?? provider }
   }
 
   async resolveModel(provider, model) {
-    const source = this.sourceProviderFor(provider)
+    const { source } = this.routeFor(provider)
     const entry = this.config.providers?.[source]?.models?.find(candidate => candidate.id === model)
     return {
       provider,
@@ -230,7 +226,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
   }
 
   async listModels(provider) {
-    const source = this.sourceProviderFor(provider)
+    const { source } = this.routeFor(provider)
     return (this.config.providers?.[source]?.models ?? []).map(entry => ({
       provider,
       id: entry.id,
@@ -240,8 +236,14 @@ export class SessionHeaderAdapter extends LlmAdapter {
   }
 
   async * stream(options) {
-    const source = this.sourceProviderFor(options.provider)
+    const { source } = this.routeFor(options.provider)
     const provider = this.config.providers?.[source] ?? {}
+    if (options.sessionId === undefined) {
+      throw new LlmError(
+        `dsh-llm-pi-ai-with-session: provider route "${options.provider}" requires a request session id`,
+        'INVALID_REQUEST',
+      )
+    }
     const apiKey = await this.resolveApiKey(provider.apiKeyEnv)
     if (apiKey === undefined || apiKey.length === 0) {
       throw new LlmError(
@@ -261,8 +263,9 @@ export class SessionHeaderAdapter extends LlmAdapter {
     const context = toContext(options)
     const events = streamSimple(model, context, {
       apiKey,
-      ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
-      headers: requestHeaders(this.config, options.sessionId),
+      sessionId: String(options.sessionId),
+      headers: requestHeaders(provider, this.config.sessionHeader, options.sessionId),
+      maxRetries: 0,
       signal: options.signal,
       ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
       ...options.temperature === undefined ? {} : { temperature: options.temperature },

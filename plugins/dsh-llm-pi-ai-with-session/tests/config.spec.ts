@@ -28,7 +28,18 @@ describe('dsh-llm-pi-ai-with-session Config', () => {
     expect(config.providers?.light).toEqual({ apiKeyEnv: 'LIGHT_API_KEY', baseURL: 'http://gateway.test/v1' })
   })
 
-  it('carries no gateway, credential, model, suffix, or reasoning config — all inherited from the mirrored llm-pi-ai provider', () => {
+  it('keeps explicit route declarations', () => {
+    const config = parse({
+      routes: [
+        { route: 'gateway-session', source: 'gateway', displayName: 'Gateway Session' },
+      ],
+    }) as { routes?: Array<{ route?: string; source?: string; displayName?: string }> }
+    expect(config.routes).toEqual([
+      { route: 'gateway-session', source: 'gateway', displayName: 'Gateway Session' },
+    ])
+  })
+
+  it('carries no gateway, credential, model, suffix, or reasoning config — all inherited from the source llm-pi-ai provider', () => {
     const config = parse({}) as Record<string, unknown>
     expect(config).not.toHaveProperty('baseURL')
     expect(config).not.toHaveProperty('provider')

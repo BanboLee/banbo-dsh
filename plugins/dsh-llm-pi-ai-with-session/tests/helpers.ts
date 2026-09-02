@@ -15,7 +15,7 @@ import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
-import { installSettingsSection, SettingsProvider } from '@deepseek-ai/dsh-settings'
+import { SettingsProvider } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { afterEach, vi } from 'vitest'
 import sessionHeaderPlugin from '../index.js'
@@ -38,6 +38,7 @@ export interface ProviderProfile {
   api?: string
   reasoning?: string
   displayName?: string
+  headers?: Record<string, string | null>
   models?: Array<{
     id: string
     name?: string
@@ -132,6 +133,7 @@ export interface SessionHeaderHarnessConfig {
    * `providers` (way A). Every key becomes a route named `<key><suffix>`.
    */
   providers?: Record<string, ProviderProfile>
+  routes?: Array<{ route: string; source: string; displayName?: string }>
   /** Extra plugin config merged over the providers (sessionHeader/suffix/...). */
   pluginConfig?: Record<string, unknown>
   /**
@@ -154,6 +156,7 @@ export async function createHarness(config: SessionHeaderHarnessConfig = {}): Pr
   if (config.credentials !== undefined) ctx.provide('credentials', config.credentials)
   await ctx.plugin(sessionHeaderPlugin, {
     ...(config.providers === undefined ? {} : { providers: config.providers }),
+    ...(config.routes === undefined ? {} : { routes: config.routes }),
     ...(config.pluginConfig === undefined ? {} : config.pluginConfig),
   })
   return {
@@ -215,6 +218,7 @@ export const llmPiAiSchema = z.object({
     api: z.string(),
     reasoning: z.string(),
     displayName: z.string(),
+    headers: z.dict(z.union([z.string(), z.const(null)])),
     models: z.array(z.object({
       id: z.string().required(),
       name: z.string(),
@@ -234,10 +238,7 @@ export const stubLlmPiAiPlugin = {
   name: 'stub-llm-pi-ai',
   inject: ['settings'],
   apply(ctx: Context, config: { providers?: Record<string, ProviderProfile> }): void {
-    installSettingsSection(ctx, LLM_PI_AI_NS, llmPiAiSchema, config ?? {}, {
-      setSource: () => {},
-      onChange: () => {},
-    })
+    ctx.settings.register(LLM_PI_AI_NS, llmPiAiSchema, { base: config ?? {} })
   },
 }
 

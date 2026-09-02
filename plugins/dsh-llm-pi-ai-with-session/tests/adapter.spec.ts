@@ -26,14 +26,16 @@ function demoProviders(baseURL: string, apiKeyEnv = 'DEEPSEEK_API_KEY') {
   }
 }
 
+const DEMO_ROUTE = [{ route: 'demo-affinity', source: 'demo', displayName: 'Demo Affinity' }]
+
 describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('sends the live session id in the configured header on the LLM request', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     const chunks = await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -44,15 +46,18 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     expect(chunks.some(chunk => (chunk as { type?: string }).type === 'finish')).toBe(true)
   })
 
-  it('omits the session header when the request carries no session id', async () => {
+  it('fails before the gateway request when the request carries no session id', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
-    await stream({ provider: 'demo-session', model: 'demo-model', messages: MESSAGES })
+    const chunks = await stream({ provider: 'demo-affinity', model: 'demo-model', messages: MESSAGES })
 
-    expect(gateway.headers).toHaveLength(1)
-    expect(gateway.headers[0]?.['x-session-id']).toBeUndefined()
+    expect(gateway.headers).toHaveLength(0)
+    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
+    const reason = (finish as { reason?: { kind?: string; failure?: { code?: string } } } | undefined)?.reason
+    expect(reason?.kind).toBe('error')
+    expect(reason?.failure?.code).toBe('INVALID_REQUEST')
   })
 
   it('uses a configurable header name', async () => {
@@ -60,11 +65,12 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
     const { stream } = await createHarness({
       providers: demoProviders(gateway.url),
+      routes: DEMO_ROUTE,
       pluginConfig: { sessionHeader: 'x-dsh-session' },
     })
 
     await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-2',
@@ -77,10 +83,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('sends the configured model id and serialized messages in the request body', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -95,10 +101,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('attaches the harness attribution user-agent alongside the session header', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -109,13 +115,40 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     expect(String(userAgent)).toMatch(/^deepseek-harness\//)
   })
 
+  it('forwards source provider headers beside the live session header', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { stream } = await createHarness({
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: gateway.url,
+          headers: { 'x-source-header': 'source-value', 'x-session-id': 'stale-static' },
+          models: [{ id: 'demo-model' }],
+        },
+      },
+      routes: DEMO_ROUTE,
+    })
+
+    await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-from-request',
+    })
+
+    expect(gateway.headers).toHaveLength(1)
+    expect(gateway.headers[0]?.['x-source-header']).toBe('source-value')
+    expect(gateway.headers[0]?.['x-session-id']).toBe('session-from-request')
+  })
+
   it('translates text SSE events into harness stream chunks', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     const chunks = await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -137,10 +170,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('translates tool-call SSE events into tool-call harness chunks', async () => {
     const gateway = await mockGateway([{ events: toolEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     const chunks = await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -154,16 +187,16 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     expect((finish as { reason?: unknown } | undefined)?.reason).toEqual({ kind: 'tool-calls' })
   })
 
-  it('registers the mirrored provider route on the llm service', async () => {
+  it('registers the explicitly declared provider route on the llm service', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { ctx } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { ctx } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     const providers = await ctx.llm.listProviders()
-    expect(providers.some(entry => entry.id === 'demo-session')).toBe(true)
+    expect(providers).toContainEqual({ id: 'demo-affinity', name: 'Demo Affinity' })
   })
 
-  it('mirrors every llm-pi-ai provider into its own suffixed route', async () => {
+  it('does not register undeclared source providers', async () => {
     const deepseek = await mockGateway([{ events: textEvents }])
     const light = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'deepseek-key')
@@ -173,12 +206,14 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
         deepseek: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: deepseek.url, models: [{ id: 'deepseek-v4-pro' }] },
         light: { apiKeyEnv: 'LIGHT_API_KEY', baseURL: light.url, models: [{ id: 'gpt-5.5' }] },
       },
+      routes: [{ route: 'light-affinity', source: 'light', displayName: 'Light Affinity' }],
     })
 
     const providers = await ctx.llm.listProviders()
     const ids = providers.map(entry => entry.id)
-    expect(ids).toContain('deepseek-session')
-    expect(ids).toContain('light-session')
+    expect(ids).not.toContain('deepseek-session')
+    expect(ids).not.toContain('deepseek-affinity')
+    expect(ids).toEqual(['light-affinity'])
   })
 
   it('routes each mirrored provider to its own gateway with its own api key', async () => {
@@ -191,16 +226,20 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
         deepseek: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: deepseekGateway.url, models: [{ id: 'deepseek-v4-pro' }] },
         light: { apiKeyEnv: 'LIGHT_API_KEY', baseURL: lightGateway.url, models: [{ id: 'gpt-5.5' }] },
       },
+      routes: [
+        { route: 'deepseek-affinity', source: 'deepseek' },
+        { route: 'light-affinity', source: 'light' },
+      ],
     })
 
     await stream({
-      provider: 'deepseek-session',
+      provider: 'deepseek-affinity',
       model: 'deepseek-v4-pro',
       messages: MESSAGES,
       sessionId: 'session-d',
     })
     await stream({
-      provider: 'light-session',
+      provider: 'light-affinity',
       model: 'gpt-5.5',
       messages: MESSAGES,
       sessionId: 'session-l',
@@ -216,10 +255,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
 
   it('fails with MISSING_CREDENTIAL when the mirrored provider api key env is unset', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     const chunks = await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -238,11 +277,12 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     const credentials: CredentialsStub = { resolve: vi.fn(async () => ({ value: 'cred-key' })) }
     const { stream } = await createHarness({
       providers: demoProviders(gateway.url),
+      routes: DEMO_ROUTE,
       credentials,
     })
 
     await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -257,10 +297,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('falls back to process.env when no credentials service is available', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'env-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -275,11 +315,12 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     const credentials: CredentialsStub = { resolve: vi.fn(async () => undefined) }
     const { stream } = await createHarness({
       providers: demoProviders(gateway.url),
+      routes: DEMO_ROUTE,
       credentials,
     })
 
     const chunks = await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -297,10 +338,11 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     const gateway = await mockGateway([{ events: textEvents }])
     const { stream } = await createHarness({
       providers: { demo: { baseURL: gateway.url, models: [{ id: 'demo-model' }] } },
+      routes: DEMO_ROUTE,
     })
 
     const chunks = await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -313,13 +355,13 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     expect(reason?.failure?.code).toBe('MISSING_CREDENTIAL')
   })
 
-  it('fails with a clear error for a route that mirrors no provider', async () => {
+  it('fails with NO_ADAPTER for an undeclared route', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     const chunks = await stream({
-      provider: 'nope-session',
+      provider: 'nope-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -332,13 +374,44 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     expect(reason?.failure?.code).toBe('NO_ADAPTER')
   })
 
+  it('fails plugin registration when a declared route references a missing source provider', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    await expect(createHarness({
+      providers: demoProviders(gateway.url),
+      routes: [{ route: 'missing-affinity', source: 'missing' }],
+    })).rejects.toMatchObject({ code: 'INVALID_REQUEST' })
+    expect(gateway.headers).toHaveLength(0)
+  })
+
+  it('does not let pi-ai retry provider HTTP failures internally', async () => {
+    const gateway = await mockGateway([
+      { status: 500, body: '{"error":{"message":"boom"}}' },
+      { events: textEvents },
+    ])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
+
+    const chunks = await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-1',
+    })
+
+    expect(gateway.headers).toHaveLength(1)
+    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
+    const reason = (finish as { reason?: { kind?: string } } | undefined)?.reason
+    expect(reason?.kind).toBe('error')
+  })
+
   it('passes the reasoning effort through to the request body', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -352,9 +425,9 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('resolves mirrored model metadata through the adapter', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { ctx } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { ctx } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
-    const resolved = await ctx.llm.resolveModelInfo('demo-session', 'demo-model')
+    const resolved = await ctx.llm.resolveModelInfo('demo-affinity', 'demo-model')
     expect(resolved.name).toBe('Demo Model')
     expect(resolved.context).toEqual({ contextWindow: 1_000_000 })
   })
@@ -362,10 +435,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('fails loudly with UNSUPPORTED_CONTENT when a user message carries an image', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     const chunks = await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: [{
         role: 'user',
@@ -390,10 +463,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('fails loudly with UNSUPPORTED_CONTENT when an assistant message carries an image', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     const chunks = await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: [{
         role: 'assistant',
@@ -412,7 +485,7 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   })
 
   it('stays dormant (zero routes) when the providers table is empty', async () => {
-    const { ctx } = await createHarness({ providers: {} })
+    const { ctx } = await createHarness({ providers: demoProviders('http://gateway.test'), routes: [] })
 
     const providers = await ctx.llm.listProviders()
     expect(providers).toHaveLength(0)
@@ -430,9 +503,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
           models: [{ id: 'demo-model' }],
         },
       },
+      routes: DEMO_ROUTE,
     })
 
-    const resolved = await ctx.llm.resolveModelInfo('demo-session', 'demo-model')
+    const resolved = await ctx.llm.resolveModelInfo('demo-affinity', 'demo-model')
     expect(resolved.reasoning?.defaultEffort).toBe('xhigh')
   })
 
@@ -450,9 +524,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
           }],
         },
       },
+      routes: DEMO_ROUTE,
     })
 
-    const resolved = await ctx.llm.resolveModelInfo('demo-session', 'demo-model')
+    const resolved = await ctx.llm.resolveModelInfo('demo-affinity', 'demo-model')
     const efforts = resolved.reasoning?.efforts?.map((entry: { id?: string }) => entry.id) ?? []
     expect(efforts).toEqual(['off', 'low', 'medium', 'high', 'xhigh'])
   })
@@ -460,9 +535,9 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('keeps the default effort list when the source model declares no reasoningEfforts', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { ctx } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { ctx } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
-    const resolved = await ctx.llm.resolveModelInfo('demo-session', 'demo-model')
+    const resolved = await ctx.llm.resolveModelInfo('demo-affinity', 'demo-model')
     const efforts = resolved.reasoning?.efforts?.map((entry: { id?: string }) => entry.id) ?? []
     expect(efforts).toContain('off')
     expect(efforts).toContain('max')
@@ -471,10 +546,10 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   it('sends an xhigh reasoning effort to the gateway instead of clamping it down', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url) })
+    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
     await stream({
-      provider: 'demo-session',
+      provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-1',
@@ -495,15 +570,14 @@ describe('dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
     const { ctx, stream } = await createSettingsHarness({
       deepseek: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: deepseek.url, models: [{ id: 'deepseek-v4-pro' }] },
       light: { apiKeyEnv: 'LIGHT_API_KEY', baseURL: light.url, models: [{ id: 'gpt-5.5' }] },
-    })
+    }, { routes: [{ route: 'light-affinity', source: 'light', displayName: 'Light Affinity' }] })
 
     const providers = await ctx.llm.listProviders()
     const ids = providers.map(entry => entry.id)
-    expect(ids).toContain('deepseek-session')
-    expect(ids).toContain('light-session')
+    expect(ids).toEqual(['light-affinity'])
 
     await stream({
-      provider: 'light-session',
+      provider: 'light-affinity',
       model: 'gpt-5.5',
       messages: MESSAGES,
       sessionId: 'session-mirror',
