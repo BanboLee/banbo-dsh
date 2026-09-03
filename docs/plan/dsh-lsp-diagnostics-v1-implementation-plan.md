@@ -594,7 +594,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   Executor: T3-r1 使用 provider=deepseek, model=deepseek-v4-flash；被人类中断后，T3-r2 continuation 使用 provider=runtime-default, model=gpt-5.6-sol 接续未提交现场
   Branch base: 当前分支 Todo 2 提交；禁止创建 worktree
 
-- [ ] 4. Wave 1：全局确定性 strict-schema aggregate renderer
+- [x] 4. Wave 1：全局确定性 strict-schema aggregate renderer
   What to do / Must NOT do: 实现共享path sanitizer、唯一file comparator、单一aggregate renderer与单测；renderer只接受eligibility后已冻结`renderPath`的规定discriminated union/NormalizedDiagnostic，完成source/code/message control sanitization、0→1 based start-end rendering与完整grammar。数量cap先于canonical text，字符cap只作用于含条件式全局ADVISORY的完整文本；不得重新读取raw displayPath、逐文件各给50/8000预算、输出空diagnostics section、给每section重复标题/尾注、依赖Map顺序/localeCompare/default UTF-16 sort或server object枚举顺序。
   Parallelization: Wave 1（单分支串行） | Blocked by: 3 | Blocks: 5
   References: 本计划「Diagnostics schema」与「Aggregate renderer」。
