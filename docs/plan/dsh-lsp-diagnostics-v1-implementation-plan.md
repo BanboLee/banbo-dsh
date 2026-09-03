@@ -16,7 +16,7 @@
 
 **审批门：本修订计划必须先由直接人类明确批准。批准后只允许先提交本计划文件；该计划提交的 SHA 才是 `base-0`。在 `base-0` 存在前，不得创建或修改任何实现代码、测试、manifest、lockfile 或其他文档。**
 
-**未来所有实现子代理、集成/验收修复子代理必须显式使用 `provider: deepseek`、`model: deepseek-v4-flash`；恰好五个最终验收 reviewer（F1-F5）必须使用与主协调者相同的 `gpt-5.6-sol` 模型，不得使用 `deepseek-v4-flash`。**
+**未来实现子代理、集成/验收修复子代理默认使用 `provider: deepseek`、`model: deepseek-v4-flash`；直接人类可以显式覆盖具体 invocation，覆盖事实必须在 routing manifest 中逐次记录。当前 Todo 3 continuation 已由直接人类覆盖为 `provider: runtime-default`（沿用主协调者路由）、`model: gpt-5.6-sol`。恰好五个最终验收 reviewer（F1-F5）也必须使用 `gpt-5.6-sol`，不得使用 `deepseek-v4-flash`。**
 
 ---
 
@@ -442,8 +442,8 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   - `## Surgical scope confirmation`
 - Todo 8 若无 tracked 修复，使用 `tdd-not-applicable.md` 且含精确句 `no implementation change; TDD not applicable`，并仍提供 `karpathy.md`；若有 fixer commit，则 fixer 提供 Todo 8 的 `tdd-red.log`/`tdd-green.log` 与 `karpathy.md`。
 - 实现/修复代理可以写自己的 git-ignored task evidence；acceptance reviewer 绝对不能写任何文件。
-- coordinator 独占写入 append-only `.omo/evidence/dsh-lsp-diagnostics-v1/final/coordinator/subagent-routing.jsonl`。每次启动任何 Todo 1-7 implementation、Todo 6 early-owner repair、Todo 8/acceptance fixer 或 F1-F5 reviewer **之前**追加一行 strict JSON object：`{"invocationId":"<unique-stable-id>","identity":"<stable-id>","role":"implementation|integration-repair|fixer|reviewer","provider":"<actual-provider-route>","model":"<exact-model-id>","prompt":"<完整逐字prompt>","round":<positive-int>,"baseSha":"<40-hex>"}`；不得只记 prompt 摘要/hash，不得事后补造。Todo 1-7、Todo6 continuation 与 fixer 的 provider/model 必须为 `deepseek`/`deepseek-v4-flash`；F1-F5 的 model 必须为 `gpt-5.6-sol`，provider 字段记录启动时的实际 provider/route，不硬编码为 `deepseek`。identity 对 Todo 固定 `T1`…`T7`（Todo6 continuation仍为`T6`）、reviewer 固定 `F1`…`F5` 并跨重审复用；fixer identity 固定为其 round 名，`invocationId` 对每次调用唯一。JSONL 本身不含 secret，prompt 禁止嵌入 secret。
-- coordinator 在每轮 response 到达后写对应既有 evidence response 文件，不改 routing 原行。F2 对所有已完成 invocation 将 routing 行与 commit/evidence/response 一一核对；对当前并行 F1-F5 round 则核对 coordinator 在启动批次前已写齐五行及其 identity/round/baseSha，当前五个 response 由 coordinator 收齐后校验 envelope 并供下一轮/最终审计。F2 对 Todo 1-7、Todo6 continuation 与 fixer 断言 provider/model 精确为 `deepseek`/`deepseek-v4-flash`，且 prompt 逐字含 `provider: deepseek` 与 `model: deepseek-v4-flash`；对 F1-F5 断言 model 精确为 `gpt-5.6-sol`、provider 与实际启动 route 一致，且 prompt 逐字含 `model: gpt-5.6-sol`。缺行、多行、错误模型、错误 round/base 或已完成 invocation 无法对应 response 均 REJECT。
+- coordinator 独占写入 append-only `.omo/evidence/dsh-lsp-diagnostics-v1/final/coordinator/subagent-routing.jsonl`。每次启动任何 Todo 1-7 implementation、Todo 6 early-owner repair、Todo 8/acceptance fixer 或 F1-F5 reviewer **之前**追加一行 strict JSON object：`{"invocationId":"<unique-stable-id>","identity":"<stable-id>","role":"implementation|integration-repair|fixer|reviewer","provider":"<actual-provider-route>","model":"<exact-model-id>","prompt":"<完整逐字prompt>","round":<positive-int>,"baseSha":"<40-hex>"}`；不得只记 prompt 摘要/hash，不得事后补造。Todo 1-7、Todo6 continuation 与 fixer 默认 provider/model 为 `deepseek`/`deepseek-v4-flash`；直接人类显式覆盖的 invocation 按 routing manifest 记录并优先于默认值，当前唯一覆盖是 T3-r2 的 `runtime-default`/`gpt-5.6-sol`。F1-F5 的 model 必须为 `gpt-5.6-sol`，provider 字段记录启动时的实际 provider/route，不硬编码为 `deepseek`。identity 对 Todo 固定 `T1`…`T7`（Todo6 continuation仍为`T6`）、reviewer 固定 `F1`…`F5` 并跨重审复用；fixer identity 固定为其 round 名，`invocationId` 对每次调用唯一。JSONL 本身不含 secret，prompt 禁止嵌入 secret。
+- coordinator 在每轮 response 到达后写对应既有 evidence response 文件，不改 routing 原行。F2 对所有已完成 invocation 将 routing 行与 commit/evidence/response 一一核对；对当前并行 F1-F5 round 则核对 coordinator 在启动批次前已写齐五行及其 identity/round/baseSha，当前五个 response 由 coordinator 收齐后校验 envelope 并供下一轮/最终审计。F2 对 Todo 1-7、Todo6 continuation 与 fixer 默认断言 provider/model 精确为 `deepseek`/`deepseek-v4-flash`，且 prompt 逐字含对应 selector；对有直接人类显式覆盖的 invocation 改为核验 override 事实与 routing 行，当前 T3-r2 必须为 `runtime-default`/`gpt-5.6-sol`；对 F1-F5 断言 model 精确为 `gpt-5.6-sol`、provider 与实际启动 route 一致，且 prompt 逐字含 `model: gpt-5.6-sol`。缺行、多行、错误模型、错误 round/base 或已完成 invocation 无法对应 response 均 REJECT。
 
 ### 确定性验证
 
@@ -479,7 +479,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
 
 ### 全局代理规则
 
-- Todo 1-7 每个实现任务的完整提示必须逐字包含 `provider: deepseek`、`model: deepseek-v4-flash`。
+- Todo 1-7 每个实现任务默认提示逐字包含 `provider: deepseek`、`model: deepseek-v4-flash`；直接人类可显式覆盖具体 invocation，当前 T3-r2 提示必须逐字包含 `provider: runtime-default`、`model: gpt-5.6-sol`。
 - 任何 Todo6 early-owner repair、Todo8 integration fixer 或 acceptance fixer 的完整提示必须逐字包含同一 provider/model。
 - 恰好创建五个 acceptance subagent identity：F1-F5，均使用与主协调者相同的 `model: gpt-5.6-sol`，provider/route 使用启动时承载该模型的实际值并写入 routing manifest；F1-F5 不得使用 `deepseek-v4-flash`。修复后复用这五个 identity 重审，不新增第六个 reviewer。
 - 每次 subagent invocation 前，coordinator 必须先按「TDD 与实现证据」schema append routing manifest；invocationId/identity/provider/model/prompt/round/baseSha 缺一不可。F2 对 manifest、实际响应、commit/evidence 做闭环审计。
@@ -575,7 +575,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   Executor: provider=deepseek, model=deepseek-v4-flash
   Branch base: 当前分支 Todo 1 提交；禁止创建 worktree
 
-- [ ] 3. Wave 1：完整 diagnostics runtime、JSON-RPC、兼容 Diagnostic 投影与 teardown
+- [x] 3. Wave 1：完整 diagnostics runtime、JSON-RPC、兼容 Diagnostic 投影与 teardown
   What to do / Must NOT do: 按接口契约实现 framing/runtime 全状态机；必须使用 canonical session workspace、public FS URI/process path、stat+`readBytes(maxDocumentBytes)`及精确`FsError.code`映射、两级无碰撞 pool/tail Map、完整 spawn spec、唯一 queue、hard deadline、exact URI-first version correlation、consumed-field strict/optional-extension ignored Diagnostic normalization、transport eviction/restart、唯一 tracked graceful-first teardown。不得依赖真实 server、无界 readText、oversized-success bytes、拼接 pool key、host path 猜测、lifetime controller提前abort或第二种hard-stop。
   Parallelization: Wave 1（单分支串行） | Blocked by: 2 | Blocks: 4
   References: `lsp-stdio/src/host.ts:32-58`、`index.ts:216-367`、`connection.ts:17-323`、`instance.ts:252-317`；`FileSystem.readBytes(target, signal, maxBytes)`；SubprocessSpawnSpec/Handle。
@@ -591,7 +591,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   QA scenarios: happy: exact URI/versioned two-batches quiet 后返回最新 normalized 数组，携带tags/relatedInformation/codeDescription/data及unknown extension仍得到相同结果。failure: 跨URI同version/畸形payload被忽略；当前URI任一consumed field非法fatal而ignored field任意类型不fatal；unknown-size bounded read只按`FsError.code`分类；hung initialize/write/close/continuous push 在绝对 deadline返回并由唯一teardown顺序回收，下一次诊断可重启。
   Commit: Y | `feat(lsp-diagnostics): add bounded diagnostics runtime` | Stage exactly `plugins/dsh-lsp-diagnostics/framing.js`, `plugins/dsh-lsp-diagnostics/runtime.js`, `plugins/dsh-lsp-diagnostics/tests/framing.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/runtime.spec.ts`, `docs/plan/dsh-lsp-diagnostics-v1-implementation-plan.md`（仅勾选 Todo 3）。
   Recommended task executor category: unspecified-high
-  Executor: provider=deepseek, model=deepseek-v4-flash
+  Executor: T3-r1 使用 provider=deepseek, model=deepseek-v4-flash；被人类中断后，T3-r2 continuation 使用 provider=runtime-default, model=gpt-5.6-sol 接续未提交现场
   Branch base: 当前分支 Todo 2 提交；禁止创建 worktree
 
 - [ ] 4. Wave 1：全局确定性 strict-schema aggregate renderer
@@ -728,7 +728,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
 
 - Executor: `model=gpt-5.6-sol`（与主协调者相同；provider/route 取实际启动值并记录），严格只读；不得使用 `deepseek-v4-flash`。
 - 读取 coordinator 的 plan/evidence verifier logs、`subagent-routing.jsonl`、`non-code-repairs.jsonl` 与所有 task/reviewer response；用 `GIT_OPTIONAL_LOCKS=0 git log --oneline <base-0>..HEAD` 与 `GIT_OPTIONAL_LOCKS=0 git diff-tree --no-commit-id --name-only -r <commit>` 检查每commit path/message、plan已在base-0。reviewer不重新运行会写文件的 verifier。
-- 对每个 T1-T7、Todo6 back-repair、fixer 与每轮 F1-F5 invocation 一一校验 invocationId/identity/role/provider/model/完整prompt/round/baseSha、启动前 append 顺序、response与commit/evidence对应；特别断言 T1-T7、Todo6 back-repair 与 fixer 使用 `provider=deepseek`、`model=deepseek-v4-flash`，F1-F5 使用 `model=gpt-5.6-sol` 且 provider/route 与实际启动值一致，并验证 F1-F5 identity 跨重审复用。
+- 对每个 T1-T7、Todo6 back-repair、fixer 与每轮 F1-F5 invocation 一一校验 invocationId/identity/role/provider/model/完整prompt/round/baseSha、启动前 append 顺序、response与commit/evidence对应；特别断言 T1-T7、Todo6 back-repair 与 fixer 默认使用 `provider=deepseek`、`model=deepseek-v4-flash`，人类显式覆盖的 T3-r2 使用 `provider=runtime-default`、`model=gpt-5.6-sol`，F1-F5 使用 `model=gpt-5.6-sol` 且 provider/route 与实际启动值一致，并验证 F1-F5 identity 跨重审复用。
 - APPROVE要求每任务 evidence语法通过、stage路径落在精确ownership、Todo6 early-owner授权链完整、无动态文件授权、routing无缺失/补造、coordinator-only repair合规且其后五角色全量重审。
 
 ### F3：scope、配置与版本边界
@@ -796,4 +796,4 @@ F5不得用手发 `fs/observed` 或伪造 `parent` 的测试冒充第2/10项。
 - 真实Loader/app/process、actual tools、actual run_code、真实Agent loop durable next-request路径均有测试；Todo6 RED为真实 assertion failure且 early-owner back-repair 可审计。
 - Todo 1-8 evidence通过；Todo8 coordinator preflight全绿；routing manifest把每次identity/provider/model/full prompt/round/base与response/commit一一对应。
 - 恰好五个只读 acceptance subagent在同一SHA同轮审查、零文件修改、全部APPROVE；tracked fixer或coordinator-only non-code repair后都复用同五 identity 全量重审。
-- 所有未来实现、integration repair 与 fixer agent 均固定 `provider=deepseek`、`model=deepseek-v4-flash`；F1-F5 最终验收 reviewer 均固定 `model=gpt-5.6-sol`（与主协调者相同），provider/route 记录实际启动值，且不得使用 `deepseek-v4-flash`。
+- 实现、integration repair 与 fixer agent 默认使用 `provider=deepseek`、`model=deepseek-v4-flash`；直接人类显式覆盖的 T3-r2 使用 `provider=runtime-default`、`model=gpt-5.6-sol`。F1-F5 最终验收 reviewer 均固定 `model=gpt-5.6-sol`（与主协调者相同），provider/route 记录实际启动值，且不得使用 `deepseek-v4-flash`。
