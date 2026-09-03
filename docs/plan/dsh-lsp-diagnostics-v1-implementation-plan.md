@@ -653,7 +653,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   Executor: provider=deepseek, model=deepseek-v4-flash
   Branch base: 当前分支 Todo 7 提交；禁止创建 worktree
 
-- [ ] 7. Wave 2：README、docs-shape、安装命令与 sync 脚本
+- [x] 7. Wave 2：README、docs-shape、安装命令与 sync 脚本
   What to do / Must NOT do: 完成插件README的Usage/Config/Behavior/Model Experience/Known Limitations and Deferred Work/Verification；新增docs-shape、根README一行与独立sync脚本。文档必须准确写named Loader、`enabled=false`零runtime、严格`.ts/.tsx/.go`route、session workspace eligibility静默、plugin-owned fail-open与caller abort边界、真实三参post-execute、independent monotonic generation counter/active marker与overflow fail-safe、eligibility后共享`(renderPath,String(targetKey),canonicalUri)`code-point排序且调度/输出同序、唯一aggregate逐字节grammar/global count后空section省略/条件式单一全局尾注/完整文本后char marker、coordinator active+`retiredIo` ownership与cleanup顺序、每operation finally清timer/listener、bounded byte read和`FS_TOO_LARGE`/other read error映射、Diagnostic consumed-field严格而标准optional/unknown extension忽略、0→1 based渲染、hard deadline/final gate、唯一shutdown→exit/natural wait→conditional terminate→done/waitForExit→lifetime abort、shell边界、server自行安装、rc.2与`dsh-tools` peer边界。不得改其他文档/脚本。
   Parallelization: Wave 2（单分支串行） | Blocked by: 5 | Blocks: 6
   References: `plugins/rtk/README.md`、docs-shape模式、sync脚本模式、本计划接口契约以及当前分支已完成的 Todo 2–5 提交。
