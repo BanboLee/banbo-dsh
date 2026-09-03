@@ -632,7 +632,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   Executor: provider=deepseek, model=deepseek-v4-flash
   Branch base: 当前分支 Todo 4 提交；禁止创建 worktree
 
-- [ ] 6. Wave 3：真实 Loader/app/process、官方工具、PTC 与 durable delivery
+- [x] 6. Wave 3：真实 Loader/app/process、官方工具、PTC 与 durable delivery
   What to do / Must NOT do: 新建专用 profile helper与composition spec，通过真实 `dsh-app-boot` Loader安装本地 bundle并启动 app；真实注册/执行官方 write/edit/str_replace_editor，真实 run_code nested write，真实 Agent loop + deterministic mock adapter验证持久化下一请求。不得手发 `fs/observed`、伪造 `parent`、仅 `ctx.plugin(apply)`、依赖网络/真实LSP。若 RED 暴露早期 owner 的 manifest/fixture/helper/plugin source/unit spec 缺陷，必须走下述固定 back-repair，不得因原 Todo ownership 已结束而跳过，也不得触碰固定集合外路径。
   Parallelization: Wave 3（单分支串行） | Blocked by: 7 | Blocks: 8
   References: `tests/composition/profile-loader.ts:124-155,200-224`；tool-fs write/edit emit；`tools/tests/ptc.spec.ts:103-116,1068-1092`；agent-loop interception `:613-660`；测试矩阵11-13与F5。
