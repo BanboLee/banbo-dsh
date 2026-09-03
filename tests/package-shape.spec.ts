@@ -55,6 +55,18 @@ const bundleExpectations: readonly BundleExpectation[] = [
       '@earendil-works/pi-ai': '^0.84.2',
     },
   },
+  {
+    directory: 'plugins/dsh-lsp-diagnostics',
+    packageName: 'dsh-lsp-diagnostics',
+    files: ['index.js', 'collector.js', 'framing.js', 'runtime.js', 'render.js', 'coordinator.js', 'cordis.patch.yml', 'README.md'],
+    peerDependencies: {
+      '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',
+      '@deepseek-ai/dsh-fs': '>=0.1.1-rc.2 <0.1.2-0',
+      '@deepseek-ai/dsh-llm': '>=0.1.1-rc.2 <0.1.2-0',
+      '@deepseek-ai/dsh-subprocess': '>=0.1.1-rc.2 <0.1.2-0',
+      '@deepseek-ai/dsh-tools': '>=0.1.1-rc.2 <0.1.2-0',
+    },
+  },
 ] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -195,6 +207,58 @@ describe('Task-5 install surface', () => {
       ])
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+})
+
+function extractLockImporterDevDeps(
+  lock: string,
+  importer: string,
+): Readonly<Record<string, { readonly specifier: string; readonly version: string }>> {
+  const lines = lock.split('\n')
+  const header = `  ${importer}:`
+  const start = lines.findIndex((line) => line === header)
+  if (start === -1) return {}
+  const result: Record<string, { readonly specifier: string; readonly version: string }> = {}
+  let current: string | undefined
+  for (let index = start + 1; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line === undefined) continue
+    if (/^  \S/.test(line) || /^\S/.test(line)) break
+    const depMatch = /^ {6}'([^']+)':$/.exec(line)
+    if (depMatch !== null && depMatch[1] !== undefined) {
+      current = depMatch[1]
+      result[current] = { specifier: '', version: '' }
+      continue
+    }
+    if (current === undefined) continue
+    const specMatch = /^ {8}specifier: (.+)$/.exec(line)
+    if (specMatch !== null && specMatch[1] !== undefined) {
+      result[current] = { ...result[current], specifier: specMatch[1] }
+    }
+    const verMatch = /^ {8}version: (.+)$/.exec(line)
+    if (verMatch !== null && verMatch[1] !== undefined) {
+      result[current] = { ...result[current], version: verMatch[1] }
+    }
+  }
+  return result
+}
+
+describe('dsh-lsp-diagnostics dependency locking', () => {
+  it('resolves every direct devDependency to its exact pinned version in pnpm-lock.yaml', () => {
+    const lock = readRepoFile('pnpm-lock.yaml')
+    const manifest: unknown = JSON.parse(readRepoFile('plugins/dsh-lsp-diagnostics/package.json'))
+    if (!isRecord(manifest)) throw new TypeError('dsh-lsp-diagnostics package.json is not an object')
+    const devDeps = stringRecordField(manifest, 'devDependencies')
+    const resolved = extractLockImporterDevDeps(lock, 'plugins/dsh-lsp-diagnostics')
+    for (const [name, expected] of Object.entries(devDeps)) {
+      const entry = resolved[name]
+      expect(entry, `direct devDependency ${name} must be recorded in pnpm-lock.yaml`).toBeDefined()
+      expect(entry?.specifier).toBe(expected)
+      expect(entry?.version.startsWith(expected)).toBe(true)
+      // The resolved package key must exist at exactly this version — never a
+      // transitive prerelease standing in for the direct dependency.
+      expect(lock.includes(`'${name}@${expected}`)).toBe(true)
     }
   })
 })

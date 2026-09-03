@@ -537,7 +537,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   Recommended task executor category: unspecified-high
   Executor: coordinator, not a subagent; Todo 0 完成后方可实施
 
-- [ ] 1. Wave 0：精确脚手架、版本锁定、strict Config 与 fake server
+- [x] 1. Wave 0：精确脚手架、版本锁定、strict Config 与 fake server
   What to do / Must NOT do: 创建 manifest/patch/tsconfig、named-export namespace 入口骨架、六个模块骨架、README 章节骨架、helpers、bundle/config/fixture specs 与完整 fake server；在入口实现 strict Config validator 与 `enabled=false` early return；更新 package-shape；运行 pnpm install。不得实现 collector/runtime/render/coordinator行为；不得创建可选 wrapper；不得改根 package.json。
   Parallelization: Wave 0（单分支串行） | Blocked by: 0 | Blocks: 2
   References: 包与版本契约；配置与验证；Loader unwrap；`plugins/rtk/package.json`；`tests/package-shape.spec.ts`。
