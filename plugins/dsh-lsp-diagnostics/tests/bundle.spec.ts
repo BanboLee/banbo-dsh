@@ -1,7 +1,34 @@
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it, vi } from 'vitest'
+import { createDiagnosticsCoordinator } from '../coordinator.js'
 import { apply, Config, inject, name } from '../index.js'
+import { DiagnosticsRuntime } from '../runtime.js'
 import { DEFAULT_CONFIG } from './helpers.js'
+
+// Wrap the real coordinator so the Todo 5 cleanup sequence can be asserted
+// per event: apply() still receives the genuine implementation, only the
+// returned object's methods are observed.
+vi.mock('../coordinator.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../coordinator.js')>()
+  const coordinatorCalls: string[] = []
+  const mocked = vi.fn(
+    ((options: Parameters<typeof original.createDiagnosticsCoordinator>[0]) => {
+      const real = original.createDiagnosticsCoordinator(options)
+      const wrapped: Record<string, (...args: unknown[]) => unknown> = {}
+      for (const key of ['listener', 'stopAdmission', 'abortActiveOperations', 'awaitActiveOperations', 'awaitRetiredIo'] as const) {
+        const method = real[key]
+        wrapped[key] = (...args: unknown[]) => {
+          coordinatorCalls.push(key)
+          return (method as (...callArgs: unknown[]) => unknown)(...args)
+        }
+      }
+      ;(wrapped as unknown as { __calls: string[] }).__calls = coordinatorCalls
+      return wrapped as typeof real
+    }) as never,
+  )
+  ;(mocked as unknown as { __calls: string[] }).__calls = coordinatorCalls
+  return { ...original, createDiagnosticsCoordinator: mocked }
+})
 
 function validated(value: unknown): unknown {
   return Config['~standard'].validate(value).value
@@ -223,5 +250,64 @@ describe('dsh-lsp-diagnostics plugin entry', () => {
     expect(ctx.on).not.toHaveBeenCalled()
     expect(ctx.effect).not.toHaveBeenCalled()
     expect(ctx.subprocess.spawn).not.toHaveBeenCalled()
+  })
+})
+
+describe('dsh-lsp-diagnostics Todo 5 assembly', () => {
+  it('enabled=true registers fs/observed + tools/post-execute and exactly one cleanup effect', async () => {
+    const ctx = new Context()
+    const onEvents: string[] = []
+    const effectLabels: string[] = []
+    await ctx.provide('fs', {})
+    await ctx.provide('subprocess', {})
+    await ctx.provide('tools', {})
+    const onSpy = vi.spyOn(ctx, 'on').mockImplementation(((name: never, listener: never, options?: never) => {
+      onEvents.push(String(name))
+      return ctx.events.on(name, listener, options)
+    }) as never)
+    const effectSpy = vi.spyOn(ctx, 'effect').mockImplementation(((execute: never, label?: never) => {
+      effectLabels.push(String(label))
+      return ctx.fiber.effect(execute, label)
+    }) as never)
+    await ctx.plugin(await import('../index.js'), DEFAULT_CONFIG)
+    expect(onEvents).toEqual(['fs/observed', 'tools/post-execute'])
+    expect(effectLabels).toHaveLength(1)
+    expect(effectLabels[0]).toBe('dsh-lsp-diagnostics listeners, operations, retired I/O, and runtime teardown')
+  })
+
+  it('tears down in the exact plan order on plugin dispose', async () => {
+    const ctx = new Context()
+    const order: string[] = []
+    await ctx.provide('fs', {})
+    await ctx.provide('subprocess', {})
+    await ctx.provide('tools', {})
+    const onSpy = vi.spyOn(ctx, 'on').mockImplementation(((name: never, listener: never, options?: never) => {
+      order.push(`on:${String(name)}`)
+      const dispose = ctx.events.on(name, listener, options)
+      return () => {
+        order.push(`off:${String(name)}`)
+        return dispose()
+      }
+    }) as never)
+    const runtimeStopSpy = vi.spyOn(DiagnosticsRuntime.prototype, 'stopAdmission').mockImplementation(function (this: DiagnosticsRuntime) {
+      order.push('runtime.stopAdmission')
+      this.admissionOpen = false
+    })
+    const runtimeDisposeSpy = vi.spyOn(DiagnosticsRuntime.prototype, 'dispose').mockImplementation(function (this: DiagnosticsRuntime) {
+      order.push('runtime.dispose')
+      return Promise.resolve()
+    })
+    const fiber = await ctx.plugin(await import('../index.js'), DEFAULT_CONFIG)
+    await fiber.dispose()
+    const coordinatorCalls = (createDiagnosticsCoordinator as unknown as { __calls: string[] }).__calls
+    expect(order).toEqual([
+      'on:fs/observed',
+      'on:tools/post-execute',
+      'runtime.stopAdmission',
+      'off:tools/post-execute',
+      'off:fs/observed',
+      'runtime.dispose',
+    ])
+    expect(coordinatorCalls).toEqual(['stopAdmission', 'abortActiveOperations', 'awaitActiveOperations', 'awaitRetiredIo'])
   })
 })

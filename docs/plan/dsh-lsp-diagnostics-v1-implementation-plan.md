@@ -613,7 +613,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   Executor: provider=deepseek, model=deepseek-v4-flash
   Branch base: 当前分支 Todo 3 提交；禁止创建 worktree
 
-- [ ] 5. Wave 2：Coordinator、named plugin 装配与最终 freshness commit
+- [x] 5. Wave 2：Coordinator、named plugin 装配与最终 freshness commit
   What to do / Must NOT do: 实现coordinator/index与单测；真实listener签名固定`(exec, _result, next)`，`await next()`唯一调用且在plugin try/catch外；coordinator在任何augment workspace I/O/runtime admission前登记controller+完整promise，并独占absolute-deadline timer/caller+cleanup relay disposer与`retiredIo` late-final-stat registry；所有返回分支take/retire；unsupported、无/空/invalid/non-directory cwd、outside workspace静默；一次workspace canonicalization；eligibility后冻结renderPath/canonicalUri并用renderer共享三列comparator同时决定诊断调度/输出；one-shot final stat/deadline/generation gate；单aggregate context；显式持有两listener disposers并由单一async cleanup严格执行stop admission→offPost→offObserved→abort active→await all active→await retiredIo→runtime.dispose。不得default export、fire-and-forget、依赖Cordis disposer并发/逆序、在deadline结果上等待late stat、吞下游异常、覆盖既有contexts、漏等pre-runtime listener/retired I/O或遗留timer/signal listener。
   Parallelization: Wave 2（单分支串行） | Blocked by: 4 | Blocks: 7
   References: Loader/Cordis metadata；真实tools/post-execute三参waterfall；agent-loop additionalContexts；本计划coordinator/entry/final commit/aggregate ordering契约。

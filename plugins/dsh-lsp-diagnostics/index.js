@@ -3,13 +3,12 @@
  * appends a single bounded aggregate LSP diagnostics notice to a successful
  * write/edit/str_replace_editor mutation inside the session workspace.
  *
- * Todo 1 delivers the pinned manifest contract, the named-export namespace
- * entry surface, and the strict `Config` validator. The collector/runtime/
- * render/coordinator assembly is scaffolded as module skeletons and lands in
- * later todos.
- *
  * @module dsh-lsp-diagnostics
  */
+
+import { createMutationCollector } from './collector.js'
+import { createDiagnosticsCoordinator } from './coordinator.js'
+import { DiagnosticsRuntime } from './runtime.js'
 
 /** Bundle row id this plugin is mounted under (`cordis.patch.yml`). */
 export const name = 'lsp-diagnostics'
@@ -365,12 +364,72 @@ export const Config = {
 
 /**
  * Apply the plugin. `enabled === false` short-circuits with zero collector/
- * runtime/coordinator, zero listeners/effects, and zero subprocesses. The
- * enabled assembly (fs/observed + tools/post-execute wiring) lands in Todo 5.
+ * runtime/coordinator, zero listeners/effects, and zero subprocesses.
+ *
+ * When enabled, assembles the mutation collector, the bounded diagnostics
+ * runtime, and the post-execute coordinator, registers exactly two listeners
+ * (`fs/observed` and `tools/post-execute`) whose disposers are held
+ * explicitly, and registers exactly one cleanup effect running the strict
+ * plan order: stop admission → offPost → offObserved → abort coordinator
+ * operations → await all active augment promises → await all retired
+ * late-final-stat I/O → `runtime.dispose()`.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
  * @param {PluginConfig} config - validated plugin configuration.
  */
 export function apply(ctx, config) {
   if (config.enabled === false) return
+  const collector = createMutationCollector()
+  // The public services are consumed through the plugin's loose structural
+  // seams: `ctx.fs`/`ctx.subprocess` are the harness services and are not
+  // statically visible on the cordis Context surface here.
+  const services = /** @type {{ fs: unknown, subprocess: unknown }} */ (/** @type {unknown} */ (ctx))
+  const runtime = new DiagnosticsRuntime({
+    fs: /** @type {import('./runtime.js').FsSeam} */ (services.fs),
+    subprocess: /** @type {import('./runtime.js').SubprocessSeam} */ (services.subprocess),
+    config,
+  })
+  const coordinator = createDiagnosticsCoordinator({
+    collector,
+    runtime,
+    config,
+    fs: /** @type {import('./coordinator.js').FsSeam} */ (services.fs),
+  })
+  const offObserved = ctx.on('fs/observed', (target, observation, actor) => {
+    collector.observe(actor, target, observation)
+  })
+  const onPostExecute = /** @type {(name: string, listener: unknown) => () => boolean} */ (ctx.on)
+  const offPost = onPostExecute('tools/post-execute', coordinator.listener)
+  ctx.effect(() => async () => {
+    coordinator.stopAdmission()
+    const errors = []
+    for (const off of [offPost, offObserved]) {
+      try {
+        await Promise.resolve(off())
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    try {
+      coordinator.abortActiveOperations()
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      await coordinator.awaitActiveOperations()
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      await coordinator.awaitRetiredIo()
+    } catch (error) {
+      errors.push(error)
+    }
+    try {
+      await runtime.dispose()
+    } catch (error) {
+      errors.push(error)
+    }
+    if (errors.length > 0) throw new AggregateError(errors)
+  }, 'dsh-lsp-diagnostics listeners, operations, retired I/O, and runtime teardown')
 }
