@@ -557,7 +557,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   Executor: provider=deepseek, model=deepseek-v4-flash
   Branch base: 当前 `feat/dsh-lsp-diagnostics-v1` 的 Todo 0 提交；禁止创建 worktree
 
-- [ ] 2. Wave 1：Mutation Collector 与 generation freshness
+- [x] 2. Wave 1：Mutation Collector 与 generation freshness
   What to do / Must NOT do: 实现同步collector、独立`nextGenerationByTarget` monotonic counter、`latestObserved` active marker、take/isCurrent/retireIfCurrent及单测。不得把active marker兼作counter、retire时回退/删除counter、做I/O/await/provider routing；任何hostile observation/exec访问异常都必须containment。
   Parallelization: Wave 1（单分支串行） | Blocked by: 1 | Blocks: 3
   References: `fs/observed` 同步契约；本计划「Mutation Collector 与最终发布 generation」。
