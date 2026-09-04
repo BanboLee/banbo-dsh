@@ -58,6 +58,8 @@ interface Harness {
   readonly coordinator: ReturnType<typeof createDiagnosticsCoordinator>
   readonly config: typeof DEFAULT_CONFIG
   readonly workspaceTarget: FakeTarget
+  /** Mutable monotonic clock fed to the coordinator's injected `now`. */
+  readonly clock: { value: number }
 }
 
 function makeTarget(displayPath: string, targetKey = displayPath): FakeTarget {
@@ -170,15 +172,35 @@ function makeRuntime(): FakeRuntime {
   }
 }
 
-function makeHarness(cwd = '/ws'): Harness {
+function makeHarness(
+  cwd = '/ws',
+  now?: () => number,
+  overrides: Record<string, unknown> = {},
+): Harness {
   const ctx = new Context()
   const collector = createMutationCollector()
   const runtime = makeRuntime()
   const fs = makeFs()
-  const config = DEFAULT_CONFIG
-  const coordinator = createDiagnosticsCoordinator({ collector, runtime, config, fs })
+  const clock = { value: 0 }
+  const config = { ...DEFAULT_CONFIG, ...overrides } as Harness['config']
+  const coordinator = createDiagnosticsCoordinator({
+    collector,
+    runtime,
+    config,
+    fs,
+    now: now ?? (() => clock.value),
+  })
   ;(ctx.on as unknown as (name: string, listener: unknown) => unknown)('tools/post-execute', coordinator.listener)
-  return { ctx, collector, runtime, fs, coordinator, config, workspaceTarget: { targetKey: 'ws:/ws', displayPath: '/ws' } }
+  return {
+    ctx,
+    collector,
+    runtime,
+    fs,
+    coordinator,
+    config,
+    workspaceTarget: { targetKey: 'ws:/ws', displayPath: '/ws' },
+    clock,
+  }
 }
 
 function drive(
@@ -279,6 +301,27 @@ describe('dsh-lsp-diagnostics coordinator waterfall contract', () => {
     expect(harness.collector.isCurrent(candidate)).toBe(false)
   })
 
+  it('retires the exec candidates when downstream next() throws synchronously, propagating the identical error', async () => {
+    const harness = makeHarness()
+    const exec = makeExec()
+    const target = makeTarget('src/a.ts', 'f:a')
+    observe(harness, exec, target)
+    const candidate = { target, version: 'v1', generation: 1 }
+    const boom = new Error('synchronous downstream throw')
+    // Cordis's waterfall invokes listeners directly, so a non-async downstream
+    // listener can throw synchronously out of next(); the coordinator must
+    // still take/retire the exec's candidates before the original error
+    // propagates.
+    await expect(
+      drive(harness, exec, {}, () => {
+        throw boom
+      }),
+    ).rejects.toBe(boom)
+    expect(harness.collector.take(exec)).toEqual([])
+    expect(harness.collector.isCurrent(candidate)).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('propagates a downstream throw after the coordinator with the same error object', async () => {
     const harness = makeHarness()
     const exec = makeExec()
@@ -349,6 +392,10 @@ describe('dsh-lsp-diagnostics coordinator waterfall contract', () => {
     expect(decision).toEqual({ kind: 'accept' })
     expect(noticeOf(decision)).toBeUndefined()
     expect(harness.fs.resolve).not.toHaveBeenCalled()
+    // A pre-aborted operation must not even derive the canonical URI or run
+    // contains: zero workspace I/O of any kind before the early retirement.
+    expect(harness.fs.fileUrl).not.toHaveBeenCalled()
+    expect(harness.fs.contains).not.toHaveBeenCalled()
     expect(harness.collector.isCurrent({ target, version: 'v1', generation: 1 })).toBe(false)
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -634,8 +681,34 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
   })
 
-  it('runs the full deadline transition when wall-clock reaches deadline before the timer task', async () => {
+  it('runs the full deadline transition when the monotonic clock reaches the deadline before the timer task', async () => {
     const harness = makeHarness()
+    const exec = makeExec()
+    const a = makeTarget('src/a.ts', 'f:a')
+    observe(harness, exec, a)
+    let releaseStat!: (value: { version: string; type: string; size: number }) => void
+    harness.fs.stat.mockImplementation(async (target: FakeTarget) => {
+      if (target.targetKey.startsWith('ws:')) return { version: 'ws-v', type: 'directory' }
+      return new Promise<{ version: string; type: string; size: number }>((resolve) => {
+        releaseStat = resolve
+      })
+    })
+    const pending = drive(harness, exec, {}, acceptNext())
+    await vi.advanceTimersByTimeAsync(0)
+    // The deadline decision must use the injected monotonic clock, not
+    // Date.now(): real elapsed time alone trips the deadline.
+    harness.clock.value = DEFAULT_CONFIG.timeoutMs
+    releaseStat({ version: 'v1', type: 'file', size: 32 })
+    const decision = await pending
+    expect(noticeOf(decision)?.content[0]?.text).toBe(
+      '[LSP diagnostics after write]\nFile: src/a.ts\nStatus: diagnostics unavailable (timeout)',
+    )
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('times out on real elapsed monotonic time even when the wall clock rolls back', async () => {
+    const harness = makeHarness('/ws', undefined, { timeoutMs: 10, settleMs: 5 })
     const exec = makeExec()
     const a = makeTarget('src/a.ts', 'f:a')
     observe(harness, exec, a)
@@ -649,7 +722,11 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     const startedAt = Date.now()
     const pending = drive(harness, exec, {}, acceptNext())
     await vi.advanceTimersByTimeAsync(0)
-    vi.setSystemTime(startedAt + DEFAULT_CONFIG.timeoutMs)
+    // 39ms of real (monotonic) elapsed time with a 10ms deadline, while the
+    // wall clock is rolled back: a Date.now()-based deadline would still
+    // commit stats-first, the monotonic clock must not.
+    harness.clock.value = 39
+    vi.setSystemTime(startedAt - 500)
     releaseStat({ version: 'v1', type: 'file', size: 32 })
     const decision = await pending
     expect(noticeOf(decision)?.content[0]?.text).toBe(
@@ -979,6 +1056,70 @@ describe('dsh-lsp-diagnostics coordinator admission and registration', () => {
     await harness.coordinator.awaitRetiredIo()
     expect(harness.runtime.stopAdmission).toHaveBeenCalledTimes(2)
   })
+
+  it('does not abort active operations at stop admission; only the abort step does', async () => {
+    const harness = makeHarness()
+    const exec = makeExec()
+    const a = makeTarget('src/a.ts', 'f:a')
+    observe(harness, exec, a)
+    let capturedSignal: AbortSignal | undefined
+    let releaseDiagnosis!: () => void
+    harness.runtime.diagnose.mockImplementation(
+      async (_c: unknown, _w: unknown, _uri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
+        capturedSignal = signal
+        await new Promise<void>((resolve) => {
+          releaseDiagnosis = resolve
+        })
+        return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
+      },
+    )
+    const pending = drive(harness, exec, {}, acceptNext())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(capturedSignal?.aborted).toBe(false)
+    // stop admission only closes the gate; the documented order aborts active
+    // operations later, after both listener disposers have run.
+    harness.coordinator.stopAdmission()
+    expect(capturedSignal?.aborted).toBe(false)
+    harness.coordinator.abortActiveOperations()
+    expect(capturedSignal?.aborted).toBe(true)
+    releaseDiagnosis()
+    const decision = await pending
+    expect(decision).toEqual({ kind: 'accept' })
+    expect(noticeOf(decision)).toBeUndefined()
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+    await harness.coordinator.awaitActiveOperations()
+    await harness.coordinator.awaitRetiredIo()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('cancels an augment stuck in the workspace stat on unload and drains registries', async () => {
+    const harness = makeHarness()
+    const exec = makeExec()
+    const a = makeTarget('src/a.ts', 'f:a')
+    observe(harness, exec, a)
+    let releaseWorkspaceStat!: (value: { version: string; type: string; size: number }) => void
+    harness.fs.stat.mockImplementation(async (target: FakeTarget) => {
+      if (target.targetKey.startsWith('ws:')) {
+        return new Promise<{ version: string; type: string; size: number }>((resolve) => {
+          releaseWorkspaceStat = resolve
+        })
+      }
+      return { version: 'v1', type: 'file', size: 32 }
+    })
+    const pending = drive(harness, exec, {}, acceptNext())
+    await vi.advanceTimersByTimeAsync(0)
+    harness.coordinator.stopAdmission()
+    harness.coordinator.abortActiveOperations()
+    releaseWorkspaceStat({ version: 'ws-v', type: 'directory', size: 0 })
+    const decision = await pending
+    expect(decision).toEqual({ kind: 'accept' })
+    expect(harness.runtime.diagnose).not.toHaveBeenCalled()
+    expect(harness.fs.contains).not.toHaveBeenCalled()
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+    await harness.coordinator.awaitActiveOperations()
+    await harness.coordinator.awaitRetiredIo()
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })
 
 describe('dsh-lsp-diagnostics coordinator cleanup ownership', () => {
@@ -1055,6 +1196,49 @@ describe('dsh-lsp-diagnostics coordinator cleanup ownership', () => {
     }
     for (const kind of ['no-candidate', 'non-accept', 'stats-first', 'deadline', 'caller', 'cleanup'] as const) {
       await runCase(kind)
+    }
+  })
+
+  it('leaves zero residue when the operation disposer and cleanup are repeated on a live operation', async () => {
+    const tracked = trackAbortListeners()
+    try {
+      const harness = makeHarness()
+      const caller = new AbortController()
+      const exec = makeExec('/ws', caller.signal)
+      const a = makeTarget('src/a.ts', 'f:a')
+      observe(harness, exec, a)
+      let releaseDiagnosis!: () => void
+      harness.runtime.diagnose.mockImplementation(
+        async (_c: unknown, _w: unknown, _uri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
+          await new Promise<void>((resolve) => {
+            releaseDiagnosis = resolve
+          })
+          if (signal?.aborted === true) return { kind: 'stale' }
+          return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
+        },
+      )
+      const pending = drive(harness, exec, {}, acceptNext())
+      await vi.advanceTimersByTimeAsync(0)
+      // Repeated cleanup cycles against the live operation: stop admission,
+      // abort, and both await barriers are all idempotent, and the operation's
+      // deadline timer + caller/cleanup relay listeners reach zero residue.
+      harness.coordinator.stopAdmission()
+      harness.coordinator.stopAdmission()
+      harness.coordinator.abortActiveOperations()
+      harness.coordinator.abortActiveOperations()
+      harness.coordinator.abortActiveOperations()
+      releaseDiagnosis()
+      const decision = await pending
+      expect(decision).toEqual({ kind: 'accept' })
+      expect(noticeOf(decision)).toBeUndefined()
+      await harness.coordinator.awaitActiveOperations()
+      await harness.coordinator.awaitActiveOperations()
+      await harness.coordinator.awaitRetiredIo()
+      await harness.coordinator.awaitRetiredIo()
+      expect(tracked.count()).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      tracked.restore()
     }
   })
 

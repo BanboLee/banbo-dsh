@@ -127,6 +127,11 @@ const SEVERITY_RANK = { error: 0, warning: 1, info: 2, hint: 3, unknown: 4 }
  * @property {string} canonicalUri - the exact canonical document URI.
  * @property {number} currentVersion - the didOpen version of this open generation.
  * @property {boolean} firstOpen - whether this process opens this URI for the first time.
+ * @property {boolean} opened - whether the didOpen write succeeded; only a
+ *   successfully written open generation may accept publications.
+ * @property {NormalizedDiagnostic[] | null} preOpenBatch - publications that
+ *   arrived while the didOpen write was still in flight, buffered until the
+ *   open succeeds; they never set `acceptedPublication` by themselves.
  * @property {boolean} settled - the waiter is done (accepted, timed out, aborted, or failed).
  * @property {NormalizedDiagnostic[] | null} batch - the latest accepted batch.
  * @property {ReturnType<typeof setTimeout> | undefined} timer - the quiet-window timer.
@@ -151,6 +156,9 @@ class TransportError extends Error {
     this.name = 'TransportError'
     /** @type {UnavailableReason} */
     this.reason = reason
+    /** @type {boolean} - set on stdin write-path failures so bootstrap can
+     *  distinguish a dead-server EPIPE from a decoder/protocol failure. */
+    this.writeFailure = false
   }
 }
 
@@ -767,6 +775,8 @@ class LspSession {
     }
     /** @type {Map<number, { resolve: (value: unknown) => void, reject: (error: Error) => void, signal?: AbortSignal, onAbort?: () => void }>} */
     this.pending = new Map()
+    /** @type {Set<Promise<void>>} */
+    this.serverRequests = new Set()
     /** @type {number} */
     this.nextId = 1
     /** @type {Promise<void>} */
@@ -854,9 +864,11 @@ class LspSession {
     this.stdout = handle.stdout
     handle.done.then(
       () => {
+        this.processExited = true
         if (!this.closing) this.poison(new TransportError('server crashed', new Error('language server exited')))
       },
       (error) => {
+        this.processExited = true
         if (!this.closing) this.poison(new TransportError('server crashed', error))
       },
     )
@@ -873,8 +885,32 @@ class LspSession {
         initializationOptions: this.server.initializationOptions,
       },
       executionSignal,
-    ).catch((error) => {
+    ).catch(async (error) => {
       if (executionSignal !== undefined && executionSignal.aborted) throw abortError(executionSignal)
+      if (error instanceof TransportError && error.writeFailure === true) {
+        // A stdin write failure (e.g. EPIPE) can beat the process-exit
+        // observation: when the server exited before its initialize response,
+        // the classification must stay `server crashed`, not degrade to
+        // `malformed response`. Decoder/protocol failures are never
+        // reclassified — only write failures race the process exit.
+        const cause = error.cause
+        const isEpipe =
+          cause instanceof Error &&
+          (/** @type {{ code?: unknown }} */ (/** @type {unknown} */ (cause)).code === 'EPIPE' ||
+            /EPIPE/.test(cause.message))
+        if (isEpipe || this.processExited) throw new TransportError('server crashed', error)
+        if (this.handle !== undefined) {
+          // Give handle.done a macrotask window to settle for the
+          // EPIPE-before-exit ordering before falling back to the original
+          // classification (malformed response).
+          const exited = await Promise.race([
+            this.handle.done.then(() => true, () => true),
+            new Promise((resolve) => setTimeout(resolve, 0)).then(() => false),
+          ])
+          if (exited) throw new TransportError('server crashed', error)
+        }
+        throw error
+      }
       if (error instanceof TransportError) throw error
       throw new TransportError('malformed response', error)
     })
@@ -923,6 +959,10 @@ class LspSession {
     const firstOpen = !this.openedUris.has(uri)
     this.openedUris.add(uri)
     const waiter = this.armWaiter(uri, version, firstOpen, executionSignal)
+    // The waiter is only awaited after a successful didOpen write; a write
+    // failure settles it through poison before this function can await it, so
+    // its rejection must stay observed (no unhandled rejection).
+    void waiter.promise.catch(() => {})
     let opened = false
     /** @type {DiagnosisOutcome} */
     let outcome = { kind: 'unavailable', reason: 'diagnostics unavailable' }
@@ -937,6 +977,13 @@ class LspSession {
         executionSignal,
       )
       opened = true
+      // Only a successfully written didOpen generation accepts notifications:
+      // flush any publication that raced the write callback now.
+      waiter.opened = true
+      if (waiter.preOpenBatch !== null) {
+        this.acceptBatch(waiter.preOpenBatch)
+        waiter.preOpenBatch = null
+      }
       outcome = await waiter.promise
     } catch (error) {
       if (executionSignal !== undefined && executionSignal.aborted) {
@@ -1002,6 +1049,8 @@ class LspSession {
       canonicalUri: uri,
       currentVersion: version,
       firstOpen,
+      opened: false,
+      preOpenBatch: null,
       settled: false,
       batch: null,
       timer: undefined,
@@ -1109,7 +1158,16 @@ class LspSession {
     const id = frame.id
     const method = frame.method
     if (typeof method === 'string' && (typeof id === 'number' || typeof id === 'string')) {
-      void this.handleServerRequest(id, method, frame.params).catch(() => {})
+      // While closing, no new server-request handlers start: teardown owns the
+      // already-started handlers and the write tail so no protocol I/O can
+      // happen after cleanup resolves.
+      if (this.closing) return
+      const task = this.handleServerRequest(id, method, frame.params)
+      this.serverRequests.add(task)
+      void task.then(
+        () => this.serverRequests.delete(task),
+        () => this.serverRequests.delete(task),
+      )
       return
     }
     if (typeof method === 'string') {
@@ -1248,6 +1306,15 @@ class LspSession {
         return
       }
     }
+    // A publication that races the didOpen write callback is buffered, never
+    // accepted: only a successfully written open generation may accept
+    // notifications, and a pre-open publication must not set
+    // acceptedPublication (which would suppress the allowed fresh-instance
+    // retry after a failed didOpen write).
+    if (!waiter.opened) {
+      waiter.preOpenBatch = diagnostics
+      return
+    }
     this.acceptBatch(diagnostics)
   }
 
@@ -1289,6 +1356,7 @@ class LspSession {
         entry.signal.removeEventListener('abort', entry.onAbort)
       }
       const failure = new TransportError('malformed response', error)
+      if (error instanceof TransportError && error.writeFailure === true) failure.writeFailure = true
       entry.reject(failure)
       if (!teardownOwned) this.poison(failure)
     })
@@ -1313,6 +1381,7 @@ class LspSession {
             this.stdin.write(frame, (error) => {
               if (error) {
                 const failure = new TransportError('malformed response', error)
+                failure.writeFailure = true
                 if (!this.closing) this.poison(failure)
                 reject(failure)
                 return
@@ -1321,6 +1390,7 @@ class LspSession {
             })
           } catch (error) {
             const failure = new TransportError('malformed response', error)
+            failure.writeFailure = true
             if (!this.closing) this.poison(failure)
             reject(failure)
           }
@@ -1451,7 +1521,7 @@ class LspSession {
         errors.push(error)
       }
     }
-    if (this.handle !== undefined) {
+if (this.handle !== undefined) {
       try {
         await this.handle.done
       } catch (error) {
@@ -1463,7 +1533,19 @@ class LspSession {
         errors.push(error)
       }
     }
-    this.lifetimeController.abort()
+    // Own the protocol write quiescence: every server-request handler and the
+    // serialized write tail must settle before cleanup returns, so no queued
+    // frame (responses, shutdown, exit) can be written after dispose resolves.
+    // No new server-request handlers start while closing, so this terminates.
+for (;;) {
+      while (this.serverRequests.size > 0) {
+        await Promise.allSettled([...this.serverRequests])
+      }
+  const tail = this.writeTail
+      await tail
+      if (this.writeTail === tail && this.serverRequests.size === 0) break
+    }
+this.lifetimeController.abort()
     this.detachStreams()
     if (errors.length === 1) throw errors[0]
     if (errors.length > 1) {

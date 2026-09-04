@@ -100,7 +100,20 @@ export class MessageDecoder {
       return { ready: false }
     }
     const bodyBytes = this.buffer.subarray(bodyStart, bodyEnd)
-    this.buffer = this.buffer.subarray(bodyEnd)
+    // Copy the remaining tail into a fresh exact-size buffer: a subarray would
+    // keep sharing the (potentially multi-megabyte) chunk's ArrayBuffer, and
+    // the shared pool slab is still larger than the protocol bound. The
+    // retained buffer is therefore physically bounded by its own logical
+    // length (<= MAX_HEADER_BYTES + maxMessageBytes by construction) and never
+    // leaks the backing store of a large coalesced chunk.
+    const remaining = this.buffer.length - bodyEnd
+    if (remaining > 0) {
+      const rest = Buffer.allocUnsafeSlow(remaining)
+      this.buffer.copy(rest, 0, bodyEnd)
+      this.buffer = rest
+    } else {
+      this.buffer = Buffer.alloc(0)
+    }
     let body
     try {
       body = new TextDecoder('utf-8', { fatal: true }).decode(bodyBytes)

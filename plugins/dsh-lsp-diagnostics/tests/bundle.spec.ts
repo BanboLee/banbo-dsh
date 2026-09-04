@@ -205,6 +205,60 @@ describe('dsh-lsp-diagnostics Config schema', () => {
     }
   })
 
+  it('rejects explicit undefined configuration/initializationOptions instead of defaulting them', () => {
+    // Only a truly omitted field falls back to the default; an own enumerable
+    // property whose value is undefined is not a JSON value and must fail loud.
+    for (const field of ['configuration', 'initializationOptions'] as const) {
+      const servers = mutableServers()
+      servers.typescript[field] = undefined
+      expect(() => validated({ servers }), `${field}=undefined`).toThrow()
+    }
+  })
+
+  it('rejects non-plain JSON containers (Map/Set/Date/custom prototypes) at load time', () => {
+    const bads: unknown[] = [
+      new Map([['a', 1]]),
+      new Set([1]),
+      new Date(0),
+      new Number(1),
+      new String('x'),
+      new Boolean(false),
+      Object.create({ inherited: 1 }),
+      { nested: new Map([['x', 'y']]) },
+    ]
+    for (const bad of bads) {
+      const servers = mutableServers()
+      servers.typescript.configuration = bad
+      expect(() => validated({ servers }), `configuration ${String(bad)}`).toThrow()
+    }
+  })
+
+  it('canonicalizes configuration/initializationOptions into stable plain JSON (stateful values snapshot once)', () => {
+    // A stateful value (a getter) must be canonicalized exactly once at
+    // validation: later protocol serialization reads a plain clone and can
+    // never re-invoke the stateful accessor or observe a different value.
+    let reads = 0
+    const stateful = {
+      get nested() {
+        reads += 1
+        return { ok: true }
+      },
+    }
+    const servers = mutableServers()
+    servers.typescript.configuration = stateful
+    const result = validated({ servers }) as {
+      servers: { typescript: { configuration: unknown } }
+    }
+    expect(reads).toBe(1)
+    // The canonical clone serializes deterministically and repeatedly.
+    const first = JSON.stringify(result.servers.typescript.configuration)
+    const second = JSON.stringify(result.servers.typescript.configuration)
+    expect(first).toBe('{"nested":{"ok":true}}')
+    expect(second).toBe(first)
+    // The validated config object is not the raw user object.
+    expect(result.servers.typescript.configuration).not.toBe(stateful)
+  })
+
   it('accepts valid nested JSON and preserves explicit JSON null values', () => {
     const servers = mutableServers()
     servers.typescript.configuration = null

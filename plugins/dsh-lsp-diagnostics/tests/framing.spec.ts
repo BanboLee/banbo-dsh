@@ -214,4 +214,26 @@ describe('dsh-lsp-diagnostics MessageDecoder', () => {
     const bytes = Buffer.concat([Buffer.from('Content-Length: 0\r\n\r\n', 'ascii')])
     expect(() => decoder.push(bytes)).toThrow(/JSON/i)
   })
+
+  it('does not retain a huge backing buffer behind a small remaining tail', () => {
+    const decoder = new MessageDecoder(1024)
+    const count = 2_000
+    const frames: Buffer[] = []
+    for (let index = 0; index < count; index += 1) {
+      frames.push(frame({ jsonrpc: '2.0', id: index }))
+    }
+    const tail = Buffer.from('partial-tail')
+    const chunk = Buffer.concat([...frames, tail])
+    const originalBacking = chunk.buffer
+    const messages = decoder.push(chunk)
+    expect(messages).toHaveLength(count)
+    expect(decoder.buffer.length).toBe(tail.length)
+    // The retained tail must not share the multi-megabyte chunk's ArrayBuffer:
+    // the decoder's logical buffer is tiny and so is its physical backing.
+    expect(decoder.buffer.buffer).not.toBe(originalBacking)
+    // A fresh copy has a small backing store (the tail length rounded to a
+    // pool allocation), nowhere near the coalesced chunk's size.
+    expect(decoder.buffer.buffer.byteLength).toBeLessThan(originalBacking.byteLength / 2)
+    expect(decoder.buffer.buffer.byteLength).toBeLessThanOrEqual(MAX_HEADER_BYTES + 1024)
+  })
 })

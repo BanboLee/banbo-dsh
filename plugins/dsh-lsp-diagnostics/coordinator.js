@@ -52,6 +52,9 @@ import { compareEligibleTargets, renderDiagnostics, sanitizeDisplayPath } from '
  * @property {RuntimeSeam} runtime
  * @property {import('./index.js').PluginConfig} config
  * @property {FsSeam} fs
+ * @property {() => number} [now] - monotonic clock (defaults to
+ *   `performance.now()`); the absolute deadline and every gate check read it,
+ *   never `Date.now()`.
  */
 
 /**
@@ -109,7 +112,7 @@ function extensionOf(uri) {
  *   awaitRetiredIo(): Promise<void>
  * }}
  */
-export function createDiagnosticsCoordinator({ collector, runtime, config, fs }) {
+export function createDiagnosticsCoordinator({ collector, runtime, config, fs, now = () => performance.now() }) {
   /** @type {Set<AugmentOperation>} */
   const activeOperations = new Set()
   /** @type {Set<Promise<unknown>>} */
@@ -128,23 +131,28 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
   }
 
   /**
-   * Synchronously close admission and abort the coordinator cleanup signal.
-   * Also stops the runtime's own admission. Idempotent.
+   * Synchronously close admission and stop the runtime's own admission.
+   * Deliberately does NOT abort the coordinator cleanup signal: the documented
+   * lifecycle aborts active operations only at the later `abortActiveOperations`
+   * step, after both listener disposers have run. Idempotent.
    * @returns {void}
    */
   function stopAdmission() {
     admissionOpen = false
     runtime.stopAdmission()
-    cleanupController.abort()
   }
 
   /**
-   * Abort every active augment operation controller. A listener still awaiting
-   * downstream `next()` has no plugin-owned cancellation seam, so cleanup owns
-   * it by waiting for its tracked settlement instead.
+   * Abort the coordinator cleanup signal (relaying the cleanup abort to every
+   * registered operation, which records the abort kind and retires unsettled
+   * final stats) and abort every active augment operation controller. A
+   * listener still awaiting downstream `next()` has no plugin-owned
+   * cancellation seam, so cleanup owns it by waiting for its tracked
+   * settlement instead. Idempotent.
    * @returns {void}
    */
   function abortActiveOperations() {
+    cleanupController.abort()
     for (const operation of activeOperations) {
       if (!operation.controller.signal.aborted) operation.controller.abort()
     }
@@ -233,10 +241,10 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
    * Begin one post-execute augment transaction. In a no-await critical
    * section: when admission is closed, take + retire synchronously and return
    * undefined (zero timers/listeners/I/O). Otherwise create the controller,
-   * the absolute-deadline timer, the caller/cleanup relay listeners and the
-   * idempotent disposer, register the tracked promise in the active registry
-   * BEFORE any workspace I/O (the body starts in a microtask), and return the
-   * operation record.
+   * the absolute-deadline timer (from the injected monotonic clock), the
+   * caller/cleanup relay listeners and the idempotent disposer, register the
+   * tracked promise in the active registry BEFORE any workspace I/O (the body
+   * starts in a microtask), and return the operation record.
    * @param {unknown} exec - the tool-execution context.
    * @param {unknown} decision - the already-accepted post-execute decision.
    * @returns {AugmentOperation | undefined}
@@ -248,7 +256,7 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
       return undefined
     }
     const controller = new AbortController()
-    const deadlineAt = Date.now() + config.timeoutMs
+    const deadlineAt = now() + config.timeoutMs
     /** @type {{ gate: GateState, deadlineFired: boolean, abortKind: 'caller' | 'cleanup' | undefined, finalStats: FinalStatRecord[] }} */
     const state = {
       gate: 'open',
@@ -339,6 +347,13 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
       for (const candidate of candidates) collector.retireIfCurrent(candidate)
     }
     try {
+      // A pre-aborted operation (caller/cleanup abort won before this microtask
+      // started) must retire synchronously with zero workspace I/O — not even
+      // the canonical-URI derivation — and must never publish.
+      if (signal.aborted) {
+        retireAll()
+        return decision
+      }
       /** @type {PostExecuteDecision} */
       const decisionRecord = /** @type {PostExecuteDecision} */ (decision)
       if (decisionRecord.kind !== 'accept') {
@@ -470,7 +485,7 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
       // gate is still open and the operation is alive.
       /** @type {FinalStatRecord[]} */
       const records = []
-      if (state.gate === 'open' && !signal.aborted && Date.now() < deadlineAt) {
+      if (state.gate === 'open' && !signal.aborted && now() < deadlineAt) {
         for (const { target } of diagnosed) records.push(startFinalStat(target.candidate.target, signal))
         state.finalStats = records
         if (records.length > 0) {
@@ -497,13 +512,13 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
       // still open; `now === deadlineAt` is always deadline-first.
       if (state.gate === 'open') {
         const allSettled = records.length > 0 && records.every((record) => record.settled)
-        if (allSettled && Date.now() < deadlineAt && !signal.aborted) {
+        if (allSettled && now() < deadlineAt && !signal.aborted) {
           state.gate = 'committed'
         } else {
-          // Wall-clock expiry before the deadline timer task runs: run the
+          // Monotonic-clock expiry before the deadline timer task runs: run the
           // full deadline transition (deadlineFired + controller abort) so the
           // same-tick contender still produces the timeout aggregate.
-          if (!signal.aborted && Date.now() >= deadlineAt) operation.expireDeadline()
+          if (!signal.aborted && now() >= deadlineAt) operation.expireDeadline()
           else {
             state.gate = 'timed-out'
             retireUnsettledFinalStats(records)
@@ -632,7 +647,18 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
     // Start in a microtask so the complete listener promise is registered
     // before `next()` can run or perform any downstream work.
     const invocation = Promise.resolve().then(async () => {
-      const downstream = next()
+      // Cordis's waterfall invokes downstream listeners directly, so a
+      // non-async listener can throw synchronously out of `next()`. Both the
+      // synchronous throw and a rejected promise must retire the exec's
+      // candidates before the original error propagates.
+      /** @type {Promise<unknown>} */
+      let downstream
+      try {
+        downstream = next()
+      } catch (error) {
+        for (const candidate of collector.take(exec)) collector.retireIfCurrent(candidate)
+        throw error
+      }
       // Observe rejection only to clean collector state. Awaiting the original
       // promise below preserves the exact rejection object and remains outside
       // the plugin-owned try/catch.

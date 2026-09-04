@@ -126,6 +126,26 @@ stop admission → offPost → offObserved → abort coordinator operations → 
 Every operation's outermost `finally` clears the deadline timer and removes
 the caller/cleanup relay listeners, leaving zero residue.
 
+`stopAdmission()` only closes the gate and the runtime's own admission; it
+never aborts operations. Active operations are aborted at the later abort
+step, after both listener disposers have run, exactly as the documented order
+states. A listener that already entered but is still blocked in downstream
+`next()` has no plugin-owned cancellation seam, so cleanup tracks every such
+invocation in a pending-invocation registry and awaits its settlement (it
+takes and retires the exec's candidates before the downstream result or error
+returns, including when `next()` throws synchronously). The deadline uses an
+injected monotonic clock, never `Date.now()`, so wall-clock rollback cannot
+extend a hard deadline.
+
+Session teardown also owns the protocol write quiescence: every in-flight
+server-request handler and the serialized write tail settle before cleanup
+returns, and no new server-request handlers start while closing — so no queued
+frame (responses, `shutdown`, `exit`) can be written after cleanup resolves.
+A matching `publishDiagnostics` that races the `didOpen` write is buffered
+until the open write succeeds; only a successfully written open generation
+accepts notifications, and a failed `didOpen` write still allows the allowed
+fresh-instance retry.
+
 `timeoutMs` is a single non-extendable deadline for the whole post-execute;
 the final freshness round is a one-shot final stat/deadline/generation gate.
 A deadline/caller/cleanup loss never waits for late final stats: unsettled

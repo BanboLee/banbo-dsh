@@ -1,5 +1,8 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   bootLspDiagnosticsProfile,
@@ -37,6 +40,34 @@ afterEach(async () => {
   }
 })
 
+/**
+ * Compile a Go source in an isolated temp module with the real Go toolchain
+ * (no network, isolated GOCACHE). Returns the `go build` exit status.
+ * Proves that the fixture's Go error→fix transition repairs a genuinely
+ * compilable program, not just a sentinel disappearance.
+ */
+function goBuildStatus(source: string): number {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-lsp-go-'))
+  try {
+    writeFileSync(join(dir, 'main.go'), source)
+    const result = spawnSync('go', ['build', '.'], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        GO111MODULE: 'off',
+        GOPATH: join(dir, 'gopath'),
+        GOCACHE: join(dir, 'gocache'),
+        GOFLAGS: '-mod=mod',
+      },
+      encoding: 'utf8',
+      timeout: 30_000,
+    })
+    return result.status ?? -1
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 /** Execute one official tool through the real tools runtime with a session cwd. */
 async function executeTool(
   booted: LspDiagnosticsBooted,
@@ -59,31 +90,16 @@ async function executeTool(
 }
 
 /**
- * Drive one multi-file mutation transaction through the booted plugin's real
- * fs/observed listeners and real three-argument post-execute waterfall. This is
- * intentionally not used for F5's official-tool or PTC claims; it isolates the
- * composition-level shared ordering/global-cap contract for one exec.
+ * Drive one real official `write` tool call through the booted plugin's real
+ * fs/observed emission and real three-argument post-execute waterfall, then
+ * return the tool result with any plugin notice attached.
  */
-async function executeMultiFileComposition(booted: LspDiagnosticsBooted): Promise<any> {
-  const ctx = booted.ctx as any
-  const signal = new AbortController().signal
-  const exec = {
-    name: 'write',
-    arguments: {},
-    agent: { session: { header: { cwd: booted.workspace } } },
-    signal,
-  }
-  const files = [
-    ['src/z.ts', 'const z: number = "oops";\n'],
-    ['src/a.tsx', 'export const a: number = 1;\n'],
-    ['src/m.go', 'package main\nfunc main() {}\n'],
-  ] as const
-  for (const [filePath, content] of files) {
-    const target = await ctx.fs.resolve(filePath, { cwd: booted.workspace, signal })
-    const outcome = await ctx.fs.writeText(target, content, undefined, signal)
-    ctx.emit('fs/observed', target, { kind: 'present', version: outcome.version }, exec)
-  }
-  return ctx.waterfall('tools/post-execute', exec, { isError: false, content: [] }, async () => ({ kind: 'accept' }))
+async function writeFileThroughRealTool(
+  booted: LspDiagnosticsBooted,
+  relativePath: string,
+  content: string,
+): Promise<any> {
+  return executeTool(booted, 'write', { file_path: relativePath, content }, booted.workspace)
 }
 
 /** Remove the live loader entry and await that plugin's async cleanup. */
@@ -150,6 +166,12 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(notice).toBe(expectedSingleFileNotice(booted.workspace, 'src/a.ts', [TS_DIAGNOSTIC_LINES, '', 'Fix these diagnostics before considering the change complete.']))
     // The real tools actually wrote the file inside the session workspace.
     expect(readFileSync(join(booted.workspace, 'src', 'a.ts'), 'utf8')).toBe('const x: number = "oops";\n')
+    // The protocol didOpen used the canonical fs-derived file URL of the real
+    // target — never a displayPath-guessed URI — through the whole real path.
+    const protocol = readFileSync(booted.typescriptLog, 'utf8')
+    const canonicalUrl = pathToFileURL(join(booted.workspace, 'src', 'a.ts')).href
+    expect(protocol).toContain(`didOpen ${canonicalUrl} v1`)
+    expect(protocol).toContain(`publish ${canonicalUrl} v1`)
   })
 
   it('reports diagnostics then clean after an actual edit fixes the same TypeScript file', async () => {
@@ -215,9 +237,15 @@ describe('dsh-lsp-diagnostics real composition', () => {
   it('diagnoses a Go error and reports clean after fixing the same file in the same session', async () => {
     const booted = await bootLspDiagnosticsProfile({ goMode: 'content-aware', typescriptMode: 'content-aware' })
     bootedProfiles.push(booted)
+    // A genuinely broken Go program: assigning an int constant to a string
+    // variable at package scope fails real Go compilation.
+    const badGo = 'package main\nvar x string = 1\nfunc main() {}\n'
+    const fixedGo = 'package main\nvar x string = "1"\nfunc main() {}\n'
+    expect(goBuildStatus(badGo)).not.toBe(0)
+    expect(goBuildStatus(fixedGo)).toBe(0)
     const errorWrite = await executeTool(booted, 'write', {
       file_path: 'src/main.go',
-      content: 'package main\nfunc main() { var x string = 1 }\n',
+      content: badGo,
     }, booted.workspace)
     expect(errorWrite.isError).toBe(false)
     expect(pluginNoticeText(errorWrite)).toContain(TS_ERROR_SUBSTRING)
@@ -225,12 +253,14 @@ describe('dsh-lsp-diagnostics real composition', () => {
     const fix = await executeTool(booted, 'edit', {
       file_path: 'src/main.go',
       old_string: 'var x string = 1',
-      new_string: 'var x int = 1',
+      new_string: 'var x string = "1"',
     }, booted.workspace)
     expect(fix.isError).toBe(false)
+    // The clean result reflects a genuinely repaired Go program: the fixed
+    // source compiles with the real Go toolchain, not just a sentinel gone.
     expect(pluginNoticeText(fix)).toBe(expectedSingleFileNotice(booted.workspace, 'src/main.go', ['Status: clean']))
-    expect(readFileSync(join(booted.workspace, 'src', 'main.go'), 'utf8')).toContain('var x int = 1')
-  })
+    expect(readFileSync(join(booted.workspace, 'src', 'main.go'), 'utf8')).toContain('var x string = "1"')
+  }, 30_000)
 
   it('silently ignores unsupported extensions, missing session cwd, and outside-workspace targets', async () => {
     const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'push-versioned' })
@@ -299,7 +329,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
     ]))
   })
 
-  it('uses one shared order and global count cap for a real mixed multi-file aggregate', async () => {
+  it('renders the shared aggregate grammar and global count cap through real write tool calls', async () => {
     const booted = await bootLspDiagnosticsProfile({
       typescriptMode: 'content-aware',
       missingGo: true,
@@ -307,22 +337,28 @@ describe('dsh-lsp-diagnostics real composition', () => {
       maxResultChars: 8_000,
     })
     bootedProfiles.push(booted)
-    const result = await executeMultiFileComposition(booted)
-    const text = pluginNoticeText(result)
-    expect(text).toBe([
-      '[LSP diagnostics after write]',
-      `File: ${join(booted.workspace, 'src', 'a.tsx')}`,
-      'Status: clean',
-      '',
-      `File: ${join(booted.workspace, 'src', 'm.go')}`,
+    // Every write is a real official tool call: real fs/observed emission and
+    // the real three-parameter post-execute waterfall (no hand-sent events).
+    const cleanResult = await writeFileThroughRealTool(booted, 'src/a.tsx', 'export const a: number = 1;\n')
+    expect(cleanResult.isError).toBe(false)
+    expect(pluginNoticeText(cleanResult)).toBe(expectedSingleFileNotice(booted.workspace, 'src/a.tsx', ['Status: clean']))
+
+    const goResult = await writeFileThroughRealTool(booted, 'src/m.go', 'package main\nfunc main() {}\n')
+    expect(goResult.isError).toBe(false)
+    expect(pluginNoticeText(goResult)).toBe(expectedSingleFileNotice(booted.workspace, 'src/m.go', [
       'Status: diagnostics unavailable (server not found)',
-      '',
-      `File: ${join(booted.workspace, 'src', 'z.ts')}`,
+    ]))
+
+    // The real global count cap keeps the single earliest diagnostic line of
+    // the two-batch file (warning sorts before error) and drops TS2322.
+    const errorResult = await writeFileThroughRealTool(booted, 'src/z.ts', 'const z: number = "oops";\n')
+    expect(errorResult.isError).toBe(false)
+    expect(pluginNoticeText(errorResult)).toBe(expectedSingleFileNotice(booted.workspace, 'src/z.ts', [
       '- warning 1:1-1:4 source="typescript" code="TS6133" \'unused\' is declared but its value is never read.',
       '',
       'Fix these diagnostics before considering the change complete.',
-    ].join('\n'))
-    expect(text).not.toContain('TS2322')
+    ]))
+    expect(pluginNoticeText(errorResult)).not.toContain('TS2322')
     const protocol = readFileSync(booted.typescriptLog, 'utf8')
     expect(protocol.indexOf('didOpen')).toBeLessThan(protocol.lastIndexOf('didOpen'))
     expect(protocol).toContain('a.tsx')
@@ -332,12 +368,11 @@ describe('dsh-lsp-diagnostics real composition', () => {
   it('applies the Unicode character cap after building the real canonical aggregate', async () => {
     const booted = await bootLspDiagnosticsProfile({
       typescriptMode: 'content-aware',
-      missingGo: true,
       maxDiagnostics: 1,
       maxResultChars: 120,
     })
     bootedProfiles.push(booted)
-    const result = await executeMultiFileComposition(booted)
+    const result = await writeFileThroughRealTool(booted, 'src/z.ts', 'const z: number = "oops";\n')
     const text = pluginNoticeText(result)
     expect(text).toBeDefined()
     expect(Array.from(text!)).toHaveLength(120)
@@ -512,6 +547,119 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(readFileSync(join(booted.workspace, 'src', 'from-code.ts'), 'utf8')).toBe('const f: number = "oops";\n')
   })
 
+  it('persists a nested real run_code write notice into the next real Agent request', async () => {
+    const llmModule = await loadAnchorModule('dsh-llm') as {
+      LlmAdapter: new () => unknown
+      createUserMessage: (input: unknown) => unknown
+      CallId: (id: string) => unknown
+    }
+    const sessionModule = await loadAnchorModule('dsh-session') as { SessionId: (id: string) => unknown }
+    const { LlmAdapter, createUserMessage, CallId } = llmModule
+    const { SessionId } = sessionModule
+
+    class MockAdapter extends LlmAdapter {
+      requests: any[] = []
+      constructor(private readonly script: any[]) { super() }
+      resolveModel(provider: string, model: string) {
+        return Promise.resolve({ provider, id: model, name: model })
+      }
+      async *stream(options: any): AsyncIterable<any> {
+        this.requests.push(options)
+        const entry = this.script.shift()
+        if (!entry) throw new Error('MockAdapter: script exhausted')
+        for (const chunk of entry) yield chunk
+      }
+    }
+
+    const adapter = new MockAdapter([
+      [
+        { type: 'block-start', index: 0, blockType: 'tool-call' },
+        {
+          type: 'block-end', index: 0,
+          block: {
+            type: 'tool-call',
+            id: CallId('c1'),
+            name: 'run_code',
+            arguments: JSON.stringify({
+              code: 'await tools.write({ file_path: "src/from-agent-code.ts", content: "const f: number = \\"oops\\";\\n" }); return "done";',
+              description: 'Write a file from code',
+            }),
+          },
+        },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 5 } },
+        { type: 'finish', reason: { kind: 'tool-calls' } },
+      ],
+      [
+        { type: 'block-start', index: 0, blockType: 'text' },
+        { type: 'block-end', index: 0, block: { type: 'text', text: 'done' } },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 1 } },
+        { type: 'finish', reason: { kind: 'stop' } },
+      ],
+    ])
+
+    const booted = await bootLspDiagnosticsProfile({
+      toolsMode: 'ptc',
+      typescriptMode: 'push-versioned',
+      extraRootEntries: [
+        '- id: llm',
+        "  name: '@deepseek-ai/dsh-llm'",
+        '- id: sessions',
+        "  name: '@deepseek-ai/dsh-session'",
+        '- id: session-projections',
+        "  name: '@deepseek-ai/dsh-session-projection'",
+        '- id: agents',
+        "  name: '@deepseek-ai/dsh-agent'",
+        '- id: agent-loop',
+        "  name: '@deepseek-ai/dsh-agent-loop'",
+        '  config:',
+        '    agents: []',
+        '- id: code-runtime',
+        "  name: '@deepseek-ai/dsh-code-runtime-worker-thread'",
+      ],
+    })
+    bootedProfiles.push(booted)
+
+    const ctx = booted.ctx as unknown as {
+      llm: { registerAdapter(providers: string[], adapter: unknown): unknown }
+      agentLoop: { create(id: unknown, options: Record<string, unknown>, meta: { cwd: string }): any }
+      on(event: string, listener: (payload: any) => void): () => void
+    }
+    ctx.llm.registerAdapter(['mock'], adapter)
+
+    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' }, { cwd: booted.workspace })
+
+    const idle = new Promise<void>((resolve) => {
+      const off = ctx.on('agent/status', ({ agent: subject, status }) => {
+        if (subject === agent && status === 'idle') {
+          off()
+          resolve()
+        }
+      })
+    })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'write the file via code' }], source: { kind: 'user' } }))
+    await idle
+
+    // The nested run_code write's plugin notice reached the session log as a
+    // user/message with the plugin source.
+    const events: any[] = agent.session.events as any[]
+    const pluginMessages = events.filter((event) => event.type === 'user/message' && event.data?.source?.kind === 'plugin')
+    expect(pluginMessages.length).toBeGreaterThan(0)
+    const noticeText = pluginMessages
+      .flatMap((event) => event.data?.content ?? [])
+      .map((block: any) => block?.text ?? '')
+      .join('')
+    expect(noticeText).toContain('[LSP diagnostics after write]')
+    expect(noticeText).toContain(TS_ERROR_SUBSTRING)
+
+    // Two model requests ran: the second request carries the run_code-derived
+    // plugin notice (durable into the next model inference).
+    expect(adapter.requests.length).toBe(2)
+    const secondRequestMessages = JSON.stringify(adapter.requests[1]?.messages ?? [])
+    expect(secondRequestMessages).toContain('[LSP diagnostics after write]')
+    expect(secondRequestMessages).toContain('TS2322')
+    expect(readFileSync(join(booted.workspace, 'src', 'from-agent-code.ts'), 'utf8')).toBe('const f: number = "oops";\n')
+  })
+
   it.each([
     {
       language: 'TypeScript',
@@ -525,10 +673,10 @@ describe('dsh-lsp-diagnostics real composition', () => {
     {
       language: 'Go',
       filePath: 'src/main.go',
-      badContent: 'package main\nfunc main() { var x string = 1 }\n',
+      badContent: 'package main\nvar x string = 1\nfunc main() {}\n',
       oldString: 'var x string = 1',
-      newString: 'var x int = 1',
-      fixedContent: 'package main\nfunc main() { var x int = 1 }\n',
+      newString: 'var x string = "1"',
+      fixedContent: 'package main\nvar x string = "1"\nfunc main() {}\n',
       bootOptions: { typescriptMode: 'content-aware' as const, goMode: 'content-aware' as const },
     },
   ])('persists $language error then clean into the next real Agent request', async ({

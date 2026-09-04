@@ -252,6 +252,9 @@ class FakeServer {
       if (method === 'textDocument/didClose') {
         const uri = String(((message.params as Json | undefined)?.textDocument as Json | undefined)?.uri ?? WORKSPACE_URI)
         this.events.push(`didClose ${uri}`)
+        // Delayed server requests: arrive only after the open/close lifecycle,
+        // so a held response write can never block the diagnosis itself.
+        if (this.mode === 'server-requests-late') this.sendServerRequests()
         return
       }
       if (method === 'exit') {
@@ -706,6 +709,93 @@ describe('dsh-lsp-diagnostics runtime pooling', () => {
     ])
   })
 
+  it('fully serializes concurrent same-uri diagnoses with monotonic versions through one write tail', async () => {
+    const h = makeHarness('push-versioned')
+    const first = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
+    const second = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
+    await expect(Promise.all([first, second])).resolves.toMatchObject([
+      { kind: 'ok', version: 1 },
+      { kind: 'ok', version: 2 },
+    ])
+    expect(h.subprocess.spawn).toHaveBeenCalledTimes(1)
+    expect(h.servers[0]!.events).toEqual([
+      'initialize',
+      'initialized',
+      'didOpen file:///workspace/src/a.ts v1',
+      'publish file:///workspace/src/a.ts v1',
+      'didClose file:///workspace/src/a.ts',
+      'didOpen file:///workspace/src/a.ts v2',
+      'publish file:///workspace/src/a.ts v2',
+      'didClose file:///workspace/src/a.ts',
+    ])
+  })
+
+  it('keeps a queued same-workspace diagnosis behind a held first-lifecycle write', async () => {
+    const h = makeHarness('push-versioned', { settleMs: 30 }, {}, (server) => {
+      server.holdWriteAckAt = 4 // the first didClose write
+    })
+    await vi.useFakeTimers()
+    const first = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
+    const second = h.runtime.diagnose(
+      candidate(target('/workspace/src/b.ts')),
+      WORKSPACE,
+      'file:///workspace/src/b.ts',
+      undefined,
+    )
+    await vi.advanceTimersByTimeAsync(100)
+    const server = h.servers[0]!
+    // The first lifecycle is stuck on its held didClose write; the second
+    // diagnosis must not interleave a single frame before it settles.
+    expect(server.events.filter((event) => event.startsWith('didOpen'))).toEqual([
+      'didOpen file:///workspace/src/a.ts v1',
+    ])
+server.ackAll()
+    await vi.advanceTimersByTimeAsync(200)
+    await expect(Promise.all([first, second])).resolves.toMatchObject([{ kind: 'ok' }, { kind: 'ok' }])
+    expect(server.events).toEqual([
+      'initialize',
+      'initialized',
+      'didOpen file:///workspace/src/a.ts v1',
+      'publish file:///workspace/src/a.ts v1',
+      'didClose file:///workspace/src/a.ts',
+      'didOpen file:///workspace/src/b.ts v1',
+      'publish file:///workspace/src/b.ts v1',
+      'didClose file:///workspace/src/b.ts',
+    ])
+    await vi.useRealTimers()
+  })
+
+  it('keeps provider ids containing the separator isolated in the two-level pool and tails', async () => {
+    const base = makeConfig('push-versioned')
+    const ts = base.servers.typescript
+    const config = {
+      ...base,
+      servers: {
+        typescript: { ...ts, extensionToLanguage: { '.ts': 'typescript' } },
+        'ts::a': { ...ts, extensionToLanguage: { '.tsx': 'typescriptreact' } },
+        'ts::': { ...ts, extensionToLanguage: { '.go': 'go' } },
+      },
+    } as Harness['config']
+    const fs = makeFs()
+    const { subprocess, servers, spawnSpecs } = makeSubprocess(['push-versioned', 'push-versioned', 'push-versioned'])
+    const runtime = new DiagnosticsRuntime({ fs, subprocess, config })
+    harness = { fs, subprocess, runtime, config, servers, spawnSpecs }
+    const tsOutcome = await runtime.diagnose(candidate(target('/w/src/a.ts')), WORKSPACE, 'file:///w/src/a.ts', undefined)
+    const tsxOutcome = await runtime.diagnose(
+      candidate(target('/w/src/b.tsx')),
+      WORKSPACE,
+      'file:///w/src/b.tsx',
+      undefined,
+    )
+    const goOutcome = await runtime.diagnose(candidate(target('/w/src/c.go')), WORKSPACE, 'file:///w/src/c.go', undefined)
+    expect(tsOutcome).toMatchObject({ kind: 'ok' })
+    expect(tsxOutcome).toMatchObject({ kind: 'ok' })
+    expect(goOutcome).toMatchObject({ kind: 'ok' })
+    expect(subprocess.spawn).toHaveBeenCalledTimes(3)
+    expect([...runtime.sessions.keys()].sort()).toEqual(['ts::', 'ts::a', 'typescript'])
+    expect([...runtime.tails.keys()].sort()).toEqual(['ts::', 'ts::a', 'typescript'])
+  })
+
   it('spawns with the exact public spec shape and a lifetime signal, not the execution signal', async () => {
     const controller = new AbortController()
     const h = makeHarness('push-versioned')
@@ -926,6 +1016,42 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
     await vi.advanceTimersByTimeAsync(200)
     await vi.useRealTimers()
   })
+
+  it('buffers a pre-ack publication, settles the waiter, and still retries on a fresh instance when the didOpen write fails', async () => {
+    const h = makeHarness('push-versioned', { shutdownTimeoutMs: 100 }, {}, (server) => {
+      if (server.spawnIndex === 0) server.holdWriteAckAt = 3 // initialize, initialized, then didOpen
+    })
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const controller = new AbortController()
+      await vi.useFakeTimers()
+      const promise = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, controller.signal)
+      await vi.advanceTimersByTimeAsync(50)
+      // A matching publication lands before the didOpen write callback acks:
+      // it must be buffered, never accepted as a successfully opened generation.
+      h.servers[0]!.emitNow({
+        jsonrpc: '2.0',
+        method: 'textDocument/publishDiagnostics',
+        params: { uri: WORKSPACE_URI, version: 1, diagnostics: [ERROR_DIAG] },
+      })
+      // The didOpen write itself fails: the pre-armed waiter must settle with
+      // an observed outcome (no unhandled rejection), and the buffered
+      // publication must NOT suppress the allowed fresh-instance retry.
+      h.servers[0]!.ackAll(new Error('EPIPE'))
+      await vi.advanceTimersByTimeAsync(200)
+      await expect(promise).resolves.toMatchObject({ kind: 'ok' })
+      expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(200)
+      expect(unhandled).toEqual([])
+      await vi.useRealTimers()
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
+  })
 })
 
 describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
@@ -1044,24 +1170,35 @@ describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
 })
 
 describe('dsh-lsp-diagnostics runtime bounded read', () => {
-  it('uses the eligibility-frozen canonical uri for read and correlation, never re-deriving it', async () => {
+  it('uses the eligibility-frozen opaque canonical uri for read and correlation, never re-deriving it', async () => {
     const h = makeHarness('push-versioned')
-    const written = target()
-    await expect(h.runtime.diagnose(candidate(written), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
+    // The frozen canonical URI is opaque and NOT derivable from displayPath:
+    // any displayPath-based guess would produce a different URI, so the
+    // runtime must use the frozen value for routing, didOpen and correlation.
+    const written = target('src/a.ts')
+    const frozenUri = 'memfs://project/src/a.ts'
+    await expect(h.runtime.diagnose(candidate(written), WORKSPACE, frozenUri, undefined)).resolves.toMatchObject({
       kind: 'ok',
-      uri: WORKSPACE_URI,
+      uri: frozenUri,
     })
     // The runtime must not recompute the document uri from the candidate: the
     // coordinator passes the frozen canonicalUri, so fs.fileUrl is only ever
     // called for the workspace root, never for the written document.
     expect(h.fs.fileUrl.mock.calls.filter(([value]) => value === written)).toHaveLength(0)
     const server = h.servers[0]!
-    expect(server.events).toContain(`didOpen ${WORKSPACE_URI} v1`)
-    expect(server.events).toContain(`publish ${WORKSPACE_URI} v1`)
+    expect(server.events).toContain(`didOpen ${frozenUri} v1`)
+    expect(server.events).toContain(`publish ${frozenUri} v1`)
   })
 
   it('reads a document whose known size is exactly the cap', async () => {
-    const fs = makeFs({ stat: vi.fn(async () => ({ version: 'v1', type: 'file', size: 16 })) })
+    // The bounded seam forbids a successful return of bytes > cap: the fake
+    // must return exactly cap bytes, never an oversized success.
+    const bytes = Buffer.from('0123456789abcdef') // exactly 16 UTF-8 bytes
+    expect(Buffer.byteLength(bytes)).toBe(16)
+    const fs = makeFs({
+      stat: vi.fn(async () => ({ version: 'v1', type: 'file', size: 16 })),
+      readBytes: vi.fn(async () => bytes),
+    })
     const h = makeHarness('push-versioned', { maxDocumentBytes: 16 }, fs)
     await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
     expect(fs.readBytes).toHaveBeenCalledWith(expect.anything(), undefined, 16)
@@ -1184,7 +1321,7 @@ describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
     const outcome = await promise
     expect(outcome).toMatchObject({ kind: 'unavailable', reason: 'diagnostics unavailable' })
     expect(h.servers[0]!.handle.terminate).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(300)
+await vi.advanceTimersByTimeAsync(300)
     expect(h.servers[0]!.events).toContain('shutdown')
     await vi.useRealTimers()
   })
@@ -1208,6 +1345,10 @@ describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
     expect(h.servers[0]!.handle.terminate).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(200)
     expect(h.servers[0]!.handle.terminate).toHaveBeenCalledTimes(1)
+    // Dispose owns the write tail: release the held didClose ack so the queued
+    // shutdown/exit frames drain before the afterEach dispose resolves.
+    h.servers[0]!.ackAll()
+    await vi.advanceTimersByTimeAsync(300)
     await vi.useRealTimers()
   })
 
@@ -1266,6 +1407,17 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
   })
 
+  it('preserves malformed classification for a failed initialize when the process exits only after the retry window', async () => {
+    // The decoder poison (malformed stdout) and the process exit race: the
+    // exit arrives after the retry decision, so the classification stays
+    // malformed response, never degrading to server crashed.
+    const h = makeHarness('malformed')
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
+      kind: 'unavailable',
+      reason: 'malformed response',
+    })
+  })
+
   it('returns unavailable without retry once publication was accepted and transport then failed', async () => {
     const h = makeHarness('close-stdin-after-diagnostics')
     await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
@@ -1295,6 +1447,24 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
 
   it('preserves server-crashed classification when the process exits before initialize responds', async () => {
     const h = makeHarness('crash-before-initialize')
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
+      kind: 'unavailable',
+      reason: 'server crashed',
+    })
+    expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
+  })
+
+  it('classifies an initialize write EPIPE that wins the exit race as server crashed', async () => {
+    const h = makeHarness('push-versioned', {}, {}, (server) => {
+      vi.spyOn(server.handle.stdin, 'write').mockImplementation((_chunk, callback) => {
+        const epipe = new Error('EPIPE')
+        ;(epipe as { code?: string }).code = 'EPIPE'
+        callback?.(epipe)
+        // The process exit observation lands right after the EPIPE, like a
+        // server dying mid-initialize: the crash must win the classification.
+        server.exitRootOnly()
+      })
+    })
     await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'server crashed',
@@ -1392,9 +1562,9 @@ describe('dsh-lsp-diagnostics runtime unique graceful-first teardown', () => {
     await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const server = h.servers[0]!
     await vi.useFakeTimers()
-    const dispose = h.runtime.dispose()
+const dispose = h.runtime.dispose()
     await vi.advanceTimersByTimeAsync(200)
-    await dispose
+await dispose
     await vi.useRealTimers()
     const events = server.events
     expect(events.indexOf('shutdown')).toBeGreaterThanOrEqual(0)
@@ -1438,6 +1608,42 @@ describe('dsh-lsp-diagnostics runtime unique graceful-first teardown', () => {
     await first
     await vi.useRealTimers()
     expect(server.handle.terminate).toHaveBeenCalledTimes(1)
+  })
+
+  it('owns server-request response writes and the write tail: dispose waits for queued protocol I/O', async () => {
+    const h = makeHarness('server-requests-late', { shutdownTimeoutMs: 100, settleMs: 60 }, {}, (server) => {
+      server.holdWriteAckAt = 5 // first server-request response write is held
+    })
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
+    const server = h.servers[0]!
+    // Let the delayed server requests arrive and their response writes be
+    // enqueued (the first is held) while the session is still open.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await vi.useFakeTimers()
+    const dispose = h.runtime.dispose()
+    let settled = false
+    void dispose.then(() => {
+      settled = true
+    })
+    await vi.advanceTimersByTimeAsync(300)
+    // The graceful phase and terminate can complete, but dispose must NOT
+    // resolve while queued shutdown/exit frames are still blocked behind the
+    // held server-request response write.
+    expect(settled).toBe(false)
+    expect(server.events).not.toContain('shutdown')
+    server.ackAll()
+    await vi.advanceTimersByTimeAsync(500)
+    await dispose
+    const events = server.events
+    const shutdownIndex = events.indexOf('shutdown')
+    const exitIndex = events.indexOf('exit')
+    expect(shutdownIndex).toBeGreaterThanOrEqual(0)
+    expect(exitIndex).toBeGreaterThan(shutdownIndex)
+    // After cleanup there is zero further protocol I/O.
+    const after = events.length
+    await vi.advanceTimersByTimeAsync(200)
+    expect(server.events.length).toBe(after)
+    await vi.useRealTimers()
   })
 })
 

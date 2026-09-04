@@ -158,21 +158,27 @@ function assertSafeTimer(value, name) {
 }
 
 /**
- * Verify that a value is recursively representable as standard JSON: no
- * cycles, no undefined/function/symbol/bigint, and no non-finite numbers.
- * The structural traversal is followed by a real `JSON.stringify` round-trip
- * so non-JSON containers (boxed BigInts, objects whose inherited `toJSON`
- * returns a BigInt, ...) are rejected at load time instead of failing later
- * during protocol serialization.
- * @param {unknown} value - the value to inspect.
+ * Canonicalize a validated JSON value into a stable plain clone, rejecting
+ * anything that is not recursively a standard JSON value: cycles,
+ * undefined/function/symbol/bigint, non-finite numbers, and non-plain
+ * containers (Map/Set/Date, boxed primitives, class instances, and objects
+ * whose prototype is not `Object.prototype` or `null` — including objects
+ * with an inherited `toJSON`).
+ *
+ * The clone is built by reading every own enumerable property exactly once,
+ * so later protocol serialization always sees the same plain structure: a
+ * stateful getter or `toJSON` can never be re-invoked, produce a second
+ * different value, or fail at protocol-write time.
+ * @param {unknown} value - the value to canonicalize.
  * @param {string} path - error path prefix.
  * @param {Set<object>} [seen] - container set for cycle detection.
+ * @returns {unknown} the canonical plain-JSON clone.
  */
-function assertJsonValue(value, path, seen = new Set()) {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return
+function canonicalizeJson(value, path, seen = new Set()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) fail(`${path} must not contain non-finite numbers`)
-    return
+    return value
   }
   if (typeof value !== 'object') {
     fail(`${path} must not contain ${typeof value}`)
@@ -180,21 +186,25 @@ function assertJsonValue(value, path, seen = new Set()) {
   if (seen.has(value)) fail(`${path} must not contain circular references`)
   seen.add(value)
   if (Array.isArray(value)) {
+    const out = new Array(value.length)
     for (let index = 0; index < value.length; index += 1) {
-      assertJsonValue(value[index], `${path}[${index}]`, seen)
+      out[index] = canonicalizeJson(value[index], `${path}[${index}]`, seen)
     }
-  } else {
-    for (const [key, entry] of Object.entries(value)) {
-      assertJsonValue(entry, `${path}.${key}`, seen)
-    }
+    seen.delete(value)
+    return out
+  }
+  const proto = Object.getPrototypeOf(value)
+  if (proto !== Object.prototype && proto !== null) {
+    fail(`${path} must be a plain object, not ${value.constructor?.name ?? 'a non-JSON container'}`)
+  }
+  const record = /** @type {Record<string, unknown>} */ (value)
+  /** @type {Record<string, unknown>} */
+  const out = {}
+  for (const key of Object.keys(record)) {
+    out[key] = canonicalizeJson(record[key], `${path}.${key}`, seen)
   }
   seen.delete(value)
-  try {
-    const serialized = JSON.stringify(value)
-    if (serialized === undefined) fail(`${path} must be representable as standard JSON`)
-  } catch {
-    fail(`${path} must be representable as standard JSON`)
-  }
+  return out
 }
 
 /**
@@ -258,12 +268,18 @@ function validateServer(value, provider) {
   ))
   // `configuration` and `initializationOptions` are standard JSON values;
   // explicit `null` is a valid JSON value and must be preserved, never
-  // defaulted. Only a truly omitted field falls back to the default.
-  const configuration = record.configuration === undefined ? defaults.configuration : record.configuration
-  assertJsonValue(configuration, `servers.${provider}.configuration`)
-  const initializationOptions =
-    record.initializationOptions === undefined ? defaults.initializationOptions : record.initializationOptions
-  assertJsonValue(initializationOptions, `servers.${provider}.initializationOptions`)
+  // defaulted. Only a truly omitted field (no own enumerable property) falls
+  // back to the default; an own property whose value is `undefined` is not a
+  // JSON value and fails loud. Every accepted value is canonicalized once into
+  // a stable plain clone so protocol serialization is deterministic.
+  const hasConfiguration = Object.prototype.hasOwnProperty.call(record, 'configuration')
+  const configuration = hasConfiguration
+    ? canonicalizeJson(record.configuration, `servers.${provider}.configuration`)
+    : canonicalizeJson(defaults.configuration, `servers.${provider}.configuration`)
+  const hasInitializationOptions = Object.prototype.hasOwnProperty.call(record, 'initializationOptions')
+  const initializationOptions = hasInitializationOptions
+    ? canonicalizeJson(record.initializationOptions, `servers.${provider}.initializationOptions`)
+    : canonicalizeJson(defaults.initializationOptions, `servers.${provider}.initializationOptions`)
   const extensionToLanguage = assertExtensionToLanguage(
     record.extensionToLanguage === undefined ? defaults.extensionToLanguage : record.extensionToLanguage,
     provider,
