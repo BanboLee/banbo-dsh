@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   bootLspDiagnosticsProfile,
   loadAnchorModule,
@@ -56,6 +56,42 @@ async function executeTool(
   })
   if (result === undefined) throw new Error('missing tools runtime')
   return result
+}
+
+/**
+ * Drive one multi-file mutation transaction through the booted plugin's real
+ * fs/observed listeners and real three-argument post-execute waterfall. This is
+ * intentionally not used for F5's official-tool or PTC claims; it isolates the
+ * composition-level shared ordering/global-cap contract for one exec.
+ */
+async function executeMultiFileComposition(booted: LspDiagnosticsBooted): Promise<any> {
+  const ctx = booted.ctx as any
+  const signal = new AbortController().signal
+  const exec = {
+    name: 'write',
+    arguments: {},
+    agent: { session: { header: { cwd: booted.workspace } } },
+    signal,
+  }
+  const files = [
+    ['src/z.ts', 'const z: number = "oops";\n'],
+    ['src/a.tsx', 'export const a: number = 1;\n'],
+    ['src/m.go', 'package main\nfunc main() {}\n'],
+  ] as const
+  for (const [filePath, content] of files) {
+    const target = await ctx.fs.resolve(filePath, { cwd: booted.workspace, signal })
+    const outcome = await ctx.fs.writeText(target, content, undefined, signal)
+    ctx.emit('fs/observed', target, { kind: 'present', version: outcome.version }, exec)
+  }
+  return ctx.waterfall('tools/post-execute', exec, { isError: false, content: [] }, async () => ({ kind: 'accept' }))
+}
+
+/** Remove the live loader entry and await that plugin's async cleanup. */
+async function unloadDiagnostics(booted: LspDiagnosticsBooted): Promise<void> {
+  const loader = (booted.ctx as any).get('loader')
+  const entry = [...loader.entries()].find((candidate: any) => candidate.options.name === 'dsh-lsp-diagnostics')
+  if (entry === undefined) throw new Error('live dsh-lsp-diagnostics loader entry not found')
+  await entry.update({ disabled: true })
 }
 
 /** Extract the plugin notice text from a tool result, or undefined. */
@@ -116,19 +152,25 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(readFileSync(join(booted.workspace, 'src', 'a.ts'), 'utf8')).toBe('const x: number = "oops";\n')
   })
 
-  it('reports clean after an actual edit once the file is fixed', async () => {
-    const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'clean' })
+  it('reports diagnostics then clean after an actual edit fixes the same TypeScript file', async () => {
+    const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'content-aware' })
     bootedProfiles.push(booted)
 
-    await executeTool(booted, 'write', { file_path: 'src/a.ts', content: 'const x: number = 1;\n' }, booted.workspace)
-    const result = await executeTool(booted, 'edit', {
+    const error = await executeTool(booted, 'write', {
       file_path: 'src/a.ts',
-      old_string: 'const x: number = 1;',
+      content: 'const x: number = "oops";\n',
+    }, booted.workspace)
+    expect(pluginNoticeText(error)).toContain(TS_ERROR_SUBSTRING)
+
+    const fixed = await executeTool(booted, 'edit', {
+      file_path: 'src/a.ts',
+      old_string: 'const x: number = "oops";',
       new_string: 'const x: number = 2;',
     }, booted.workspace)
 
-    expect(result.isError).toBe(false)
-    expect(pluginNoticeText(result)).toBe(expectedSingleFileNotice(booted.workspace, 'src/a.ts', ['Status: clean']))
+    expect(fixed.isError).toBe(false)
+    expect(pluginNoticeText(fixed)).toBe(expectedSingleFileNotice(booted.workspace, 'src/a.ts', ['Status: clean']))
+    expect(readFileSync(join(booted.workspace, 'src', 'a.ts'), 'utf8')).toBe('const x: number = 2;\n')
   })
 
   it('triggers on str_replace_editor create/str_replace/insert (tsx) but not on view', async () => {
@@ -170,30 +212,24 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(pluginNoticeText(view)).toBeUndefined()
   })
 
-  it('diagnoses a Go write with an error and reports clean after a fix edit', async () => {
-    const errorBoot = await bootLspDiagnosticsProfile({ goMode: 'push-versioned', typescriptMode: 'push-versioned' })
-    bootedProfiles.push(errorBoot)
-    const errorWrite = await executeTool(errorBoot, 'write', {
+  it('diagnoses a Go error and reports clean after fixing the same file in the same session', async () => {
+    const booted = await bootLspDiagnosticsProfile({ goMode: 'content-aware', typescriptMode: 'content-aware' })
+    bootedProfiles.push(booted)
+    const errorWrite = await executeTool(booted, 'write', {
       file_path: 'src/main.go',
       content: 'package main\nfunc main() { var x string = 1 }\n',
-    }, errorBoot.workspace)
+    }, booted.workspace)
     expect(errorWrite.isError).toBe(false)
-    expect(pluginNoticeText(errorWrite)).toBe(expectedSingleFileNotice(errorBoot.workspace, 'src/main.go', [TS_DIAGNOSTIC_LINES, '', 'Fix these diagnostics before considering the change complete.']))
-    await errorBoot.cleanup()
+    expect(pluginNoticeText(errorWrite)).toContain(TS_ERROR_SUBSTRING)
 
-    const cleanBoot = await bootLspDiagnosticsProfile({ goMode: 'clean', typescriptMode: 'clean' })
-    bootedProfiles.push(cleanBoot)
-    await executeTool(cleanBoot, 'write', {
+    const fix = await executeTool(booted, 'edit', {
       file_path: 'src/main.go',
-      content: 'package main\nfunc main() { var x int = 1 }\n',
-    }, cleanBoot.workspace)
-    const fix = await executeTool(cleanBoot, 'edit', {
-      file_path: 'src/main.go',
-      old_string: 'var x int = 1',
-      new_string: 'var x int = 2',
-    }, cleanBoot.workspace)
+      old_string: 'var x string = 1',
+      new_string: 'var x int = 1',
+    }, booted.workspace)
     expect(fix.isError).toBe(false)
-    expect(pluginNoticeText(fix)).toBe(expectedSingleFileNotice(cleanBoot.workspace, 'src/main.go', ['Status: clean']))
+    expect(pluginNoticeText(fix)).toBe(expectedSingleFileNotice(booted.workspace, 'src/main.go', ['Status: clean']))
+    expect(readFileSync(join(booted.workspace, 'src', 'main.go'), 'utf8')).toContain('var x int = 1')
   })
 
   it('silently ignores unsupported extensions, missing session cwd, and outside-workspace targets', async () => {
@@ -263,6 +299,52 @@ describe('dsh-lsp-diagnostics real composition', () => {
     ]))
   })
 
+  it('uses one shared order and global count cap for a real mixed multi-file aggregate', async () => {
+    const booted = await bootLspDiagnosticsProfile({
+      typescriptMode: 'content-aware',
+      missingGo: true,
+      maxDiagnostics: 1,
+      maxResultChars: 8_000,
+    })
+    bootedProfiles.push(booted)
+    const result = await executeMultiFileComposition(booted)
+    const text = pluginNoticeText(result)
+    expect(text).toBe([
+      '[LSP diagnostics after write]',
+      `File: ${join(booted.workspace, 'src', 'a.tsx')}`,
+      'Status: clean',
+      '',
+      `File: ${join(booted.workspace, 'src', 'm.go')}`,
+      'Status: diagnostics unavailable (server not found)',
+      '',
+      `File: ${join(booted.workspace, 'src', 'z.ts')}`,
+      '- warning 1:1-1:4 source="typescript" code="TS6133" \'unused\' is declared but its value is never read.',
+      '',
+      'Fix these diagnostics before considering the change complete.',
+    ].join('\n'))
+    expect(text).not.toContain('TS2322')
+    const protocol = readFileSync(booted.typescriptLog, 'utf8')
+    expect(protocol.indexOf('didOpen')).toBeLessThan(protocol.lastIndexOf('didOpen'))
+    expect(protocol).toContain('a.tsx')
+    expect(protocol).toContain('z.ts')
+  })
+
+  it('applies the Unicode character cap after building the real canonical aggregate', async () => {
+    const booted = await bootLspDiagnosticsProfile({
+      typescriptMode: 'content-aware',
+      missingGo: true,
+      maxDiagnostics: 1,
+      maxResultChars: 120,
+    })
+    bootedProfiles.push(booted)
+    const result = await executeMultiFileComposition(booted)
+    const text = pluginNoticeText(result)
+    expect(text).toBeDefined()
+    expect(Array.from(text!)).toHaveLength(120)
+    expect(text).toMatch(/…\(truncated\)$/)
+    expect(text).toContain('[LSP diagnostics after write]')
+  })
+
   it('maps an oversized known-size document to a bounded unavailable reason without reading', async () => {
     const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'push-versioned', maxDocumentBytes: 64 })
     bootedProfiles.push(booted)
@@ -275,6 +357,49 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(pluginNoticeText(result)).toBe(expectedSingleFileNotice(booted.workspace, 'src/big.ts', [
       'Status: diagnostics unavailable (document too large)',
     ]))
+  })
+
+  it('returns at the hard deadline but unload waits a late real final stat before teardown', async () => {
+    const booted = await bootLspDiagnosticsProfile({
+      typescriptMode: 'content-aware',
+      timeoutMs: 300,
+      settleMs: 50,
+      shutdownTimeoutMs: 100,
+      killGraceMs: 50,
+    })
+    bootedProfiles.push(booted)
+    const fs = (booted.ctx as any).fs
+    const originalStat = fs.stat.bind(fs)
+    let targetStats = 0
+    let releaseFinal!: () => void
+    const statSpy = vi.spyOn(fs, 'stat').mockImplementation(async (target: any, signal?: AbortSignal) => {
+      if (String(target.displayPath).endsWith('late.ts')) {
+        targetStats += 1
+        if (targetStats === 2) {
+          return new Promise((resolve) => {
+            releaseFinal = () => { void originalStat(target).then(resolve, resolve) }
+          })
+        }
+      }
+      return originalStat(target, signal)
+    })
+    const result = await executeTool(booted, 'write', {
+      file_path: 'src/late.ts',
+      content: 'const late: number = "oops";\n',
+    }, booted.workspace)
+    expect(result.isError).toBe(false)
+    expect(pluginNoticeText(result)).toContain('Status: diagnostics unavailable (timeout)')
+    expect(targetStats).toBe(2)
+
+    let cleaned = false
+    const cleanup = unloadDiagnostics(booted).then(() => { cleaned = true })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(cleaned).toBe(false)
+    releaseFinal()
+    await cleanup
+    const callsAfterCleanup = statSpy.mock.calls.length
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    expect(statSpy).toHaveBeenCalledTimes(callsAfterCleanup)
   })
 
   it('keeps the tool result successful and fail-open when the server times out, is missing, or is malformed', async () => {
@@ -305,9 +430,49 @@ describe('dsh-lsp-diagnostics real composition', () => {
     ]))
   })
 
+  it('performs graceful shutdown and exit before the real server closes naturally', async () => {
+    const booted = await bootLspDiagnosticsProfile({
+      typescriptMode: 'graceful-order',
+      shutdownTimeoutMs: 500,
+      killGraceMs: 100,
+    })
+    bootedProfiles.push(booted)
+    const result = await executeTool(booted, 'write', {
+      file_path: 'src/graceful.ts',
+      content: 'const graceful: number = 1;\n',
+    }, booted.workspace)
+    expect(result.isError).toBe(false)
+    await unloadDiagnostics(booted)
+    const events = readFileSync(booted.typescriptLog, 'utf8').trim().split('\n')
+    const shutdown = events.indexOf('shutdown')
+    const exit = events.indexOf('exit')
+    const natural = events.indexOf('natural-close')
+    expect(shutdown).toBeGreaterThanOrEqual(0)
+    expect(exit).toBeGreaterThan(shutdown)
+    expect(natural).toBeGreaterThan(exit)
+  })
+
+  it('bounds a hung shutdown and leaves no live fake-server process after cleanup', async () => {
+    const booted = await bootLspDiagnosticsProfile({
+      typescriptMode: 'hang-shutdown',
+      shutdownTimeoutMs: 100,
+      killGraceMs: 50,
+    })
+    bootedProfiles.push(booted)
+    const result = await executeTool(booted, 'write', {
+      file_path: 'src/hung.ts',
+      content: 'const hung: number = 1;\n',
+    }, booted.workspace)
+    expect(result.isError).toBe(false)
+    const started = Date.now()
+    await unloadDiagnostics(booted)
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(readFileSync(booted.typescriptLog, 'utf8')).toContain('shutdown')
+  })
+
   it('forwards a nested real run_code write notice onto the outer result', async () => {
     const booted = await bootLspDiagnosticsProfile({
-      toolsMode: 'code',
+      toolsMode: 'ptc',
       typescriptMode: 'push-versioned',
       extraRootEntries: [
         '- id: code-runtime',
@@ -347,7 +512,33 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(readFileSync(join(booted.workspace, 'src', 'from-code.ts'), 'utf8')).toBe('const f: number = "oops";\n')
   })
 
-  it('persists the notice into the session log and the next model request through a real agent loop', async () => {
+  it.each([
+    {
+      language: 'TypeScript',
+      filePath: 'src/a.ts',
+      badContent: 'const x: number = "oops";\n',
+      oldString: 'const x: number = "oops";',
+      newString: 'const x: number = 1;',
+      fixedContent: 'const x: number = 1;\n',
+      bootOptions: { typescriptMode: 'content-aware' as const },
+    },
+    {
+      language: 'Go',
+      filePath: 'src/main.go',
+      badContent: 'package main\nfunc main() { var x string = 1 }\n',
+      oldString: 'var x string = 1',
+      newString: 'var x int = 1',
+      fixedContent: 'package main\nfunc main() { var x int = 1 }\n',
+      bootOptions: { typescriptMode: 'content-aware' as const, goMode: 'content-aware' as const },
+    },
+  ])('persists $language error then clean into the next real Agent request', async ({
+    filePath,
+    badContent,
+    oldString,
+    newString,
+    fixedContent,
+    bootOptions,
+  }) => {
     const llmModule = await loadAnchorModule('dsh-llm') as {
       LlmAdapter: new () => unknown
       createUserMessage: (input: unknown) => unknown
@@ -376,7 +567,25 @@ describe('dsh-lsp-diagnostics real composition', () => {
         { type: 'block-start', index: 0, blockType: 'tool-call' },
         {
           type: 'block-end', index: 0,
-          block: { type: 'tool-call', id: CallId('c1'), name: 'write', arguments: JSON.stringify({ file_path: 'src/a.ts', content: 'const x: number = "oops";\n' }) },
+          block: { type: 'tool-call', id: CallId('c1'), name: 'write', arguments: JSON.stringify({ file_path: filePath, content: badContent }) },
+        },
+        { type: 'usage', usage: { inputTokens: 5, outputTokens: 5 } },
+        { type: 'finish', reason: { kind: 'tool-calls' } },
+      ],
+      [
+        { type: 'block-start', index: 0, blockType: 'tool-call' },
+        {
+          type: 'block-end', index: 0,
+          block: {
+            type: 'tool-call',
+            id: CallId('c2'),
+            name: 'edit',
+            arguments: JSON.stringify({
+              file_path: filePath,
+              old_string: oldString,
+              new_string: newString,
+            }),
+          },
         },
         { type: 'usage', usage: { inputTokens: 5, outputTokens: 5 } },
         { type: 'finish', reason: { kind: 'tool-calls' } },
@@ -390,7 +599,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
     ])
 
     const booted = await bootLspDiagnosticsProfile({
-      typescriptMode: 'push-versioned',
+      ...bootOptions,
       extraRootEntries: [
         '- id: llm',
         "  name: '@deepseek-ai/dsh-llm'",
@@ -438,16 +647,19 @@ describe('dsh-lsp-diagnostics real composition', () => {
       .join('')
     expect(noticeText).toContain('[LSP diagnostics after write]')
     expect(noticeText).toContain(TS_ERROR_SUBSTRING)
+    expect(noticeText).toContain('Status: clean')
 
-    // Two model requests ran, and the second request carries the persisted notice.
-    expect(adapter.requests.length).toBe(2)
+    // Three model requests ran: request two carries the error notice and
+    // performs the real edit; request three carries the resulting clean notice.
+    expect(adapter.requests.length).toBe(3)
     const secondRequestMessages = JSON.stringify(adapter.requests[1]?.messages ?? [])
     expect(secondRequestMessages).toContain('[LSP diagnostics after write]')
-    // The diagnostic line's JSON-quoted source/code survive serialization with
-    // escaped quotes; assert on the stable code token.
     expect(secondRequestMessages).toContain('TS2322')
     expect(secondRequestMessages).toContain(TS_ERROR_SUBSTRING.replaceAll('"', '\\"'))
-    // The real write landed in the workspace.
-    expect(readFileSync(join(booted.workspace, 'src', 'a.ts'), 'utf8')).toBe('const x: number = "oops";\n')
+    const thirdRequestMessages = JSON.stringify(adapter.requests[2]?.messages ?? [])
+    expect(thirdRequestMessages).toContain('[LSP diagnostics after write]')
+    expect(thirdRequestMessages).toContain('Status: clean')
+    // The second real tool call fixed the same file in place.
+    expect(readFileSync(join(booted.workspace, filePath), 'utf8')).toBe(fixedContent)
   })
 })

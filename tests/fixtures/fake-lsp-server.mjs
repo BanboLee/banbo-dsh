@@ -11,7 +11,7 @@
 // depends on the log.
 //
 // Modes:
-//   push-versioned, push-versionless, clean,
+//   push-versioned, push-versionless, clean, content-aware,
 //   two-batches, continuous, delayed-old,
 //   cross-uri-same-version, cross-uri-future-version,
 //   cross-uri-malformed-diagnostics,
@@ -80,7 +80,7 @@ function handleInitialize(id) {
   if (mode === 'hang-initialize') return
   if (mode === 'malformed') {
     log('malformed')
-    process.stdout.write('this is not a content-length frame at all')
+    process.stdout.write('Content-Length: 1\r\n\r\n{')
     exitLater(1)
     return
   }
@@ -125,9 +125,13 @@ function handleDidOpen(params) {
   const document = params?.textDocument ?? {}
   const uri = typeof document.uri === 'string' ? document.uri : WORKSPACE_URI
   const version = typeof document.version === 'number' ? document.version : 1
+  const text = typeof document.text === 'string' ? document.text : ''
   log(`didOpen ${uri} v${version}`)
   const diagnostics = [ERROR_DIAG, WARNING_DIAG]
   switch (mode) {
+    case 'content-aware':
+      publishVersioned(uri, version, text.includes('"oops"') || text.includes('var x string = 1') ? diagnostics : [])
+      break
     case 'push-versionless':
       publish({ uri, diagnostics: [ERROR_DIAG] })
       break

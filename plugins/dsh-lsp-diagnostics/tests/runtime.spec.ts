@@ -78,6 +78,8 @@ class FakeServer {
   doneSettled = false
   private buffer: Buffer<ArrayBufferLike> = Buffer.alloc(0)
   private stdinClosed = false
+  private treeExited = false
+  private readonly treeExitWaiters = new Set<() => void>()
   private doneResolve!: (outcome: FakeOutcome) => void
   private doneReject!: (error: Error) => void
   private readonly opensByUri = new Map<string, number>()
@@ -136,7 +138,26 @@ class FakeServer {
       collected: {},
       done: this.done,
       terminate: vi.fn(() => this.onTerminate()),
-      waitForExit: vi.fn(async () => true),
+      waitForExit: vi.fn(async (signal?: AbortSignal) => {
+        if (this.treeExited) return true
+        if (signal?.aborted === true) return false
+        return new Promise<boolean>((resolve) => {
+          const onTreeExit = () => {
+            cleanup()
+            resolve(true)
+          }
+          const onAbort = () => {
+            cleanup()
+            resolve(false)
+          }
+          const cleanup = () => {
+            this.treeExitWaiters.delete(onTreeExit)
+            signal?.removeEventListener('abort', onAbort)
+          }
+          this.treeExitWaiters.add(onTreeExit)
+          signal?.addEventListener('abort', onAbort, { once: true })
+        })
+      }),
     }
   }
 
@@ -150,6 +171,15 @@ class FakeServer {
   failStdin(error: Error): void {
     this.stdinClosed = true
     this.stdinErrorListener?.(error)
+  }
+
+  failStdout(error: Error): void {
+    this.handle.stdout.emit('error', error)
+  }
+
+  exitRootOnly(): void {
+    this.events.push('root-exit-helper-live')
+    this.doneResolve({ exitCode: 0, signal: null })
   }
 
   /** Outbound frames arrive on the next macrotask, like real IPC latency. */
@@ -226,7 +256,7 @@ class FakeServer {
       }
       if (method === 'exit') {
         this.events.push('exit')
-        if (this.mode !== 'hung-all') this.naturalClose()
+        if (this.mode !== 'hung-all' && this.mode !== 'root-exit-helper-live') this.naturalClose()
         return
       }
       return
@@ -255,10 +285,15 @@ class FakeServer {
   private onInitialize(id: number): void {
     this.events.push('initialize')
     if (this.mode === 'hang-initialize') return
+    if (this.mode === 'crash-before-initialize') {
+      this.events.push('crash-before-initialize')
+      this.doneResolve({ exitCode: 1, signal: null })
+      return
+    }
     if (this.mode === 'malformed' || (this.mode === 'malformed-publish-once' && this.spawnIndex === 0)) {
       this.events.push('malformed')
-      this.handle.stdout.emit('data', Buffer.from('this is not a content-length frame at all'))
-      this.doneResolve({ exitCode: 1, signal: null })
+      this.handle.stdout.emit('data', Buffer.from('Content-Length: 1\r\n\r\n{', 'ascii'))
+      queueMicrotask(() => this.doneResolve({ exitCode: 1, signal: null }))
       return
     }
     if (this.mode === 'initialize-error') {
@@ -416,14 +451,23 @@ class FakeServer {
     this.send({ jsonrpc: '2.0', id, result: null })
   }
 
+  private markTreeExited(): void {
+    if (this.treeExited) return
+    this.treeExited = true
+    for (const resolve of this.treeExitWaiters) resolve()
+    this.treeExitWaiters.clear()
+  }
+
   private naturalClose(): void {
     this.events.push('natural-close')
     this.doneResolve({ exitCode: 0, signal: null })
+    this.markTreeExited()
   }
 
   private onTerminate(): void {
     this.events.push('terminate')
     this.doneResolve({ exitCode: null, signal: 'SIGTERM' })
+    this.markTreeExited()
   }
 }
 
@@ -569,7 +613,7 @@ function okDiagnostics(outcome: DiagnoseResult): readonly unknown[] {
 async function diagnoseUntilAbort(h: Harness, value = candidate()): Promise<DiagnoseResult> {
   const controller = new AbortController()
   await vi.useFakeTimers()
-  const promise = h.runtime.diagnose(value, WORKSPACE, controller.signal)
+  const promise = h.runtime.diagnose(value, WORKSPACE, WORKSPACE_URI, controller.signal)
   await vi.advanceTimersByTimeAsync(200)
   controller.abort(new Error('deadline'))
   const outcome = await promise
@@ -583,11 +627,16 @@ async function diagnoseUntilAbort(h: Harness, value = candidate()): Promise<Diag
 describe('dsh-lsp-diagnostics runtime pooling', () => {
   it('keeps provider and workspace sessions isolated in a two-level pool', async () => {
     const h = makeHarness('push-versioned')
-    const tsA = await h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, undefined)
+    const tsA = await h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
     expect(tsA).toMatchObject({ kind: 'ok' })
-    const go = await h.runtime.diagnose(candidate(target('/workspace/src/b.go')), WORKSPACE, undefined)
+    const go = await h.runtime.diagnose(candidate(target('/workspace/src/b.go')), WORKSPACE, 'file:///workspace/src/b.go', undefined)
     expect(go).toMatchObject({ kind: 'ok' })
-    const tsOtherWs = await h.runtime.diagnose(candidate(target('/other/src/a.ts')), { targetKey: 'ws2', displayPath: '/other' }, undefined)
+    const tsOtherWs = await h.runtime.diagnose(
+      candidate(target('/other/src/a.ts')),
+      { targetKey: 'ws2', displayPath: '/other' },
+      'file:///other/src/a.ts',
+      undefined,
+    )
     expect(tsOtherWs).toMatchObject({ kind: 'ok' })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(3)
     expect(h.spawnSpecs[0]?.argv[0]).toBe('fake-ts')
@@ -596,9 +645,9 @@ describe('dsh-lsp-diagnostics runtime pooling', () => {
 
   it('uses the opaque workspace targetKey as the inner pool key (:: never collides)', async () => {
     const h = makeHarness('push-versioned')
-    const a = await h.runtime.diagnose(candidate(target('/w/src/a.ts')), { targetKey: 'a::b', displayPath: '/w' }, undefined)
-    const b = await h.runtime.diagnose(candidate(target('/w/src/b.ts')), { targetKey: 'a', displayPath: '/w' }, undefined)
-    const c = await h.runtime.diagnose(candidate(target('/w/src/c.ts')), { targetKey: 'a::', displayPath: '/w' }, undefined)
+    const a = await h.runtime.diagnose(candidate(target('/w/src/a.ts')), { targetKey: 'a::b', displayPath: '/w' }, WORKSPACE_URI, undefined)
+    const b = await h.runtime.diagnose(candidate(target('/w/src/b.ts')), { targetKey: 'a', displayPath: '/w' }, WORKSPACE_URI, undefined)
+    const c = await h.runtime.diagnose(candidate(target('/w/src/c.ts')), { targetKey: 'a::', displayPath: '/w' }, WORKSPACE_URI, undefined)
     expect(a.kind).toBe('ok')
     expect(b.kind).toBe('ok')
     expect(c.kind).toBe('ok')
@@ -607,8 +656,13 @@ describe('dsh-lsp-diagnostics runtime pooling', () => {
 
   it('single-flights one session per workspace and serializes the full lifecycle', async () => {
     const h = makeHarness('push-versioned')
-    const first = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, undefined)
-    const second = h.runtime.diagnose(candidate(target('/workspace/src/b.ts')), WORKSPACE, undefined)
+    const first = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
+    const second = h.runtime.diagnose(
+      candidate(target('/workspace/src/b.ts')),
+      WORKSPACE,
+      'file:///workspace/src/b.ts',
+      undefined,
+    )
     await expect(first).resolves.toMatchObject({ kind: 'ok' })
     await expect(second).resolves.toMatchObject({ kind: 'ok' })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(1)
@@ -628,8 +682,8 @@ describe('dsh-lsp-diagnostics runtime pooling', () => {
     const h = makeHarness('two-batches', { settleMs: 300 })
     const queuedController = new AbortController()
     await vi.useFakeTimers()
-    const first = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, undefined)
-    const queued = h.runtime.diagnose(candidate(target('/workspace/src/b.ts')), WORKSPACE, queuedController.signal)
+    const first = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
+    const queued = h.runtime.diagnose(candidate(target('/workspace/src/b.ts')), WORKSPACE, WORKSPACE_URI, queuedController.signal)
     queuedController.abort(new Error('caller aborted while queued'))
     await expect(queued).resolves.toMatchObject({ kind: 'stale' })
     await vi.advanceTimersByTimeAsync(600)
@@ -641,8 +695,8 @@ describe('dsh-lsp-diagnostics runtime pooling', () => {
 
   it('serializes repeated opens of the same uri with monotonic versions', async () => {
     const h = makeHarness('push-versioned')
-    const first = await h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, undefined)
-    const second = await h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, undefined)
+    const first = await h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
+    const second = await h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
     expect(first).toMatchObject({ kind: 'ok', version: 1 })
     expect(second).toMatchObject({ kind: 'ok', version: 2 })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(1)
@@ -655,7 +709,7 @@ describe('dsh-lsp-diagnostics runtime pooling', () => {
   it('spawns with the exact public spec shape and a lifetime signal, not the execution signal', async () => {
     const controller = new AbortController()
     const h = makeHarness('push-versioned')
-    await h.runtime.diagnose(candidate(), WORKSPACE, controller.signal)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, controller.signal)
     const spec = h.spawnSpecs[0]!
     expect(spec.argv).toEqual(['fake-ts', 'push-versioned'])
     expect(spec.cwd).toBe('/workspace')
@@ -671,7 +725,7 @@ describe('dsh-lsp-diagnostics runtime pooling', () => {
 describe('dsh-lsp-diagnostics runtime json-rpc', () => {
   it('sends the canonical initialize payload then awaits initialized before didOpen', async () => {
     const h = makeHarness('push-versioned')
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const server = h.servers[0]!
     const events = server.events
     const initialized = events.indexOf('initialized')
@@ -700,7 +754,7 @@ describe('dsh-lsp-diagnostics runtime json-rpc', () => {
 
   it('correlates numeric request ids and rejects error responses', async () => {
     const h = makeHarness('initialize-error')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'malformed response',
     })
@@ -708,7 +762,7 @@ describe('dsh-lsp-diagnostics runtime json-rpc', () => {
 
   it('treats a response carrying both result and error as fatal', async () => {
     const h = makeHarness('both-result-error')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'malformed response',
     })
@@ -716,7 +770,7 @@ describe('dsh-lsp-diagnostics runtime json-rpc', () => {
 
   it('treats a response without jsonrpc 2.0 as fatal', async () => {
     const h = makeHarness('no-jsonrpc')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'malformed response',
     })
@@ -724,7 +778,7 @@ describe('dsh-lsp-diagnostics runtime json-rpc', () => {
 
   it('treats an error response without a numeric code and string message as fatal', async () => {
     const h = makeHarness('bad-error-code')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'malformed response',
     })
@@ -732,19 +786,19 @@ describe('dsh-lsp-diagnostics runtime json-rpc', () => {
 
   it('ignores unknown response ids', async () => {
     const h = makeHarness('unknown-response-id')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
   })
 
   it('answers workspace/configuration with same-length items', async () => {
     const h = makeHarness('server-requests')
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const configuration = h.servers[0]!.responses.find((response) => response.id === 100)
     expect(configuration?.result).toEqual([{ key: 'value' }, { key: 'value' }])
   })
 
   it('answers lifecycle no-op server requests with null and rejects applyEdit and unknown methods with -32601', async () => {
     const h = makeHarness('server-requests')
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const server = h.servers[0]!
     for (const id of [101, 102, 103]) {
       const response = server.responses.find((entry) => entry.id === id)
@@ -758,7 +812,7 @@ describe('dsh-lsp-diagnostics runtime json-rpc', () => {
 
   it('serializes every outbound frame through one write tail', async () => {
     const h = makeHarness('push-versioned')
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     expect(h.servers[0]!.events).toEqual([
       'initialize',
       'initialized',
@@ -798,7 +852,7 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
   it('keeps the latest batch for the current version and ignores older versions', async () => {
     const h = makeHarness('delayed-old', { settleMs: 300 })
     await vi.useFakeTimers()
-    const promise = h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const promise = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     await vi.advanceTimersByTimeAsync(400)
     const outcome = await promise
     expect(outcome).toMatchObject({ kind: 'ok', version: 1 })
@@ -812,7 +866,7 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
     const h = makeHarness('future-version')
     // Same-call retry on a fresh instance also receives a future version, so the
     // diagnosis ends unavailable without publishing anything.
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'malformed response',
     })
@@ -821,10 +875,10 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
 
   it('accepts a versionless first open and retires the session after close', async () => {
     const h = makeHarness('push-versionless')
-    const first = await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const first = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     expect(first).toMatchObject({ kind: 'ok' })
     // The session was retired and torn down; the next diagnosis spawns a fresh process.
-    const second = await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const second = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     expect(second).toMatchObject({ kind: 'ok' })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
     expect(h.servers[0]!.events).toContain('shutdown')
@@ -832,12 +886,12 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
 
   it('poisons a versionless publish when the same process re-opens the uri', async () => {
     const h = makeHarness('versioned-then-versionless')
-    const first = await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const first = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     expect(first).toMatchObject({ kind: 'ok' })
     // The second open of the same uri receives a versionless publish: the session
     // is poisoned while still open (no didClose) and evicted. The same-call retry
     // recovers on a fresh instance.
-    const second = await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const second = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     expect(second).toMatchObject({ kind: 'ok' })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
     const poisoned = h.servers[0]!
@@ -852,13 +906,13 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
     expect(poisoned.events).toContain('shutdown')
   })
 
-  it('ignores publications arriving before the didOpen write completes', async () => {
+  it('accepts a matching publication that races the didOpen write callback', async () => {
     const h = makeHarness('timeout', { shutdownTimeoutMs: 100 }, {}, (server) => {
       server.holdWriteAckAt = 3 // initialize, initialized, then didOpen
     })
     const controller = new AbortController()
     await vi.useFakeTimers()
-    const promise = h.runtime.diagnose(candidate(), WORKSPACE, controller.signal)
+    const promise = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, controller.signal)
     await vi.advanceTimersByTimeAsync(50)
     h.servers[0]!.emitNow({
       jsonrpc: '2.0',
@@ -867,8 +921,8 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
     })
     h.servers[0]!.ackAll()
     await vi.advanceTimersByTimeAsync(200)
-    controller.abort(new Error('deadline'))
-    await expect(promise).resolves.toMatchObject({ kind: 'unavailable', reason: 'diagnostics unavailable' })
+    await expect(promise).resolves.toMatchObject({ kind: 'ok', diagnostics: [expect.objectContaining({ code: 'TS2322' })] })
+    expect(controller.signal.aborted).toBe(false)
     await vi.advanceTimersByTimeAsync(200)
     await vi.useRealTimers()
   })
@@ -877,7 +931,7 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
 describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
   it('projects only consumed fields into the deeply frozen normalized schema', async () => {
     const h = makeHarness('strict-diagnostic')
-    const outcome = await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const outcome = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     expect(outcome).toMatchObject({ kind: 'ok' })
     const diagnostic = okDiagnostics(outcome)[0] as Record<string, unknown> | undefined
     expect(diagnostic).toBeDefined()
@@ -900,7 +954,7 @@ describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
 
   it('safely ignores standard optional and unknown extension fields of any value', async () => {
     const h = makeHarness('diagnostic-standard-optionals')
-    const outcome = await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const outcome = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     expect(outcome).toMatchObject({ kind: 'ok' })
     const diagnostic = okDiagnostics(outcome)[0] as Record<string, unknown> | undefined
     expect(diagnostic).toMatchObject({ code: 'O1', severity: 'info', severityRank: 2, message: 'with optionals' })
@@ -909,7 +963,7 @@ describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
     expect(diagnostic).not.toHaveProperty('codeDescription')
     expect(diagnostic).not.toHaveProperty('data')
     const unknown = makeHarness('diagnostic-unknown-extension')
-    const unknownOutcome = await unknown.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const unknownOutcome = await unknown.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     expect(unknownOutcome).toMatchObject({ kind: 'ok' })
     expect(okDiagnostics(unknownOutcome)[0]).not.toHaveProperty('x-extension')
   })
@@ -933,7 +987,7 @@ describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
 
   it('fails the publication on an invalid consumed field', async () => {
     const h = makeHarness('diagnostic-invalid-consumed-field')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'malformed response',
     })
@@ -981,7 +1035,7 @@ describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
 
   it('normalizes newlines and control characters to single-line safe text', async () => {
     const h = makeHarness('diagnostic-controls')
-    const outcome = await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const outcome = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     expect(outcome).toMatchObject({ kind: 'ok' })
     expect(okDiagnostics(outcome)[0]).toMatchObject({
       message: 'line1 line2 line3 line4 line5\uFFFDc0\uFFFDc1\uFFFDdel\uFFFDlone',
@@ -990,27 +1044,33 @@ describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
 })
 
 describe('dsh-lsp-diagnostics runtime bounded read', () => {
-  it('derives the canonical document uri once and reuses it for read and correlation', async () => {
+  it('uses the eligibility-frozen canonical uri for read and correlation, never re-deriving it', async () => {
     const h = makeHarness('push-versioned')
     const written = target()
-    await expect(h.runtime.diagnose(candidate(written), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(written), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'ok',
       uri: WORKSPACE_URI,
     })
-    expect(h.fs.fileUrl.mock.calls.filter(([value]) => value === written)).toHaveLength(1)
+    // The runtime must not recompute the document uri from the candidate: the
+    // coordinator passes the frozen canonicalUri, so fs.fileUrl is only ever
+    // called for the workspace root, never for the written document.
+    expect(h.fs.fileUrl.mock.calls.filter(([value]) => value === written)).toHaveLength(0)
+    const server = h.servers[0]!
+    expect(server.events).toContain(`didOpen ${WORKSPACE_URI} v1`)
+    expect(server.events).toContain(`publish ${WORKSPACE_URI} v1`)
   })
 
   it('reads a document whose known size is exactly the cap', async () => {
     const fs = makeFs({ stat: vi.fn(async () => ({ version: 'v1', type: 'file', size: 16 })) })
     const h = makeHarness('push-versioned', { maxDocumentBytes: 16 }, fs)
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
     expect(fs.readBytes).toHaveBeenCalledWith(expect.anything(), undefined, 16)
   })
 
   it('rejects a known size above the cap without calling readBytes and without spawning', async () => {
     const fs = makeFs({ stat: vi.fn(async () => ({ version: 'v1', type: 'file', size: 17 })) })
     const h = makeHarness('push-versioned', { maxDocumentBytes: 16 }, fs)
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'document too large',
     })
@@ -1021,7 +1081,7 @@ describe('dsh-lsp-diagnostics runtime bounded read', () => {
   it('reads an unknown-size document through readBytes', async () => {
     const fs = makeFs({ stat: vi.fn(async () => ({ version: 'v1', type: 'file' })) })
     const h = makeHarness('push-versioned', { maxDocumentBytes: 16 }, fs)
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
     expect(fs.readBytes).toHaveBeenCalledWith(expect.anything(), undefined, 16)
   })
 
@@ -1032,7 +1092,7 @@ describe('dsh-lsp-diagnostics runtime bounded read', () => {
       }),
     })
     const h = makeHarness('push-versioned', {}, fs)
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'document too large',
     })
@@ -1042,7 +1102,7 @@ describe('dsh-lsp-diagnostics runtime bounded read', () => {
     for (const error of [new FsError('permission', 'FS_PERMISSION_DENIED'), new Error('boom'), 'string error']) {
       const fs = makeFs({ readBytes: vi.fn(async () => { throw error }) })
       const h = makeHarness('push-versioned', {}, fs)
-      await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+      await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
         kind: 'unavailable',
         reason: 'diagnostics unavailable',
       })
@@ -1053,7 +1113,7 @@ describe('dsh-lsp-diagnostics runtime bounded read', () => {
     for (const type of ['directory', 'other']) {
       const fs = makeFs({ stat: vi.fn(async () => ({ version: 'v1', type, size: 16 })) })
       const h = makeHarness('push-versioned', {}, fs)
-      await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+      await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
         kind: 'unavailable',
         reason: 'diagnostics unavailable',
       })
@@ -1063,7 +1123,7 @@ describe('dsh-lsp-diagnostics runtime bounded read', () => {
   it('rejects invalid utf-8 as unavailable', async () => {
     const fs = makeFs({ readBytes: vi.fn(async () => Buffer.from([0xff, 0xfe, 0x80, 0x41])) })
     const h = makeHarness('push-versioned', {}, fs)
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'diagnostics unavailable',
     })
@@ -1074,7 +1134,7 @@ describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
   it('waits the quiet window and returns the latest accepted batch', async () => {
     const h = makeHarness('two-batches', { settleMs: 300 })
     await vi.useFakeTimers()
-    const promise = h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const promise = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     await vi.advanceTimersByTimeAsync(600)
     const outcome = await promise
     expect(outcome).toMatchObject({ kind: 'ok', version: 1 })
@@ -1086,7 +1146,7 @@ describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
     const h = makeHarness('timeout', { settleMs: 100, shutdownTimeoutMs: 100 })
     const controller = new AbortController()
     await vi.useFakeTimers()
-    const promise = h.runtime.diagnose(candidate(), WORKSPACE, controller.signal)
+    const promise = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, controller.signal)
     let settled = false
     void promise.then(() => {
       settled = true
@@ -1103,7 +1163,7 @@ describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
     const h = makeHarness('continuous', { settleMs: 200 })
     const controller = new AbortController()
     await vi.useFakeTimers()
-    const promise = h.runtime.diagnose(candidate(), WORKSPACE, controller.signal)
+    const promise = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, controller.signal)
     await vi.advanceTimersByTimeAsync(1000)
     controller.abort()
     const outcome = await promise
@@ -1118,7 +1178,7 @@ describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
     const h = makeHarness('timeout', { settleMs: 1000, shutdownTimeoutMs: 200 })
     const controller = new AbortController()
     await vi.useFakeTimers()
-    const promise = h.runtime.diagnose(candidate(), WORKSPACE, controller.signal)
+    const promise = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, controller.signal)
     await vi.advanceTimersByTimeAsync(100)
     controller.abort()
     const outcome = await promise
@@ -1135,7 +1195,7 @@ describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
     })
     const controller = new AbortController()
     await vi.useFakeTimers()
-    const promise = h.runtime.diagnose(candidate(), WORKSPACE, controller.signal)
+    const promise = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, controller.signal)
     await vi.advanceTimersByTimeAsync(200)
     let settled = false
     void promise.then(() => {
@@ -1154,14 +1214,14 @@ describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
   it('aborts during a hung initialize and lets the next diagnosis restart', async () => {
     const h = makeHarness('hang-initialize')
     const first = new AbortController()
-    const p1 = h.runtime.diagnose(candidate(), WORKSPACE, first.signal)
+    const p1 = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, first.signal)
     await vi.useFakeTimers()
     await vi.advanceTimersByTimeAsync(50)
     first.abort()
     await expect(p1).resolves.toMatchObject({ kind: 'unavailable', reason: 'diagnostics unavailable' })
     // The evicted session is gone; the next diagnosis spawns a fresh instance.
     const second = new AbortController()
-    const p2 = h.runtime.diagnose(candidate(), WORKSPACE, second.signal)
+    const p2 = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, second.signal)
     await vi.advanceTimersByTimeAsync(50)
     second.abort()
     await expect(p2).resolves.toMatchObject({ kind: 'unavailable', reason: 'diagnostics unavailable' })
@@ -1173,7 +1233,7 @@ describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
 
   it('returns stale for an already-aborted signal without spawning', async () => {
     const h = makeHarness('push-versioned')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, abortedSignal())).resolves.toMatchObject({ kind: 'stale' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, abortedSignal())).resolves.toMatchObject({ kind: 'stale' })
     expect(h.subprocess.spawn).not.toHaveBeenCalled()
   })
 })
@@ -1187,19 +1247,19 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
         })
       }
     })
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
   })
 
   it('retries once on a fresh instance after a transport failure and succeeds', async () => {
     const h = makeHarness('malformed-publish-once')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
   })
 
   it('returns unavailable when the retry also fails', async () => {
     const h = makeHarness('malformed')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'malformed response',
     })
@@ -1208,7 +1268,7 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
 
   it('returns unavailable without retry once publication was accepted and transport then failed', async () => {
     const h = makeHarness('close-stdin-after-diagnostics')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'malformed response',
     })
@@ -1217,21 +1277,39 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
 
   it('evicts an idle poisoned instance and restarts on the next diagnosis', async () => {
     const h = makeHarness('push-versioned')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
     h.servers[0]!.failStdin(new Error('idle EPIPE'))
     await Promise.resolve()
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
+  })
+
+  it('handles stdout errors through poison and restarts instead of emitting an uncaught error', async () => {
+    const h = makeHarness('push-versioned')
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    expect(() => h.servers[0]!.failStdout(new Error('stdout failed'))).not.toThrow()
+    await Promise.resolve()
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserves server-crashed classification when the process exits before initialize responds', async () => {
+    const h = makeHarness('crash-before-initialize')
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
+      kind: 'unavailable',
+      reason: 'server crashed',
+    })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
   })
 
   it('evicts a crashed instance and restarts on the next diagnosis', async () => {
     const h = makeHarness('crash')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'server crashed',
     })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'server crashed',
     })
@@ -1240,7 +1318,7 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
 
   it('recovers from a one-time crash on the same call', async () => {
     const h = makeHarness('crash-once')
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({ kind: 'ok' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'ok' })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
   })
 
@@ -1255,7 +1333,7 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
     }
     const runtime = new DiagnosticsRuntime({ fs, subprocess, config })
     harness = { fs, subprocess, runtime, config, servers: [], spawnSpecs: [] }
-    await expect(runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'server crashed',
     })
@@ -1269,7 +1347,7 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
     const { subprocess, servers, spawnSpecs } = makeSubprocess(['push-versioned'])
     const runtime = new DiagnosticsRuntime({ fs, subprocess, config })
     harness = { fs, subprocess, runtime, config, servers, spawnSpecs }
-    await expect(runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({
+    await expect(runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({
       kind: 'unavailable',
       reason: 'server not found',
     })
@@ -1278,7 +1356,12 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
 
   it('silently ignores unsupported extensions without spawning', async () => {
     const h = makeHarness('push-versioned')
-    const outcome = await h.runtime.diagnose(candidate(target('/workspace/src/notes.txt')), WORKSPACE, undefined)
+    const outcome = await h.runtime.diagnose(
+      candidate(target('/workspace/src/notes.txt')),
+      WORKSPACE,
+      'file:///workspace/src/notes.txt',
+      undefined,
+    )
     expect(outcome).toMatchObject({ kind: 'stale' })
     expect(h.subprocess.spawn).not.toHaveBeenCalled()
   })
@@ -1287,7 +1370,7 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
 describe('dsh-lsp-diagnostics runtime unique graceful-first teardown', () => {
   it('follows the exact graceful teardown event order', async () => {
     const h = makeHarness('push-versioned')
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const server = h.servers[0]!
     const order: string[] = []
     server.handle.lifetimeSignal?.addEventListener('abort', () => order.push('lifetime-abort'))
@@ -1304,9 +1387,9 @@ describe('dsh-lsp-diagnostics runtime unique graceful-first teardown', () => {
     expect(order).toEqual(['done-settled', 'lifetime-abort'])
   })
 
-  it('escalates to terminate exactly once only when the process is still alive', async () => {
+  it('escalates to terminate exactly once only when the process tree is still alive', async () => {
     const h = makeHarness('hung-all', { shutdownTimeoutMs: 100 })
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const server = h.servers[0]!
     await vi.useFakeTimers()
     const dispose = h.runtime.dispose()
@@ -1320,9 +1403,23 @@ describe('dsh-lsp-diagnostics runtime unique graceful-first teardown', () => {
     expect(server.handle.terminate).toHaveBeenCalledTimes(1)
   })
 
+  it('still terminates when direct-process done settles but a descendant remains alive', async () => {
+    const h = makeHarness('root-exit-helper-live', { shutdownTimeoutMs: 100 })
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
+    const server = h.servers[0]!
+    await vi.useFakeTimers()
+    server.exitRootOnly()
+    await vi.advanceTimersByTimeAsync(200)
+    await h.runtime.dispose()
+    await vi.useRealTimers()
+    expect(server.handle.terminate).toHaveBeenCalledTimes(1)
+    expect(server.events).toContain('root-exit-helper-live')
+    expect(server.events).toContain('terminate')
+  })
+
   it('keeps the same single transaction when shutdown or exit writes fail', async () => {
     const h = makeHarness('close-stdin-after-diagnostics')
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const server = h.servers[0]!
     await server.handle.terminate()
     await h.runtime.dispose()
@@ -1331,7 +1428,7 @@ describe('dsh-lsp-diagnostics runtime unique graceful-first teardown', () => {
 
   it('is single-flight: repeated teardown returns the same promise and terminates at most once', async () => {
     const h = makeHarness('hung-all', { shutdownTimeoutMs: 100 })
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const server = h.servers[0]!
     await vi.useFakeTimers()
     const first = h.runtime.dispose()
@@ -1348,7 +1445,7 @@ describe('dsh-lsp-diagnostics runtime dispose', () => {
   it('settles an active waiter before awaiting its queue and teardown', async () => {
     const h = makeHarness('timeout', { shutdownTimeoutMs: 100 })
     await vi.useFakeTimers()
-    const diagnosis = h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    const diagnosis = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     await vi.advanceTimersByTimeAsync(50)
     const dispose = h.runtime.dispose()
     await vi.advanceTimersByTimeAsync(200)
@@ -1361,13 +1458,13 @@ describe('dsh-lsp-diagnostics runtime dispose', () => {
     const h = makeHarness('push-versioned')
     h.runtime.stopAdmission()
     h.runtime.stopAdmission()
-    await expect(h.runtime.diagnose(candidate(), WORKSPACE, undefined)).resolves.toMatchObject({ kind: 'stale' })
+    await expect(h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)).resolves.toMatchObject({ kind: 'stale' })
     expect(h.subprocess.spawn).not.toHaveBeenCalled()
   })
 
   it('snapshots and clears the public pool then awaits every session teardown', async () => {
     const h = makeHarness('push-versioned')
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const server = h.servers[0]!
     let release!: () => void
     const gate = new Promise<void>((resolve) => {
@@ -1393,14 +1490,14 @@ describe('dsh-lsp-diagnostics runtime dispose', () => {
 
   it('aggregates cleanup errors', async () => {
     const h = makeHarness('push-versioned')
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     h.servers[0]!.handle.waitForExit.mockRejectedValueOnce(new Error('waitForExit failed'))
     await expect(h.runtime.dispose()).rejects.toThrow(/waitForExit failed|teardown/)
   })
 
   it('is idempotent across repeated calls', async () => {
     const h = makeHarness('push-versioned')
-    await h.runtime.diagnose(candidate(), WORKSPACE, undefined)
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
     const first = h.runtime.dispose()
     expect(h.runtime.dispose()).toBe(first)
     await first

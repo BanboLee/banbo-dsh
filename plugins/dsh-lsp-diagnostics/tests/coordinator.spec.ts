@@ -102,6 +102,44 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined): Pro
   })
 }
 
+function trackAbortListeners(): { readonly count: () => number; readonly restore: () => void } {
+  const originalAdd = AbortSignal.prototype.addEventListener
+  const originalRemove = AbortSignal.prototype.removeEventListener
+  const listeners = new Map<AbortSignal, Set<unknown>>()
+  const addSpy = vi.spyOn(AbortSignal.prototype, 'addEventListener').mockImplementation(function (
+    this: AbortSignal,
+    type: string,
+    listener: any,
+    options?: any,
+  ) {
+    if (type === 'abort') {
+      let owned = listeners.get(this)
+      if (owned === undefined) {
+        owned = new Set()
+        listeners.set(this, owned)
+      }
+      owned.add(listener)
+    }
+    return (originalAdd as any).call(this, type, listener, options)
+  })
+  const removeSpy = vi.spyOn(AbortSignal.prototype, 'removeEventListener').mockImplementation(function (
+    this: AbortSignal,
+    type: string,
+    listener: any,
+    options?: any,
+  ) {
+    if (type === 'abort') listeners.get(this)?.delete(listener)
+    return (originalRemove as any).call(this, type, listener, options)
+  })
+  return {
+    count: () => [...listeners.values()].reduce((total, owned) => total + owned.size, 0),
+    restore: () => {
+      addSpy.mockRestore()
+      removeSpy.mockRestore()
+    },
+  }
+}
+
 function makeFs(): FakeFs {
   return {
     resolve: vi.fn(async (path: string) => ({ targetKey: `ws:${path}`, displayPath: path })),
@@ -118,7 +156,12 @@ function makeFs(): FakeFs {
 
 function makeRuntime(): FakeRuntime {
   return {
-    diagnose: vi.fn(async (_candidate: unknown, _workspace: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+    diagnose: vi.fn(async (
+      _candidate: unknown,
+      _workspace: unknown,
+      _canonicalUri: string,
+      signal: AbortSignal | undefined,
+    ): Promise<Outcome> => {
       if (signal !== undefined && signal.aborted) return { kind: 'stale' }
       return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
     }),
@@ -224,11 +267,16 @@ describe('dsh-lsp-diagnostics coordinator waterfall contract', () => {
     expect(decision).toEqual({ kind: 'accept' })
   })
 
-  it('propagates a downstream throw with the same error object', async () => {
+  it('propagates a downstream throw unchanged while retiring the exec candidates', async () => {
     const harness = makeHarness()
     const exec = makeExec()
+    const target = makeTarget('src/a.ts', 'f:a')
+    observe(harness, exec, target)
+    const candidate = { target, version: 'v1', generation: 1 }
     const boom = new Error('downstream exploded')
     await expect(drive(harness, exec, {}, async () => Promise.reject(boom))).rejects.toBe(boom)
+    expect(harness.collector.take(exec)).toEqual([])
+    expect(harness.collector.isCurrent(candidate)).toBe(false)
   })
 
   it('propagates a downstream throw after the coordinator with the same error object', async () => {
@@ -301,6 +349,7 @@ describe('dsh-lsp-diagnostics coordinator waterfall contract', () => {
     expect(decision).toEqual({ kind: 'accept' })
     expect(noticeOf(decision)).toBeUndefined()
     expect(harness.fs.resolve).not.toHaveBeenCalled()
+    expect(harness.collector.isCurrent({ target, version: 'v1', generation: 1 })).toBe(false)
     expect(vi.getTimerCount()).toBe(0)
   })
 })
@@ -366,7 +415,7 @@ describe('dsh-lsp-diagnostics coordinator eligibility', () => {
     observe(harness, exec, outside)
     harness.fs.contains.mockImplementation((_parent: FakeTarget, child: FakeTarget) => child.targetKey !== 'f:out')
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/inside.ts', version: 1 }
       },
@@ -386,7 +435,7 @@ describe('dsh-lsp-diagnostics coordinator eligibility', () => {
     observe(harness, exec, a)
     observe(harness, exec, b)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -397,9 +446,12 @@ describe('dsh-lsp-diagnostics coordinator eligibility', () => {
     expect(notice).toBeDefined()
     const lines = fileLinesOf(notice!.content[0]!.text)
     expect(lines).toEqual(['src/a.ts', 'src/b.ts'])
-    // renderPath is frozen exactly once per eligible target: eligibility uses
-    // the shared sanitizer and the renderer re-sorts with the same comparator.
-    expect(harness.runtime.diagnose).toHaveBeenCalledTimes(2)
+    // URI is frozen exactly once per target and passed through to runtime;
+    // neither scheduling nor runtime may call fs.fileUrl again for the target.
+    expect(harness.fs.fileUrl.mock.calls.filter(([target]) => target === a)).toHaveLength(1)
+    expect(harness.fs.fileUrl.mock.calls.filter(([target]) => target === b)).toHaveLength(1)
+    expect(harness.runtime.diagnose).toHaveBeenNthCalledWith(1, expect.anything(), expect.anything(), 'file:///ws/src/a.ts', expect.any(AbortSignal))
+    expect(harness.runtime.diagnose).toHaveBeenNthCalledWith(2, expect.anything(), expect.anything(), 'file:///ws/src/b.ts', expect.any(AbortSignal))
   })
 })
 
@@ -431,7 +483,7 @@ describe('dsh-lsp-diagnostics coordinator shared ordering', () => {
     })
     const diagnosedKeys: string[] = []
     harness.runtime.diagnose.mockImplementation(
-      async (candidate: { readonly target: FakeTarget }, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (candidate: { readonly target: FakeTarget }, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         diagnosedKeys.push(candidate.target.targetKey)
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
@@ -477,7 +529,7 @@ describe('dsh-lsp-diagnostics coordinator aggregate context', () => {
     observe(harness, exec, a)
     observe(harness, exec, b)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -509,7 +561,7 @@ describe('dsh-lsp-diagnostics coordinator aggregate context', () => {
     observe(harness, exec, a)
     observe(harness, exec, b)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -540,7 +592,7 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     const a = makeTarget('src/a.ts', 'f:a')
     observe(harness, exec, a)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -557,7 +609,7 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     const a = makeTarget('src/a.ts', 'f:a')
     observe(harness, exec, a)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -582,6 +634,31 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
   })
 
+  it('runs the full deadline transition when wall-clock reaches deadline before the timer task', async () => {
+    const harness = makeHarness()
+    const exec = makeExec()
+    const a = makeTarget('src/a.ts', 'f:a')
+    observe(harness, exec, a)
+    let releaseStat!: (value: { version: string; type: string; size: number }) => void
+    harness.fs.stat.mockImplementation(async (target: FakeTarget) => {
+      if (target.targetKey.startsWith('ws:')) return { version: 'ws-v', type: 'directory' }
+      return new Promise<{ version: string; type: string; size: number }>((resolve) => {
+        releaseStat = resolve
+      })
+    })
+    const startedAt = Date.now()
+    const pending = drive(harness, exec, {}, acceptNext())
+    await vi.advanceTimersByTimeAsync(0)
+    vi.setSystemTime(startedAt + DEFAULT_CONFIG.timeoutMs)
+    releaseStat({ version: 'v1', type: 'file', size: 32 })
+    const decision = await pending
+    expect(noticeOf(decision)?.content[0]?.text).toBe(
+      '[LSP diagnostics after write]\nFile: src/a.ts\nStatus: diagnostics unavailable (timeout)',
+    )
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('renders deadline timeout only for still-current eligible candidates', async () => {
     const harness = makeHarness()
     const exec = makeExec()
@@ -591,7 +668,7 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     // A newer observation for the same target lands while diagnosis is in
     // flight, so the taken candidate is stale when the deadline arrives.
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         harness.collector.observe(otherExec, current, { kind: 'present', version: 'v2' })
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/current.ts', version: 1 }
@@ -615,7 +692,7 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     const a = makeTarget('src/a.ts', 'f:a')
     observe(harness, exec, a)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -649,7 +726,7 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     const a = makeTarget('src/a.ts', 'f:a')
     observe(harness, exec, a)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -679,6 +756,38 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     }
   })
 
+  it.each(['caller', 'cleanup'] as const)(
+    'suppresses a deadline timeout when %s abort arrives while cooperative I/O settles',
+    async (abortKind) => {
+      const harness = makeHarness()
+      const caller = new AbortController()
+      const exec = makeExec('/ws', caller.signal)
+      const a = makeTarget('src/a.ts', 'f:a')
+      observe(harness, exec, a)
+      let releaseDiagnosis!: () => void
+      harness.runtime.diagnose.mockImplementation(
+        async (_c: unknown, _w: unknown, _uri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
+          await new Promise<void>((resolve) => { releaseDiagnosis = resolve })
+          if (signal?.aborted === true) return { kind: 'stale' }
+          return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
+        },
+      )
+      const pending = drive(harness, exec, {}, acceptNext())
+      await vi.advanceTimersByTimeAsync(DEFAULT_CONFIG.timeoutMs)
+      if (abortKind === 'caller') caller.abort()
+      else {
+        harness.coordinator.stopAdmission()
+        harness.coordinator.abortActiveOperations()
+      }
+      releaseDiagnosis()
+      const decision = await pending
+      expect(noticeOf(decision)).toBeUndefined()
+      expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+      await harness.coordinator.awaitActiveOperations()
+      await harness.coordinator.awaitRetiredIo()
+    },
+  )
+
   it('never publishes after the gate is closed by a caller abort', async () => {
     const harness = makeHarness()
     const controller = new AbortController()
@@ -686,7 +795,7 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     const a = makeTarget('src/a.ts', 'f:a')
     observe(harness, exec, a)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -719,7 +828,7 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     const a = makeTarget('src/a.ts', 'f:a')
     observe(harness, exec, a)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -753,7 +862,7 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
     const takenCandidate = { target: a, version: 'v1', generation: 1 }
     const otherExec = makeExec()
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         // A concurrent mutation lands while diagnosis is in flight.
         harness.collector.observe(otherExec, a, { kind: 'present', version: 'v2' })
@@ -805,11 +914,19 @@ describe('dsh-lsp-diagnostics coordinator admission and registration', () => {
       return { kind: 'accept' }
     })
     harness.coordinator.stopAdmission()
+    harness.coordinator.abortActiveOperations()
+    let drained = false
+    const awaiting = harness.coordinator.awaitActiveOperations().then(() => {
+      drained = true
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(drained).toBe(false)
     releaseNext()
     const decision = await pending
+    await awaiting
     expect(decision).toEqual({ kind: 'accept' })
     expect(harness.fs.resolve).not.toHaveBeenCalled()
-    await harness.coordinator.awaitActiveOperations()
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
     await harness.coordinator.awaitRetiredIo()
     expect(vi.getTimerCount()).toBe(0)
   })
@@ -834,6 +951,7 @@ describe('dsh-lsp-diagnostics coordinator admission and registration', () => {
     const decision = await pending
     expect(decision).toEqual({ kind: 'accept' })
     expect(harness.runtime.diagnose).not.toHaveBeenCalled()
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
     await harness.coordinator.awaitActiveOperations()
     await harness.coordinator.awaitRetiredIo()
     expect(vi.getTimerCount()).toBe(0)
@@ -870,7 +988,7 @@ describe('dsh-lsp-diagnostics coordinator cleanup ownership', () => {
     const a = makeTarget('src/a.ts', 'f:a')
     observe(harness, exec, a)
     harness.runtime.diagnose.mockImplementation(
-      async (_c: unknown, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (_c: unknown, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         return { kind: 'ok', diagnostics: [], uri: 'file:///ws/src/a.ts', version: 1 }
       },
@@ -899,6 +1017,47 @@ describe('dsh-lsp-diagnostics coordinator cleanup ownership', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('leaves zero caller/cleanup abort-listener residue on every terminal path', async () => {
+    const runCase = async (kind: 'no-candidate' | 'non-accept' | 'stats-first' | 'deadline' | 'caller' | 'cleanup') => {
+      const tracked = trackAbortListeners()
+      try {
+        const harness = makeHarness()
+        const caller = new AbortController()
+        const exec = makeExec('/ws', caller.signal)
+        if (kind !== 'no-candidate') observe(harness, exec, makeTarget(`src/${kind}.ts`, `f:${kind}`))
+        if (kind === 'deadline' || kind === 'caller' || kind === 'cleanup') {
+          harness.runtime.diagnose.mockImplementation(
+            async (_c: unknown, _w: unknown, _uri: string, signal: AbortSignal | undefined) =>
+              abortable(new Promise<Outcome>(() => {}), signal),
+          )
+        }
+        const pending = drive(
+          harness,
+          exec,
+          {},
+          kind === 'non-accept' ? async () => ({ kind: 'block' }) : acceptNext(),
+        )
+        await vi.advanceTimersByTimeAsync(0)
+        if (kind === 'deadline') await vi.advanceTimersByTimeAsync(DEFAULT_CONFIG.timeoutMs)
+        if (kind === 'caller') caller.abort()
+        if (kind === 'cleanup') {
+          harness.coordinator.stopAdmission()
+          harness.coordinator.abortActiveOperations()
+        }
+        await pending
+        await harness.coordinator.awaitActiveOperations()
+        await harness.coordinator.awaitRetiredIo()
+        expect(tracked.count(), kind).toBe(0)
+        expect(vi.getTimerCount(), kind).toBe(0)
+      } finally {
+        tracked.restore()
+      }
+    }
+    for (const kind of ['no-candidate', 'non-accept', 'stats-first', 'deadline', 'caller', 'cleanup'] as const) {
+      await runCase(kind)
+    }
+  })
+
   it('leaves zero timer residue after every terminal path', async () => {
     const harness = makeHarness()
     const exec = makeExec()
@@ -921,7 +1080,7 @@ describe('dsh-lsp-diagnostics coordinator cleanup ownership', () => {
     observe(harness, exec, a)
     observe(harness, exec, b)
     harness.runtime.diagnose.mockImplementation(
-      async (candidate: { readonly target: FakeTarget }, _w: unknown, signal: AbortSignal | undefined): Promise<Outcome> => {
+      async (candidate: { readonly target: FakeTarget }, _w: unknown, _canonicalUri: string, signal: AbortSignal | undefined): Promise<Outcome> => {
         if (signal !== undefined && signal.aborted) return { kind: 'stale' }
         if (candidate.target.targetKey === 'f:a') {
           return {

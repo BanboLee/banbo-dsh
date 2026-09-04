@@ -99,7 +99,7 @@ const SEVERITY_RANK = { error: 0, warning: 1, info: 2, hint: 3, unknown: 4 }
 /**
  * @typedef {object} SessionHandle
  * @property {number} pid
- * @property {{ write(chunk: Buffer, callback?: (error?: Error | null) => void): void, on(event: 'error', listener: (error: Error) => void): void, removeAllListeners?: () => void }} stdin
+ * @property {{ write(chunk: Buffer, callback?: (error?: Error | null) => void): void, on(event: 'error', listener: (error: Error) => void): void, removeListener?(event: 'error', listener: (error: Error) => void): void }} stdin
  * @property {import('node:events').EventEmitter} stdout
  * @property {import('node:events').EventEmitter} stderr
  * @property {Record<string, never>} collected
@@ -127,7 +127,6 @@ const SEVERITY_RANK = { error: 0, warning: 1, info: 2, hint: 3, unknown: 4 }
  * @property {string} canonicalUri - the exact canonical document URI.
  * @property {number} currentVersion - the didOpen version of this open generation.
  * @property {boolean} firstOpen - whether this process opens this URI for the first time.
- * @property {boolean} activated - true once the didOpen write completed.
  * @property {boolean} settled - the waiter is done (accepted, timed out, aborted, or failed).
  * @property {NormalizedDiagnostic[] | null} batch - the latest accepted batch.
  * @property {ReturnType<typeof setTimeout> | undefined} timer - the quiet-window timer.
@@ -136,7 +135,6 @@ const SEVERITY_RANK = { error: 0, warning: 1, info: 2, hint: 3, unknown: 4 }
  * @property {(reason: Error) => void} reject
  * @property {AbortSignal | undefined} signal
  * @property {(() => void) | undefined} onAbort
- * @property {boolean} retireAfterClose - versionless first open: retire after close.
  */
 
 /**
@@ -485,20 +483,25 @@ export class DiagnosticsRuntime {
    * Diagnose one written file after a successful mutation.
    *
    * The candidate is the collector's mutation candidate; the workspace is the
-   * coordinator-canonicalized workspace target. Unsupported extensions,
-   * closed admission, and already-aborted signals are silent (`stale`). All
-   * workspace-visible work is serialized per (provider, workspace) through the
-   * two-level tail.
+   * coordinator-canonicalized workspace target, and `canonicalUri` is the
+   * eligibility-frozen canonical document URI the coordinator derived exactly
+   * once. The runtime never re-derives the document URI: the frozen value is
+   * used for route selection, bounded read, didOpen and the publication
+   * waiter, so correlation cannot drift from the coordinator's render side.
+   * Unsupported extensions, closed admission, and already-aborted signals are
+   * silent (`stale`). All workspace-visible work is serialized per (provider,
+   * workspace) through the two-level tail.
    *
    * @param {{ target: unknown, version: string, generation: number }} candidate - the mutated target.
    * @param {{ targetKey: string, displayPath?: string }} canonicalWorkspace - the canonical workspace target.
+   * @param {string} canonicalUri - the eligibility-frozen canonical document URI.
    * @param {AbortSignal} [executionSignal] - relayed caller/deadline/cleanup abort.
    * @returns {Promise<DiagnosisOutcome>}
    */
-  async diagnose(candidate, canonicalWorkspace, executionSignal) {
+  async diagnose(candidate, canonicalWorkspace, canonicalUri, executionSignal) {
     if (!this.admissionOpen) return { kind: 'stale' }
     if (executionSignal !== undefined && executionSignal.aborted) return { kind: 'stale' }
-    const uri = this.fs.fileUrl(candidate.target)
+    const uri = canonicalUri
     const extension = extensionOf(uri)
     const route = this.routes.get(extension)
     if (route === undefined) return { kind: 'stale' }
@@ -668,11 +671,8 @@ export class DiagnosticsRuntime {
     if (existing !== undefined && !existing.isClosing()) return existing
     if (existing !== undefined) byKey.delete(workspaceKey)
     const session = new LspSession({
-      fs: this.fs,
       subprocess: this.subprocess,
       config: this.config,
-      providerId,
-      workspaceKey,
       workspacePath,
       workspaceUri,
       server: route.server,
@@ -725,27 +725,18 @@ export class DiagnosticsRuntime {
 class LspSession {
   /**
    * @param {object} deps - session dependencies.
-   * @param {FsSeam} deps.fs - the filesystem seam.
    * @param {SubprocessSeam} deps.subprocess - the subprocess seam.
    * @param {RuntimeConfig} deps.config - the validated plugin config.
-   * @param {string} deps.providerId - the provider id.
-   * @param {string} deps.workspaceKey - the opaque workspace targetKey.
    * @param {string} deps.workspacePath - the subprocess cwd.
    * @param {string} deps.workspaceUri - the canonical workspace root URI.
    * @param {ServerConfig} deps.server - the server config.
    * @param {(session: LspSession) => void} deps.onFatal - runtime-owned eviction/teardown hook.
    */
-  constructor({ fs, subprocess, config, providerId, workspaceKey, workspacePath, workspaceUri, server, onFatal }) {
-    /** @type {FsSeam} */
-    this.fs = fs
+  constructor({ subprocess, config, workspacePath, workspaceUri, server, onFatal }) {
     /** @type {SubprocessSeam} */
     this.subprocess = subprocess
     /** @type {RuntimeConfig} */
     this.config = config
-    /** @type {string} */
-    this.providerId = providerId
-    /** @type {string} */
-    this.workspaceKey = workspaceKey
     /** @type {string} */
     this.workspacePath = workspacePath
     /** @type {string} */
@@ -758,10 +749,22 @@ class LspSession {
     this.decoder = new MessageDecoder(config.maxMessageBytes)
     /** @type {SessionHandle | undefined} */
     this.handle = undefined
-    /** @type {{ write(chunk: Buffer, callback?: (error?: Error | null) => void): void, on(event: 'error', listener: (error: Error) => void): void, removeAllListeners?: () => void } | undefined} */
+    /** @type {{ write(chunk: Buffer, callback?: (error?: Error | null) => void): void, on(event: 'error', listener: (error: Error) => void): void, removeListener?(event: 'error', listener: (error: Error) => void): void } | undefined} */
     this.stdin = undefined
     /** @type {import('node:events').EventEmitter | undefined} */
     this.stdout = undefined
+    /** @type {(error: Error) => void} */
+    this.onStdinError = (error) => {
+      if (!this.closing) this.poison(new TransportError('malformed response', error))
+    }
+    /** @type {(chunk: Buffer) => void} */
+    this.onStdoutData = (chunk) => {
+      this.onStdout(chunk)
+    }
+    /** @type {(error: Error) => void} */
+    this.onStdoutError = (error) => {
+      if (!this.closing) this.poison(new TransportError('malformed response', error))
+    }
     /** @type {Map<number, { resolve: (value: unknown) => void, reject: (error: Error) => void, signal?: AbortSignal, onAbort?: () => void }>} */
     this.pending = new Map()
     /** @type {number} */
@@ -784,8 +787,6 @@ class LspSession {
     this.poisoned = false
     /** @type {TransportError | undefined} */
     this.poisonError = undefined
-    /** @type {boolean} */
-    this.processExited = false
     /** @type {boolean} */
     this.acceptedPublication = false
     /** @type {boolean} */
@@ -853,20 +854,15 @@ class LspSession {
     this.stdout = handle.stdout
     handle.done.then(
       () => {
-        this.processExited = true
         if (!this.closing) this.poison(new TransportError('server crashed', new Error('language server exited')))
       },
       (error) => {
-        this.processExited = true
         if (!this.closing) this.poison(new TransportError('server crashed', error))
       },
     )
-    this.stdin.on('error', (error) => {
-      this.poison(new TransportError('malformed response', error))
-    })
-    this.stdout.on('data', (chunk) => {
-      this.onStdout(/** @type {Buffer} */ (chunk))
-    })
+    this.stdin.on('error', this.onStdinError)
+    this.stdout.on('data', this.onStdoutData)
+    this.stdout.on('error', this.onStdoutError)
     const initializeResult = await this.request(
       'initialize',
       {
@@ -879,6 +875,7 @@ class LspSession {
       executionSignal,
     ).catch((error) => {
       if (executionSignal !== undefined && executionSignal.aborted) throw abortError(executionSignal)
+      if (error instanceof TransportError) throw error
       throw new TransportError('malformed response', error)
     })
     const initializeRecord = /** @type {{ capabilities?: unknown } | null} */ (initializeResult)
@@ -939,7 +936,6 @@ class LspSession {
         }),
         executionSignal,
       )
-      waiter.activated = true
       opened = true
       outcome = await waiter.promise
     } catch (error) {
@@ -981,8 +977,11 @@ class LspSession {
   }
 
   /**
-   * Arm the diagnostic waiter BEFORE the didOpen write; notifications are only
-   * received after the write completes (activated).
+   * Arm the diagnostic waiter BEFORE the didOpen write. The waiter is
+   * considered activated immediately: a child that reads didOpen from the
+   * pipe can publish before Node invokes the write callback continuation, and
+   * that matching publication must be kept, never dropped. If the write
+   * itself later fails, the poison/teardown path still wins.
    * @param {string} uri - the exact canonical URI.
    * @param {number} version - the didOpen document version.
    * @param {boolean} firstOpen - whether this process opens this URI for the first time.
@@ -1003,7 +1002,6 @@ class LspSession {
       canonicalUri: uri,
       currentVersion: version,
       firstOpen,
-      activated: false,
       settled: false,
       batch: null,
       timer: undefined,
@@ -1012,7 +1010,6 @@ class LspSession {
       reject,
       signal: executionSignal,
       onAbort: undefined,
-      retireAfterClose: false,
     }
     waiter.onAbort = () => {
       if (waiter.settled) return
@@ -1049,7 +1046,7 @@ class LspSession {
    */
   startQuietTimer() {
     const waiter = this.waiter
-    if (waiter === null || waiter.settled || !waiter.activated) return
+    if (waiter === null || waiter.settled) return
     if (waiter.timer !== undefined) clearTimeout(waiter.timer)
     waiter.timer = setTimeout(() => {
       if (waiter.settled) return
@@ -1206,7 +1203,7 @@ class LspSession {
    */
   handlePublish(params) {
     const waiter = this.waiter
-    if (waiter === null || !waiter.activated || waiter.settled) return
+    if (waiter === null || waiter.settled) return
     const record = /** @type {Record<string, unknown> | null} */ (params)
     if (typeof record !== 'object' || record === null || typeof record.uri !== 'string') {
       this.poison(new TransportError('malformed response', new Error('publishDiagnostics params must be an object with a string uri')))
@@ -1235,7 +1232,6 @@ class LspSession {
         this.poison(new TransportError('malformed response', new Error('versionless publication on a re-opened uri')))
         return
       }
-      waiter.retireAfterClose = true
       this.retireAfterClose = true
     }
     if (!Array.isArray(record.diagnostics)) {
@@ -1396,9 +1392,13 @@ class LspSession {
 
   /**
    * The unique teardown sequence: shutdown request within an independent
-   * graceful budget, exit notification plus natural-close wait, conditional
-   * `terminate()` (the only hard-stop, exactly once), then `handle.done` and
-   * `waitForExit()`, and only then the process-lifetime controller abort.
+   * graceful budget, exit notification plus natural-close wait, whole-process-
+   * tree liveness probe (bounded by the same budget), conditional
+   * `terminate()` (the only hard-stop, exactly once, tree-scoped), then
+   * `handle.done` and `waitForExit()`, and only then the process-lifetime
+   * controller abort. Terminate is decided by whole-tree liveness, never by
+   * direct-process `done` alone, so a root that exits while a helper remains
+   * alive still escalates and the teardown cannot wait forever.
    * @returns {Promise<void>}
    */
   async teardown() {
@@ -1406,6 +1406,7 @@ class LspSession {
     const errors = []
     const budget = new AbortController()
     const budgetTimer = setTimeout(() => budget.abort(), this.config.shutdownTimeoutMs)
+    let treeExited = false
     try {
       try {
         await this.request('shutdown', null, budget.signal, true)
@@ -1429,10 +1430,21 @@ class LspSession {
           // natural close did not arrive inside the graceful budget
         }
       }
+      // Whole-process-tree liveness within the remaining graceful budget: a
+      // resolved `true` means the tree exited; a budget abort means it is
+      // still alive and the tree-scoped terminate below is required.
+      if (this.handle !== undefined) {
+        try {
+          treeExited = (await this.handle.waitForExit(budget.signal)) === true
+        } catch (error) {
+          if (error instanceof Error && error.name !== 'AbortError') errors.push(error)
+          treeExited = false
+        }
+      }
     } finally {
       clearTimeout(budgetTimer)
     }
-    if (!this.processExited && this.handle !== undefined) {
+    if (!treeExited && this.handle !== undefined) {
       try {
         this.handle.terminate()
       } catch (error) {
@@ -1464,11 +1476,12 @@ class LspSession {
    * @returns {void}
    */
   detachStreams() {
-    if (this.stdout !== undefined && typeof this.stdout.removeAllListeners === 'function') {
-      this.stdout.removeAllListeners()
+    if (this.stdout !== undefined) {
+      this.stdout.removeListener('data', this.onStdoutData)
+      this.stdout.removeListener('error', this.onStdoutError)
     }
-    if (this.stdin !== undefined && typeof this.stdin.removeAllListeners === 'function') {
-      this.stdin.removeAllListeners()
+    if (this.stdin !== undefined && typeof this.stdin.removeListener === 'function') {
+      this.stdin.removeListener('error', this.onStdinError)
     }
   }
 }

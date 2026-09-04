@@ -20,6 +20,9 @@ function bodyOf64(): Buffer {
   return Buffer.from(JSON.stringify({ result: 'x'.repeat(51) }), 'utf8')
 }
 
+/** The CRLFCRLF header terminator length; the header cap includes it. */
+const HEADER_TERMINATOR_BYTES = 4
+
 describe('dsh-lsp-diagnostics framing encoder', () => {
   it('encodes an ascii message with an exact Content-Length byte count', () => {
     const message = { jsonrpc: '2.0', method: 'x', params: {} }
@@ -122,12 +125,15 @@ describe('dsh-lsp-diagnostics MessageDecoder', () => {
     expect(decoder.push(bytes)).toEqual([{ result: 'x'.repeat(51) }])
   })
 
-  it('decodes a maximum-size frame (header at MAX_HEADER_BYTES, body at the cap) split across chunks', () => {
+  it('decodes a maximum-size frame (header block at MAX_HEADER_BYTES, body at the cap) split across chunks', () => {
     const maxMessageBytes = 64
     const decoder = new MessageDecoder(maxMessageBytes)
     const body = bodyOf64() // exactly 64 bytes
     expect(Buffer.byteLength(body)).toBe(64)
-    const bytes = Buffer.concat([paddedHeader(64, MAX_HEADER_BYTES), body])
+    // The cap includes the CRLFCRLF terminator: max header text is
+    // MAX_HEADER_BYTES - 4, so the whole header block is exactly
+    // MAX_HEADER_BYTES bytes.
+    const bytes = Buffer.concat([paddedHeader(64, MAX_HEADER_BYTES - HEADER_TERMINATOR_BYTES), body])
     const messages: unknown[] = []
     for (let offset = 0; offset < bytes.length; offset += 7) {
       messages.push(...decoder.push(bytes.subarray(offset, offset + 7)))
@@ -153,11 +159,14 @@ describe('dsh-lsp-diagnostics MessageDecoder', () => {
     expect(() => decoder.push(bytes)).toThrow(/header/i)
   })
 
-  it('accepts a header terminator at exactly MAX_HEADER_BYTES', () => {
-    const decoder = new MessageDecoder(1024)
-    const bytes = paddedHeader(4, MAX_HEADER_BYTES)
-    const body = Buffer.from('"ok"', 'ascii')
-    expect(decoder.push(Buffer.concat([bytes, body]))).toEqual(['ok'])
+  it('rejects the same oversized header block whether whole or split across chunks', () => {
+    const bytes = Buffer.concat([paddedHeader(4, MAX_HEADER_BYTES), Buffer.from('"ok"', 'ascii')])
+    const whole = new MessageDecoder(1024)
+    expect(() => whole.push(bytes)).toThrow(/header/i)
+
+    const split = new MessageDecoder(1024)
+    expect(split.push(bytes.subarray(0, MAX_HEADER_BYTES))).toEqual([])
+    expect(() => split.push(bytes.subarray(MAX_HEADER_BYTES))).toThrow(/header/i)
   })
 
   it('rejects a missing Content-Length header', () => {

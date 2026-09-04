@@ -34,6 +34,7 @@ export type FakeLspMode =
   | 'push-versioned'
   | 'push-versionless'
   | 'clean'
+  | 'content-aware'
   | 'two-batches'
   | 'continuous'
   | 'delayed-old'
@@ -67,6 +68,14 @@ export interface LspDiagnosticsBootOptions {
   readonly settleMs?: number
   /** Plugin `maxDocumentBytes` (document too large coverage). */
   readonly maxDocumentBytes?: number
+  /** Plugin aggregate diagnostic-count cap. */
+  readonly maxDiagnostics?: number
+  /** Plugin aggregate Unicode code-point character cap. */
+  readonly maxResultChars?: number
+  /** Plugin graceful shutdown budget. */
+  readonly shutdownTimeoutMs?: number
+  /** Subprocess TERM→KILL grace. */
+  readonly killGraceMs?: number
   /** Extra YAML root-config entries (agent loop services, code runtime, etc.). */
   readonly extraRootEntries?: readonly string[]
   /**
@@ -77,6 +86,8 @@ export interface LspDiagnosticsBootOptions {
   readonly toolsMode?: 'native' | 'code' | 'ptc'
   /** When true, point the typescript server at a nonexistent executable (server not found coverage). */
   readonly missingTypescript?: boolean
+  /** When true, point the Go server at a nonexistent executable. */
+  readonly missingGo?: boolean
 }
 
 export interface LspDiagnosticsBooted {
@@ -135,7 +146,7 @@ function baseRootEntries(toolsMode: 'native' | 'code' | 'ptc', workspace: string
     '- id: tools',
     "  name: '@deepseek-ai/dsh-tools'",
     '  config:',
-    `    mode: ${toolsMode}`,
+    `    mode: ${mode}`,
     '- id: fs',
     "  name: '@deepseek-ai/dsh-fs-local'",
     '  config:',
@@ -158,25 +169,33 @@ function writeProfilePatch(profile: string, options: LspDiagnosticsBootOptions, 
   const typescriptArgs = options.missingTypescript === true
     ? []
     : [FAKE_LSP_SERVER, options.typescriptMode ?? 'push-versioned', logs.typescript]
+  const goCommand = options.missingGo === true ? join(profile, 'missing-go-language-server') : process.execPath
+  const goArgs = options.missingGo === true
+    ? []
+    : [FAKE_LSP_SERVER, options.goMode ?? 'clean', logs.go]
   const lines = [
     '- id: lsp-diagnostics',
     '  config:',
     `    enabled: ${options.enabled ?? true}`,
     `    timeoutMs: ${options.timeoutMs ?? 2000}`,
     `    settleMs: ${options.settleMs ?? 100}`,
+    `    shutdownTimeoutMs: ${options.shutdownTimeoutMs ?? 1_000}`,
+    `    killGraceMs: ${options.killGraceMs ?? 500}`,
     `    maxDocumentBytes: ${options.maxDocumentBytes ?? 2_097_152}`,
+    `    maxDiagnostics: ${options.maxDiagnostics ?? 50}`,
+    `    maxResultChars: ${options.maxResultChars ?? 8_000}`,
     '    servers:',
     '      typescript:',
     `        command: ${JSON.stringify(typescriptCommand)}`,
-    '        args:',
-    ...typescriptArgs.map((arg) => `          - ${JSON.stringify(arg)}`),
+    ...(typescriptArgs.length === 0
+      ? ['        args: []']
+      : ['        args:', ...typescriptArgs.map((arg) => `          - ${JSON.stringify(arg)}`)]),
     '        env: {}',
     '      go:',
-    `        command: ${JSON.stringify(process.execPath)}`,
-    '        args:',
-    `          - ${JSON.stringify(FAKE_LSP_SERVER)}`,
-    `          - ${JSON.stringify(options.goMode ?? 'clean')}`,
-    `          - ${JSON.stringify(logs.go)}`,
+    `        command: ${JSON.stringify(goCommand)}`,
+    ...(goArgs.length === 0
+      ? ['        args: []']
+      : ['        args:', ...goArgs.map((arg) => `          - ${JSON.stringify(arg)}`)]),
     '        env: {}',
   ]
   writeFileSync(join(profile, 'cordis.patch.yml'), `${lines.join('\n')}\n`)

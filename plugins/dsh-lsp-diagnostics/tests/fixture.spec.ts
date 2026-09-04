@@ -47,11 +47,11 @@ async function initialized(client: FakeLspClient): Promise<void> {
   await client.send({ jsonrpc: '2.0', method: 'initialized', params: {} })
 }
 
-async function didOpen(client: FakeLspClient, uri = WORKSPACE_URI, version = 1): Promise<void> {
+async function didOpen(client: FakeLspClient, uri = WORKSPACE_URI, version = 1, text = ''): Promise<void> {
   await client.send({
     jsonrpc: '2.0',
     method: 'textDocument/didOpen',
-    params: { textDocument: { uri, languageId: 'typescript', version, text: '' } },
+    params: { textDocument: { uri, languageId: 'typescript', version, text } },
   })
 }
 
@@ -106,6 +106,20 @@ describe('fake LSP server', () => {
     await didOpen(client)
     const publish = await client.next()
     expect(publish.params).toMatchObject({ uri: WORKSPACE_URI, version: 1, diagnostics: [] })
+  })
+
+  it('content-aware transitions the same uri from error text to explicit clean', async () => {
+    const { client } = startServer('content-aware')
+    await initialize(client)
+    await initialized(client)
+    await didOpen(client, WORKSPACE_URI, 1, 'const x: number = "oops";\n')
+    const error = await client.next()
+    expect(error.params).toMatchObject({ uri: WORKSPACE_URI, version: 1 })
+    expect((error.params?.diagnostics as readonly unknown[])).not.toHaveLength(0)
+    await didClose(client)
+    await didOpen(client, WORKSPACE_URI, 2, 'const x: number = 1;\n')
+    const clean = await client.next()
+    expect(clean.params).toMatchObject({ uri: WORKSPACE_URI, version: 2, diagnostics: [] })
   })
 
   it('two-batches publishes a first batch then a replacing second batch', async () => {

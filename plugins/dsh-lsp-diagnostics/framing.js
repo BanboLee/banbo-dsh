@@ -3,12 +3,13 @@
  *
  * The encoder produces one framed buffer per message; the decoder buffers
  * incoming bytes and yields complete parsed message bodies. Bounds are fixed
- * protocol invariants: the header block (text plus terminator) is capped at
- * `MAX_HEADER_BYTES` even before the terminator arrives, the declared body
- * length is capped at the decoder's `maxMessageBytes`, and the total retained
- * undecoded buffer never exceeds `MAX_HEADER_BYTES + maxMessageBytes`
- * (measured without the consumed header terminator, so a maximum-size frame
- * still fits exactly). Any violation — oversized header, oversized or missing
+ * protocol invariants: one header block (header text plus the CRLFCRLF
+ * terminator) is capped at `MAX_HEADER_BYTES`, enforced identically whether
+ * the block arrives whole or split across chunks; the declared body length is
+ * capped at the decoder's `maxMessageBytes`; and the retained undecoded
+ * buffer can never exceed the header cap plus the body cap because a full
+ * separator and a bounded declared length are both required before any body
+ * is buffered. Any violation — oversized header, oversized or missing
  * Content-Length, malformed JSON — throws and is a fatal transport failure for
  * the consuming session.
  *
@@ -78,7 +79,14 @@ export class MessageDecoder {
       }
       return { ready: false }
     }
-    if (separator > MAX_HEADER_BYTES) {
+    // The cap covers the whole header block: header text plus the CRLFCRLF
+    // terminator. The separator offset points at the start of the terminator,
+    // so the block is `separator + HEADER_SEPARATOR.length` bytes. Checking
+    // the offset alone would accept a 8192-byte text plus a 4-byte terminator
+    // when the frame arrives whole but reject the identical header when it is
+    // split after the 8192 header bytes; comparing the full block keeps both
+    // chunkings identical.
+    if (separator + HEADER_SEPARATOR.length > MAX_HEADER_BYTES) {
       throw new Error(`LSP header block exceeded ${MAX_HEADER_BYTES} bytes`)
     }
     const headerText = this.buffer.toString('ascii', 0, separator)
@@ -89,13 +97,6 @@ export class MessageDecoder {
     const bodyStart = separator + HEADER_SEPARATOR.length
     const bodyEnd = bodyStart + contentLength
     if (this.buffer.length < bodyEnd) {
-      // Retained undecoded content (header text + partial body) must stay within
-      // the protocol bound; the consumed separator is not retained content.
-      if (this.buffer.length - HEADER_SEPARATOR.length > MAX_HEADER_BYTES + this.maxMessageBytes) {
-        throw new Error(
-          `LSP retained buffer exceeded ${MAX_HEADER_BYTES + this.maxMessageBytes} bytes`,
-        )
-      }
       return { ready: false }
     }
     const bodyBytes = this.buffer.subarray(bodyStart, bodyEnd)

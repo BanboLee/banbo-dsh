@@ -33,7 +33,7 @@ import { compareEligibleTargets, renderDiagnostics, sanitizeDisplayPath } from '
 
 /**
  * @typedef {object} RuntimeSeam
- * @property {(candidate: any, canonicalWorkspace: any, signal?: AbortSignal) => Promise<import('./runtime.js').DiagnosisOutcome>} diagnose
+ * @property {(candidate: any, canonicalWorkspace: any, canonicalUri: string, signal?: AbortSignal) => Promise<import('./runtime.js').DiagnosisOutcome>} diagnose
  * @property {() => void} stopAdmission
  * @property {() => Promise<void>} dispose
  */
@@ -58,6 +58,7 @@ import { compareEligibleTargets, renderDiagnostics, sanitizeDisplayPath } from '
  * @typedef {object} AugmentOperation
  * @property {AbortController} controller
  * @property {Promise<unknown>} promise
+ * @property {() => void} expireDeadline
  * @property {() => void} disposeOperationDeadline
  */
 
@@ -112,6 +113,8 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
   /** @type {Set<AugmentOperation>} */
   const activeOperations = new Set()
   /** @type {Set<Promise<unknown>>} */
+  const pendingInvocations = new Set()
+  /** @type {Set<Promise<unknown>>} */
   const retiredIo = new Set()
   /** @type {AbortController} */
   const cleanupController = new AbortController()
@@ -136,8 +139,9 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
   }
 
   /**
-   * Abort every active operation controller. Idempotent; each controller is
-   * aborted at most once.
+   * Abort every active augment operation controller. A listener still awaiting
+   * downstream `next()` has no plugin-owned cancellation seam, so cleanup owns
+   * it by waiting for its tracked settlement instead.
    * @returns {void}
    */
   function abortActiveOperations() {
@@ -147,13 +151,18 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
   }
 
   /**
-   * Await settlement of every active augment, looping until the registry is
-   * empty (each tracked promise removes itself in its outermost finally).
+   * Await settlement of every active augment and every pending listener
+   * invocation, looping until both registries are empty (each tracked promise
+   * removes itself in its outermost finally).
    * @returns {Promise<void>}
    */
   async function awaitActiveOperations() {
-    while (activeOperations.size > 0) {
-      await Promise.allSettled([...activeOperations].map((operation) => operation.promise))
+    while (activeOperations.size > 0 || pendingInvocations.size > 0) {
+      const tracked = [
+        ...[...activeOperations].map((operation) => operation.promise),
+        ...pendingInvocations,
+      ]
+      await Promise.allSettled(tracked)
     }
   }
 
@@ -251,6 +260,7 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
     const operation = {
       controller,
       promise: /** @type {Promise<unknown>} */ (Promise.resolve(undefined)),
+      expireDeadline: () => {},
       disposeOperationDeadline: () => {},
     }
     const transitionTimeout = () => {
@@ -259,19 +269,24 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
       retireUnsettledFinalStats(state.finalStats)
     }
     /**
+     * Record the abort source and run the deadline transition. The abort kind
+     * is recorded even when the controller was already aborted (e.g. the
+     * deadline fired first and a caller/cleanup abort arrives later), so a
+     * later external abort always suppresses the timeout publication.
      * @param {'deadline' | 'caller' | 'cleanup'} reason - the abort source.
      */
     const abortWith = (reason) => {
+      if (reason !== 'deadline' && state.abortKind === undefined) state.abortKind = reason
       if (controller.signal.aborted) return
       if (reason === 'deadline') state.deadlineFired = true
-      else if (state.abortKind === undefined) state.abortKind = reason
       controller.abort()
       transitionTimeout()
     }
     const callerSignal = /** @type {{ signal?: AbortSignal } | null} */ (exec)?.signal
     const onCallerAbort = () => abortWith('caller')
     const onCleanupAbort = () => abortWith('cleanup')
-    const onDeadline = () => abortWith('deadline')
+    operation.expireDeadline = () => abortWith('deadline')
+    const onDeadline = operation.expireDeadline
     if (callerSignal instanceof AbortSignal) {
       if (callerSignal.aborted) onCallerAbort()
       else callerSignal.addEventListener('abort', onCallerAbort, { once: true })
@@ -319,63 +334,84 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
   async function augmentAcceptedDecision(exec, decision, operation, state, deadlineAt) {
     const signal = operation.controller.signal
     const candidates = collector.take(exec)
+    /** Retire every taken candidate; idempotent and safe on every return path. */
+    const retireAll = () => {
+      for (const candidate of candidates) collector.retireIfCurrent(candidate)
+    }
     try {
       /** @type {PostExecuteDecision} */
       const decisionRecord = /** @type {PostExecuteDecision} */ (decision)
       if (decisionRecord.kind !== 'accept') {
-        for (const candidate of candidates) collector.retireIfCurrent(candidate)
+        retireAll()
         return decision
       }
       // 1. Extension route filter, before any workspace/runtime/read work.
-      /** @type {import('./collector.js').MutationCandidate[]} */
+      /** @type {{ candidate: import('./collector.js').MutationCandidate, canonicalUri: string }[]} */
       const routed = []
       for (const candidate of candidates) {
-        let uri
+        let canonicalUri
         try {
-          uri = fs.fileUrl(candidate.target)
+          canonicalUri = fs.fileUrl(candidate.target)
         } catch {
           collector.retireIfCurrent(candidate)
           continue
         }
-        if (supportedExtensions.has(extensionOf(uri))) routed.push(candidate)
+        if (supportedExtensions.has(extensionOf(canonicalUri))) routed.push({ candidate, canonicalUri })
         else collector.retireIfCurrent(candidate)
       }
-      if (routed.length === 0) return decision
-      if (signal.aborted) return decision
+      if (routed.length === 0) {
+        retireAll()
+        return decision
+      }
+      if (signal.aborted) {
+        retireAll()
+        return decision
+      }
       // 2. Workspace root from the session header; missing/empty is ineligible.
       const execRecord = /** @type {{ agent?: { session?: { header?: { cwd?: unknown } } } }} */ (exec)
       const workspaceRoot = execRecord?.agent?.session?.header?.cwd
       if (typeof workspaceRoot !== 'string' || workspaceRoot.length === 0) {
-        for (const candidate of routed) collector.retireIfCurrent(candidate)
+        retireAll()
         return decision
       }
-      if (signal.aborted) return decision
+      if (signal.aborted) {
+        retireAll()
+        return decision
+      }
       // 3. Canonicalize the workspace exactly once.
       let workspaceTarget
       try {
         workspaceTarget = await fs.resolve(workspaceRoot, { signal })
       } catch {
-        if (!signal.aborted) for (const candidate of routed) collector.retireIfCurrent(candidate)
+        retireAll()
         return decision
       }
-      if (signal.aborted) return decision
+      if (signal.aborted) {
+        retireAll()
+        return decision
+      }
       let workspaceInfo
       try {
         workspaceInfo = await fs.stat(workspaceTarget, signal)
       } catch {
-        if (!signal.aborted) for (const candidate of routed) collector.retireIfCurrent(candidate)
+        retireAll()
         return decision
       }
-      if (signal.aborted) return decision
+      if (signal.aborted) {
+        retireAll()
+        return decision
+      }
       if (workspaceInfo === undefined || workspaceInfo.type !== 'directory') {
-        for (const candidate of routed) collector.retireIfCurrent(candidate)
+        retireAll()
         return decision
       }
       // 4. Per-target eligibility: contains with pre/post abort checks, then
-      // freeze renderPath + canonicalUri exactly once.
+      // freeze renderPath + canonicalUri exactly once. Every early exit and
+      // abort break retires the remaining taken candidates.
       /** @type {{ candidate: import('./collector.js').MutationCandidate, renderPath: string, targetKey: string, canonicalUri: string }[]} */
       const eligible = []
-      for (const candidate of routed) {
+      for (const route of routed) {
+        const { candidate, canonicalUri } = route
         if (signal.aborted) break
         let contained = false
         try {
@@ -389,10 +425,8 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
           continue
         }
         let renderPath
-        let canonicalUri
         try {
           renderPath = sanitizeDisplayPath(candidate.target.displayPath)
-          canonicalUri = fs.fileUrl(candidate.target)
         } catch {
           collector.retireIfCurrent(candidate)
           continue
@@ -404,7 +438,14 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
           canonicalUri,
         })
       }
-      if (eligible.length === 0) return decision
+      if (signal.aborted) {
+        retireAll()
+        return decision
+      }
+      if (eligible.length === 0) {
+        retireAll()
+        return decision
+      }
       eligible.sort(compareEligibleTargets)
       // 5. Serial diagnosis in the shared order.
       /** @type {{ target: (typeof eligible)[number], outcome: import('./runtime.js').DiagnosisOutcome }[]} */
@@ -414,7 +455,7 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
         /** @type {import('./runtime.js').DiagnosisOutcome} */
         let outcome
         try {
-          outcome = await runtime.diagnose(target.candidate, workspaceTarget, signal)
+          outcome = await runtime.diagnose(target.candidate, workspaceTarget, target.canonicalUri, signal)
         } catch (error) {
           if (signal.aborted) break
           // Plugin-owned failure after eligibility: bounded unavailable with
@@ -459,8 +500,14 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
         if (allSettled && Date.now() < deadlineAt && !signal.aborted) {
           state.gate = 'committed'
         } else {
-          state.gate = 'timed-out'
-          retireUnsettledFinalStats(records)
+          // Wall-clock expiry before the deadline timer task runs: run the
+          // full deadline transition (deadlineFired + controller abort) so the
+          // same-tick contender still produces the timeout aggregate.
+          if (!signal.aborted && Date.now() >= deadlineAt) operation.expireDeadline()
+          else {
+            state.gate = 'timed-out'
+            retireUnsettledFinalStats(records)
+          }
         }
       }
       // 7. Build the renderer entries according to the winning gate.
@@ -536,7 +583,7 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
       // Both terminal paths retire every taken candidate in this same
       // no-await critical section; never touch the independent counter or a
       // newer active marker.
-      for (const candidate of candidates) collector.retireIfCurrent(candidate)
+      retireAll()
       // 8. Commit exactly one aggregate context when the gate won and the
       // operation was not aborted by the caller or by cleanup. Deadline-first
       // (gate timed-out + deadline fired, no external abort kind) still
@@ -572,21 +619,41 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs })
   /**
    * The real three-parameter `tools/post-execute` waterfall listener:
    * `await next()` is the unique call and sits outside any try/catch, so
-   * downstream throws and caller aborts propagate with their identity.
+   * downstream throws and caller aborts propagate with their identity. The
+   * invocation is tracked before `next()` so plugin cleanup owns and awaits
+   * its settlement, and a downstream rejection still takes and retires the exec's
+   * candidates before the original error propagates.
    * @param {unknown} exec - the tool-execution context.
    * @param {unknown} _result - the dispatched result (unconsumed, but never omitted).
    * @param {() => Promise<unknown>} next - the waterfall continuation.
    * @returns {Promise<unknown>}
    */
-  const listener = async (exec, _result, next) => {
-    const decision = await next()
-    try {
-      const operation = beginAugment(exec, decision)
-      if (operation === undefined) return decision
-      return await operation.promise
-    } catch (_pluginOwnedFailure) {
-      return decision
-    }
+  const listener = (exec, _result, next) => {
+    // Start in a microtask so the complete listener promise is registered
+    // before `next()` can run or perform any downstream work.
+    const invocation = Promise.resolve().then(async () => {
+      const downstream = next()
+      // Observe rejection only to clean collector state. Awaiting the original
+      // promise below preserves the exact rejection object and remains outside
+      // the plugin-owned try/catch.
+      void downstream.then(undefined, () => {
+        for (const candidate of collector.take(exec)) collector.retireIfCurrent(candidate)
+      })
+      const decision = await downstream
+      try {
+        const operation = beginAugment(exec, decision)
+        if (operation === undefined) return decision
+        return await operation.promise
+      } catch (_pluginOwnedFailure) {
+        return decision
+      }
+    })
+    pendingInvocations.add(invocation)
+    void invocation.then(
+      () => pendingInvocations.delete(invocation),
+      () => pendingInvocations.delete(invocation),
+    )
+    return invocation
   }
 
   return { listener, stopAdmission, abortActiveOperations, awaitActiveOperations, awaitRetiredIo }

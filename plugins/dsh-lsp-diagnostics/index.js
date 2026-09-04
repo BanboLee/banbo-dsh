@@ -160,6 +160,10 @@ function assertSafeTimer(value, name) {
 /**
  * Verify that a value is recursively representable as standard JSON: no
  * cycles, no undefined/function/symbol/bigint, and no non-finite numbers.
+ * The structural traversal is followed by a real `JSON.stringify` round-trip
+ * so non-JSON containers (boxed BigInts, objects whose inherited `toJSON`
+ * returns a BigInt, ...) are rejected at load time instead of failing later
+ * during protocol serialization.
  * @param {unknown} value - the value to inspect.
  * @param {string} path - error path prefix.
  * @param {Set<object>} [seen] - container set for cycle detection.
@@ -185,6 +189,12 @@ function assertJsonValue(value, path, seen = new Set()) {
     }
   }
   seen.delete(value)
+  try {
+    const serialized = JSON.stringify(value)
+    if (serialized === undefined) fail(`${path} must be representable as standard JSON`)
+  } catch {
+    fail(`${path} must be representable as standard JSON`)
+  }
 }
 
 /**
@@ -195,9 +205,10 @@ function assertJsonValue(value, path, seen = new Set()) {
  */
 function assertExtensionToLanguage(map, provider) {
   const record = assertRecord(map, `servers.${provider}.extensionToLanguage`)
+  /** @type {Map<string, string>} */
   const routes = new Map()
   for (const [extension, language] of Object.entries(record)) {
-    if (typeof extension !== 'string' || extension !== extension.toLowerCase()) {
+    if (extension !== extension.toLowerCase()) {
       fail(`servers.${provider}.extensionToLanguage key ${String(extension)} must be ASCII lowercase`)
     }
     const canonical = CANONICAL_ROUTE[extension]
@@ -212,9 +223,6 @@ function assertExtensionToLanguage(map, provider) {
     }
     if (language !== canonical.language) {
       fail(`extension ${extension} must map to language ${canonical.language}`)
-    }
-    if (routes.has(extension)) {
-      fail(`duplicate normalized extension ${extension}`)
     }
     routes.set(extension, language)
   }
@@ -233,27 +241,31 @@ function validateServer(value, provider) {
     if (!SERVER_KEYS.has(key)) fail(`unknown key "${key}" in servers.${provider}`)
   }
   const defaults = /** @type {ServerConfig} */ (DEFAULT_SERVERS[provider])
-  const command = record.command ?? defaults.command
+  const command = record.command === undefined ? defaults.command : record.command
   if (typeof command !== 'string' || command.length === 0) {
     fail(`servers.${provider}.command must be a non-empty string`)
   }
-  const args = record.args ?? defaults.args
+  const args = record.args === undefined ? defaults.args : record.args
   if (!Array.isArray(args) || args.some((entry) => typeof entry !== 'string')) {
     fail(`servers.${provider}.args must be a string array`)
   }
-  const env = assertRecord(record.env ?? defaults.env, `servers.${provider}.env`)
+  const env = assertRecord(record.env === undefined ? defaults.env : record.env, `servers.${provider}.env`)
   for (const [key, entry] of Object.entries(env)) {
     if (typeof entry !== 'string') fail(`servers.${provider}.env.${key} must be a string`)
   }
   const envRecord = /** @type {Record<string, string>} */ (Object.fromEntries(
     Object.entries(env).map(([key, entry]) => [key, String(entry)]),
   ))
-  const configuration = record.configuration ?? defaults.configuration
+  // `configuration` and `initializationOptions` are standard JSON values;
+  // explicit `null` is a valid JSON value and must be preserved, never
+  // defaulted. Only a truly omitted field falls back to the default.
+  const configuration = record.configuration === undefined ? defaults.configuration : record.configuration
   assertJsonValue(configuration, `servers.${provider}.configuration`)
-  const initializationOptions = record.initializationOptions ?? defaults.initializationOptions
+  const initializationOptions =
+    record.initializationOptions === undefined ? defaults.initializationOptions : record.initializationOptions
   assertJsonValue(initializationOptions, `servers.${provider}.initializationOptions`)
   const extensionToLanguage = assertExtensionToLanguage(
-    record.extensionToLanguage ?? defaults.extensionToLanguage,
+    record.extensionToLanguage === undefined ? defaults.extensionToLanguage : record.extensionToLanguage,
     provider,
   )
   return { command, args: [...args], env: envRecord, configuration, initializationOptions, extensionToLanguage }
@@ -320,26 +332,49 @@ export const Config = {
      * @returns {{ value: PluginConfig }} the validated config.
      */
     validate(value) {
-      const input = value ?? {}
+      // Explicit `null` is never treated as omission: a null config is
+      // rejected by assertRecord, and every typed field distinguishes an
+      // omitted key (fall back to the default) from an explicit `null`
+      // (rejected by its type check). `configuration`/`initializationOptions`
+      // are the only fields where `null` is a valid JSON value and survives.
+      const input = value === undefined ? {} : value
       const record = assertRecord(input, 'config')
       for (const key of Object.keys(record)) {
         if (!TOP_LEVEL_KEYS.has(key)) fail(`unknown config key "${key}"`)
       }
       /** @type {RawConfig} */
       const raw = record
-      const enabled = raw.enabled ?? DEFAULTS.enabled
+      const enabled = raw.enabled === undefined ? DEFAULTS.enabled : raw.enabled
       if (typeof enabled !== 'boolean') fail('enabled must be a boolean')
-      const timeoutMs = assertSafeTimer(raw.timeoutMs ?? DEFAULTS.timeoutMs, 'timeoutMs')
-      const settleMs = assertSafeTimer(raw.settleMs ?? DEFAULTS.settleMs, 'settleMs')
+      const timeoutMs = assertSafeTimer(raw.timeoutMs === undefined ? DEFAULTS.timeoutMs : raw.timeoutMs, 'timeoutMs')
+      const settleMs = assertSafeTimer(raw.settleMs === undefined ? DEFAULTS.settleMs : raw.settleMs, 'settleMs')
       if (settleMs >= timeoutMs) fail('settleMs must be < timeoutMs')
-      const shutdownTimeoutMs = assertSafeTimer(raw.shutdownTimeoutMs ?? DEFAULTS.shutdownTimeoutMs, 'shutdownTimeoutMs')
-      const killGraceMs = assertSafeTimer(raw.killGraceMs ?? DEFAULTS.killGraceMs, 'killGraceMs')
-      const maxDocumentBytes = assertSafeTimer(raw.maxDocumentBytes ?? DEFAULTS.maxDocumentBytes, 'maxDocumentBytes')
-      const maxMessageBytes = assertSafeTimer(raw.maxMessageBytes ?? DEFAULTS.maxMessageBytes, 'maxMessageBytes')
-      const maxStderrBytes = assertSafeTimer(raw.maxStderrBytes ?? DEFAULTS.maxStderrBytes, 'maxStderrBytes')
-      const maxDiagnostics = assertSafeTimer(raw.maxDiagnostics ?? DEFAULTS.maxDiagnostics, 'maxDiagnostics')
-      const maxResultChars = assertSafeTimer(raw.maxResultChars ?? DEFAULTS.maxResultChars, 'maxResultChars')
-      const reportClean = raw.reportClean ?? DEFAULTS.reportClean
+      const shutdownTimeoutMs = assertSafeTimer(
+        raw.shutdownTimeoutMs === undefined ? DEFAULTS.shutdownTimeoutMs : raw.shutdownTimeoutMs,
+        'shutdownTimeoutMs',
+      )
+      const killGraceMs = assertSafeTimer(raw.killGraceMs === undefined ? DEFAULTS.killGraceMs : raw.killGraceMs, 'killGraceMs')
+      const maxDocumentBytes = assertSafeTimer(
+        raw.maxDocumentBytes === undefined ? DEFAULTS.maxDocumentBytes : raw.maxDocumentBytes,
+        'maxDocumentBytes',
+      )
+      const maxMessageBytes = assertSafeTimer(
+        raw.maxMessageBytes === undefined ? DEFAULTS.maxMessageBytes : raw.maxMessageBytes,
+        'maxMessageBytes',
+      )
+      const maxStderrBytes = assertSafeTimer(
+        raw.maxStderrBytes === undefined ? DEFAULTS.maxStderrBytes : raw.maxStderrBytes,
+        'maxStderrBytes',
+      )
+      const maxDiagnostics = assertSafeTimer(
+        raw.maxDiagnostics === undefined ? DEFAULTS.maxDiagnostics : raw.maxDiagnostics,
+        'maxDiagnostics',
+      )
+      const maxResultChars = assertSafeTimer(
+        raw.maxResultChars === undefined ? DEFAULTS.maxResultChars : raw.maxResultChars,
+        'maxResultChars',
+      )
+      const reportClean = raw.reportClean === undefined ? DEFAULTS.reportClean : raw.reportClean
       if (typeof reportClean !== 'boolean') fail('reportClean must be a boolean')
       const servers = validateServers(raw.servers)
       return {
