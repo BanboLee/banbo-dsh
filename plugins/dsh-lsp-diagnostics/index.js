@@ -263,24 +263,30 @@ function validateServer(value, provider) {
   }
   const args = own('args') ? record.args : defaults.args
   // `Array.prototype.some` skips holes, so a sparse array must be rejected
-  // explicitly: every index must exist AND hold a string, otherwise the
-  // validated config would spread the holes into real `undefined` argv
-  // entries at load time.
+  // explicitly. Each accepted argv value is then reused from this validated
+  // snapshot: getter-backed arrays must not be read a second time after the
+  // type check and drift into an unvalidated runtime argv entry.
   if (!Array.isArray(args)) {
     fail(`servers.${provider}.args must be a string array`)
   }
+  /** @type {string[]} */
+  const argsRecord = []
   for (let index = 0; index < args.length; index += 1) {
-    if (!(index in args) || typeof args[index] !== 'string') {
+    if (!Object.prototype.hasOwnProperty.call(args, index)) {
       fail(`servers.${provider}.args must be a string array without holes`)
     }
+    const entry = args[index]
+    if (typeof entry !== 'string') {
+      fail(`servers.${provider}.args must be a string array without holes`)
+    }
+    argsRecord.push(entry)
   }
   const env = assertRecord(own('env') ? record.env : defaults.env, `servers.${provider}.env`)
-  for (const [key, entry] of Object.entries(env)) {
+  const envEntries = Object.entries(env)
+  for (const [key, entry] of envEntries) {
     if (typeof entry !== 'string') fail(`servers.${provider}.env.${key} must be a string`)
   }
-  const envRecord = /** @type {Record<string, string>} */ (Object.fromEntries(
-    Object.entries(env).map(([key, entry]) => [key, String(entry)]),
-  ))
+  const envRecord = /** @type {Record<string, string>} */ (Object.fromEntries(envEntries))
   // `configuration` and `initializationOptions` are standard JSON values;
   // explicit `null` is a valid JSON value and must be preserved, never
   // defaulted. Only a truly omitted field (no own enumerable property) falls
@@ -299,7 +305,7 @@ function validateServer(value, provider) {
     own('extensionToLanguage') ? record.extensionToLanguage : defaults.extensionToLanguage,
     provider,
   )
-  return { command, args: [...args], env: envRecord, configuration, initializationOptions, extensionToLanguage }
+  return { command, args: argsRecord, env: envRecord, configuration, initializationOptions, extensionToLanguage }
 }
 
 /**

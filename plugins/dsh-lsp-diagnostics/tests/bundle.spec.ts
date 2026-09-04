@@ -246,7 +246,7 @@ describe('dsh-lsp-diagnostics Config schema', () => {
     expect(() => validated({ servers }), 'servers.typescript=undefined').toThrow()
   })
 
-  it('rejects sparse args arrays whose holes would materialize as undefined argv entries', () => {
+  it('rejects sparse args arrays and snapshots getter-backed args and env values exactly once', () => {
     // `Array.prototype.some` skips holes, so a hole in the middle or a
     // trailing hole would pass a plain string-array check and later spread
     // into a real `undefined` argv entry. The validator must reject every
@@ -264,9 +264,43 @@ describe('dsh-lsp-diagnostics Config schema', () => {
     }
     // A dense array with an explicit undefined element is equally invalid.
     const denseWithUndefined = ['--stdio', undefined as unknown as string]
-    const servers = mutableServers()
+    let servers = mutableServers()
     servers.typescript.args = denseWithUndefined
     expect(() => validated({ servers }), 'args containing undefined').toThrow()
+
+    let argReads = 0
+    const args = ['--placeholder']
+    Object.defineProperty(args, '0', {
+      enumerable: true,
+      configurable: true,
+      get() {
+        argReads += 1
+        return argReads === 1 ? '--stdio' : undefined
+      },
+    })
+    let envReads = 0
+    const env: Record<string, unknown> = {}
+    Object.defineProperty(env, 'STATEFUL', {
+      enumerable: true,
+      configurable: true,
+      get() {
+        envReads += 1
+        return envReads === 1 ? 'stable' : 7
+      },
+    })
+    servers = mutableServers()
+    servers.typescript.args = args
+    servers.typescript.env = env
+
+    const result = validated({ servers }) as {
+      servers: { typescript: { args: unknown[]; env: Record<string, unknown> } }
+    }
+
+    expect(argReads).toBe(1)
+    expect(envReads).toBe(1)
+    expect(result.servers.typescript.args).toEqual(['--stdio'])
+    expect(result.servers.typescript.args.every((entry) => typeof entry === 'string')).toBe(true)
+    expect(result.servers.typescript.env).toEqual({ STATEFUL: 'stable' })
   })
 
   it('rejects non-plain JSON containers (Map/Set/Date/custom prototypes) at load time', () => {
