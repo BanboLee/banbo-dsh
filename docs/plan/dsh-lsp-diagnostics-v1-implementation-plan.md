@@ -91,12 +91,13 @@
 - `scripts/sync-lsp-diagnostics-to-profile.sh`
 - `README.md`
 - `pnpm-lock.yaml`
-- 本计划：`docs/plan/dsh-lsp-diagnostics-v1-implementation-plan.md`；Todo 0 提交完整批准版，此后每个 Todo 只允许把自己的顶层复选框从 `[ ]` 改为 `[x]`，不得改写其他计划内容。该勾选必须与对应 Todo 的实现/验证变更放在同一个提交中。
+- 人类批准的 Todo 8 基线兼容修复：`plugins/codegraph-mcp/package.json`、`plugins/rtk/package.json`；只允许添加精确 rc.2 测试依赖 pin，不得修改这两个旧插件的源码、运行时依赖或行为。
+- 本计划：`docs/plan/dsh-lsp-diagnostics-v1-implementation-plan.md`；Todo 0 提交完整批准版，此后每个 Todo 通常只允许把自己的顶层复选框从 `[ ]` 改为 `[x]`。直接人类于 Todo 8 显式批准的基线兼容范围扩展允许同步修改本节、Todo 8 与 fixer ownership；除此不得改写其他计划内容。Todo 勾选必须与对应实现/验证变更放在同一个提交中。
 
 禁止修改：
 
 - `/data00/home/lixingxin/project/deepseek-harness/**`；
-- `plugins/rtk/**`、`plugins/codegraph-mcp/**`、`plugins/fish-shell/**`、`plugins/dsh-llm-pi-ai-with-session/**`；
+- `plugins/rtk/**`（除上述 `package.json` 精确 pin）、`plugins/codegraph-mcp/**`（除上述 `package.json` 精确 pin）、`plugins/fish-shell/**`、`plugins/dsh-llm-pi-ai-with-session/**`；
 - `package.json`、`pnpm-workspace.yaml`、`vitest.config.ts`；
 - `tests/verify-plan-hygiene.mjs`、`tests/verify-task-evidence.mjs`、现有 composition/e2e helpers；
 - 上述清单以外的代码、测试、manifest、lockfile 或文档。
@@ -672,7 +673,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   Branch base: 当前分支 Todo 5 提交；禁止创建 worktree
 
 - [ ] 8. Wave 4：串行预验收与最终 SHA
-  What to do / Must NOT do: 确认当前分支仍为 `feat/dsh-lsp-diagnostics-v1`，且 HEAD 是 Todo 6 提交；协调者在当前分支运行全部命令并写 preflight logs/final SHA。Todo8协调者不得直接修改 tracked implementation；tracked code/test/doc/manifest缺陷走固定 fixer；纯 coordinator-owned 非代码 log/evidence/response **格式或采集完整性**问题走下述 coordinator-only repair。预验收全绿后只把本 Todo 复选框改为 `[x]` 并提交，不得改写历史。
+  What to do / Must NOT do: 确认当前分支仍为 `feat/dsh-lsp-diagnostics-v1`，且 HEAD 是 Todo 6 提交；协调者在当前分支运行全部命令并写 preflight logs/final SHA。首次全量测试暴露基线 peer 自动解析到 `0.1.2-alpha.4`，导致 codegraph/rtk 六个 suite 无法收集；直接人类已批准固定 fixer 仅在 `plugins/codegraph-mcp/package.json` 添加精确 `@deepseek-ai/dsh-llm: 0.1.1-rc.2`，在 `plugins/rtk/package.json` 添加精确 `@deepseek-ai/dsh-llm` 与 `@deepseek-ai/dsh-settings: 0.1.1-rc.2`，同步更新 `pnpm-lock.yaml` 和 package-shape 回归断言。除该批准例外外，Todo8协调者不得直接修改 tracked implementation；其他 tracked code/test/doc/manifest 缺陷走固定 fixer；纯 coordinator-owned 非代码 log/evidence/response **格式或采集完整性**问题走下述 coordinator-only repair。预验收全绿后只把本 Todo 复选框改为 `[x]` 并提交，不得改写历史。
   Parallelization: Wave 4（单分支串行） | Blocked by: 6 | Blocks: F1,F2,F3,F4,F5
   References: 本计划基线链；plan/evidence verifiers；routing manifest；固定 fixer 与 coordinator-only repair contracts。
   Interfaces:
@@ -691,7 +692,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
 ### 固定 fixer contract（Todo 8 preflight 与 F1-F5 后共用）
 
 - 一轮只启动一个 fixer，固定 `provider=deepseek`、`model=deepseek-v4-flash`。
-- `FIXER_OWNED_PATHS` 是唯一 tracked ownership，固定为：`plugins/dsh-lsp-diagnostics/package.json`, `plugins/dsh-lsp-diagnostics/cordis.patch.yml`, `plugins/dsh-lsp-diagnostics/tsconfig.json`, `plugins/dsh-lsp-diagnostics/index.js`, `plugins/dsh-lsp-diagnostics/collector.js`, `plugins/dsh-lsp-diagnostics/framing.js`, `plugins/dsh-lsp-diagnostics/runtime.js`, `plugins/dsh-lsp-diagnostics/render.js`, `plugins/dsh-lsp-diagnostics/coordinator.js`, `plugins/dsh-lsp-diagnostics/README.md`, `plugins/dsh-lsp-diagnostics/tests/helpers.ts`, `plugins/dsh-lsp-diagnostics/tests/bundle.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/fixture.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/collector.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/framing.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/runtime.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/render.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/coordinator.spec.ts`, `tests/fixtures/fake-lsp-server.mjs`, `tests/package-shape.spec.ts`, `tests/docs-shape-lsp-diagnostics.spec.ts`, `tests/composition/lsp-diagnostics-profile.ts`, `tests/composition/lsp-diagnostics.spec.ts`, `scripts/sync-lsp-diagnostics-to-profile.sh`, `README.md`, `pnpm-lock.yaml`, `docs/plan/dsh-lsp-diagnostics-v1-implementation-plan.md`（fixer 仅可将 Todo 8 从 `[x]` 重新打开为 `[ ]`）。
+- `FIXER_OWNED_PATHS` 是唯一 tracked ownership，固定为：`plugins/dsh-lsp-diagnostics/package.json`, `plugins/dsh-lsp-diagnostics/cordis.patch.yml`, `plugins/dsh-lsp-diagnostics/tsconfig.json`, `plugins/dsh-lsp-diagnostics/index.js`, `plugins/dsh-lsp-diagnostics/collector.js`, `plugins/dsh-lsp-diagnostics/framing.js`, `plugins/dsh-lsp-diagnostics/runtime.js`, `plugins/dsh-lsp-diagnostics/render.js`, `plugins/dsh-lsp-diagnostics/coordinator.js`, `plugins/dsh-lsp-diagnostics/README.md`, `plugins/dsh-lsp-diagnostics/tests/helpers.ts`, `plugins/dsh-lsp-diagnostics/tests/bundle.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/fixture.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/collector.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/framing.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/runtime.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/render.spec.ts`, `plugins/dsh-lsp-diagnostics/tests/coordinator.spec.ts`, `tests/fixtures/fake-lsp-server.mjs`, `tests/package-shape.spec.ts`, `tests/docs-shape-lsp-diagnostics.spec.ts`, `tests/composition/lsp-diagnostics-profile.ts`, `tests/composition/lsp-diagnostics.spec.ts`, `scripts/sync-lsp-diagnostics-to-profile.sh`, `README.md`, `plugins/codegraph-mcp/package.json`, `plugins/rtk/package.json`, `pnpm-lock.yaml`, `docs/plan/dsh-lsp-diagnostics-v1-implementation-plan.md`（fixer 对两份旧插件 manifest 仅可添加人类批准的精确 rc.2 devDependency pin；若 Todo 8 已完成则仅可将其从 `[x]` 重新打开为 `[ ]`）。
 - 每轮只在当前 `feat/dsh-lsp-diagnostics-v1` 分支启动一个 fixer；启动前确认工作树除允许的 evidence 外干净、HEAD 为当前 frozen SHA，并归并全部 finding。prompt 必须逐字携带完整 `FIXER_OWNED_PATHS`、该 frozen base SHA、当前分支名、commit message、真实失败的 RED 命令、GREEN/全量命令，以及本计划新增的 workspace 静默、strict route、真实三参 waterfall 与 next catch 边界、独立 monotonic generation counter/active marker/overflow fail-safe、eligibility 后共享三列 code-point 排序且调度/输出同序、唯一 aggregate 逐字节 grammar 与 count→canonical text→char marker 顺序、coordinator-owned active augment+`retiredIo` registries 和 cleanup quiescence、每 operation finally 释放 deadline timer/caller+cleanup listeners、bounded read 及 `FS_TOO_LARGE` 分类、Diagnostic consumed-field strict/optional-extension ignored、两级 Map、URI-first、final gate、三类取消、唯一 teardown 顺序与 terminate hard-stop、enabled=false 契约，不得缩写为“相关/受影响文件”。禁止创建 worktree 或修复分支；启动前先 append routing manifest。
 - fixer只能修改 `FIXER_OWNED_PATHS` 与自己的 `.omo/evidence/.../task-8/**`；每个 substantive defect 必须先加入/指出真实失败 assertion，再最小修复。若 Todo 8 已为 `[x]`，fixer 必须在同一提交中只把 Todo 8 重新改为 `[ ]`，表示预验收已失效。必须使用逐项 `git add` 命令列出实际变更的 `FIXER_OWNED_PATHS`，不得 `git add .`；提交固定 `fix(lsp-diagnostics): resolve preflight findings round <N>` 或 `fix(lsp-diagnostics): resolve acceptance findings round <N>`。
 - 若新发现需要 `FIXER_OWNED_PATHS` 外路径，fixer停止并返回 blocker，协调者不得扩大范围。纯 coordinator-owned 日志/evidence/response格式问题禁止启动 fixer，必须改走 coordinator-only contract。

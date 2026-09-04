@@ -13,6 +13,7 @@ interface PackageManifest {
   readonly type?: string
   readonly files: readonly string[]
   readonly peerDependencies: Readonly<Record<string, string>>
+  readonly devDependencies: Readonly<Record<string, string>>
   readonly dsh: {
     readonly bundle?: {
       readonly patch?: string
@@ -109,6 +110,7 @@ function readManifest(directory: string): PackageManifest {
     type: stringField(parsed, 'type'),
     files: stringArrayField(parsed, 'files'),
     peerDependencies: stringRecordField(parsed, 'peerDependencies'),
+    devDependencies: stringRecordField(parsed, 'devDependencies'),
     dsh: { bundle: { patch: stringField(bundle, 'patch') } },
   }
 }
@@ -141,6 +143,21 @@ describe('DSH bundle package manifests', () => {
       expect(existsSync(patchPath)).toBe(true)
     })
   }
+})
+
+describe('Todo 8 preflight baseline pins', () => {
+  it('codegraph-mcp pins @deepseek-ai/dsh-llm to the exact rc.2 baseline version', () => {
+    const manifest = readManifest('plugins/codegraph-mcp')
+
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('0.1.1-rc.2')
+  })
+
+  it('rtk pins @deepseek-ai/dsh-llm and @deepseek-ai/dsh-settings to the exact rc.2 baseline versions', () => {
+    const manifest = readManifest('plugins/rtk')
+
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('0.1.1-rc.2')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('0.1.1-rc.2')
+  })
 })
 
 describe('Task-5 install surface', () => {
