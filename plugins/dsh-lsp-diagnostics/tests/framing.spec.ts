@@ -153,6 +153,21 @@ describe('dsh-lsp-diagnostics MessageDecoder', () => {
     expect(() => decoder.push(junk)).toThrow(/header/i)
   })
 
+  it('does not retain oversized next-header state after throwing on a coalesced valid frame', () => {
+    const maxMessageBytes = 64
+    const decoder = new MessageDecoder(maxMessageBytes)
+    const validFrame = Buffer.concat([Buffer.from('Content-Length: 64\r\n\r\n', 'ascii'), bodyOf64()])
+    const headerPrefix = Buffer.from('Content-Length: 1\r\n', 'ascii')
+    const oversizedUnterminatedHeader = Buffer.concat([
+      headerPrefix,
+      Buffer.alloc(MAX_HEADER_BYTES + maxMessageBytes + 1 - headerPrefix.length, 0x41),
+    ])
+
+    expect(() => decoder.push(Buffer.concat([validFrame, oversizedUnterminatedHeader]))).toThrow(/header/i)
+    expect(decoder.buffer.length).toBeLessThanOrEqual(MAX_HEADER_BYTES + maxMessageBytes)
+    expect(decoder.buffer.buffer.byteLength).toBeLessThanOrEqual(MAX_HEADER_BYTES + maxMessageBytes)
+  })
+
   it('rejects a header terminator positioned beyond MAX_HEADER_BYTES', () => {
     const decoder = new MessageDecoder(1024)
     const bytes = paddedHeader(10, MAX_HEADER_BYTES + 1)

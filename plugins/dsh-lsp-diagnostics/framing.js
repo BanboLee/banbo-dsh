@@ -59,10 +59,15 @@ export class MessageDecoder {
     this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk])
     /** @type {unknown[]} */
     const messages = []
-    for (;;) {
-      const step = this.next()
-      if (!step.ready) break
-      messages.push(step.message)
+    try {
+      for (;;) {
+        const step = this.next()
+        if (!step.ready) break
+        messages.push(step.message)
+      }
+    } catch (error) {
+      this.buffer = Buffer.alloc(0)
+      throw error
     }
     return messages
   }
