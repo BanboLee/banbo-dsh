@@ -674,7 +674,7 @@ fixture 可把协议事件写到测试创建的临时日志；生产代码不得
   Executor: provider=deepseek, model=deepseek-v4-flash
   Branch base: 当前分支 Todo 5 提交；禁止创建 worktree
 
-- [ ] 8. Wave 4：串行预验收与最终 SHA
+- [x] 8. Wave 4：串行预验收与最终 SHA
   What to do / Must NOT do: 确认当前分支仍为 `feat/dsh-lsp-diagnostics-v1`，且 HEAD 是 Todo 6 提交；协调者在当前分支运行全部命令并写 preflight logs/final SHA。首次全量测试暴露基线 peer 自动解析到 `0.1.2-alpha.4`，导致 codegraph/rtk 六个 suite 无法收集；直接人类已批准固定 fixer 仅在 `plugins/codegraph-mcp/package.json` 添加精确 `@deepseek-ai/dsh-llm: 0.1.1-rc.2`，在 `plugins/rtk/package.json` 添加精确 `@deepseek-ai/dsh-llm` 与 `@deepseek-ai/dsh-settings: 0.1.1-rc.2`，同步更新 `pnpm-lock.yaml` 和 package-shape 回归断言。除该批准例外外，Todo8协调者不得直接修改 tracked implementation；其他 tracked code/test/doc/manifest 缺陷走固定 fixer；纯 coordinator-owned 非代码 log/evidence/response **格式或采集完整性**问题走下述 coordinator-only repair。预验收全绿后只把本 Todo 复选框改为 `[x]` 并提交，不得改写历史。
   Parallelization: Wave 4（单分支串行） | Blocked by: 6 | Blocks: F1,F2,F3,F4,F5
   References: 本计划基线链；plan/evidence verifiers；routing manifest；固定 fixer 与 coordinator-only repair contracts。
