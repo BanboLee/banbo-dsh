@@ -1,8 +1,10 @@
+import { EventEmitter } from 'node:events'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMutationCollector, type MutationCandidate } from '../collector.js'
 import { createDiagnosticsCoordinator } from '../coordinator.js'
 import { compareEligibleTargets, renderDiagnostics } from '../render.js'
+import { DiagnosticsRuntime } from '../runtime.js'
 import { DEFAULT_CONFIG } from './helpers.js'
 
 // ---------------------------------------------------------------------------
@@ -203,8 +205,109 @@ function makeHarness(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Composed harness: the REAL DiagnosticsRuntime (controllable fs/subprocess
+// seams, no subprocesses) wired to the real collector and coordinator through
+// a real Cordis context. Used by the unload stage matrix so the runtime-side
+// phases (target stat, target read, admission/queue) are exercised under the
+// plugin cleanup order, never faked with hand-sent fs/observed events.
+// ---------------------------------------------------------------------------
+
+interface ComposedSubprocess {
+  readonly resolveExecutable: ReturnType<typeof vi.fn>
+  readonly spawn: ReturnType<typeof vi.fn>
+}
+
+interface ComposedHarness {
+  readonly ctx: Context
+  readonly collector: ReturnType<typeof createMutationCollector>
+  readonly runtime: DiagnosticsRuntime
+  readonly coordinator: ReturnType<typeof createDiagnosticsCoordinator>
+  readonly fs: FakeFs
+  readonly subprocess: ComposedSubprocess
+  readonly config: typeof DEFAULT_CONFIG
+  readonly offPost: () => boolean
+  readonly offObserved: () => boolean
+}
+
+function makeComposedFs(): FakeFs {
+  return {
+    resolve: vi.fn(async (path: string) => ({ targetKey: `ws:${path}`, displayPath: path })),
+    stat: vi.fn(async (target: FakeTarget) => {
+      if (target.targetKey.startsWith('ws:')) return { version: 'ws-v', type: 'directory' }
+      return { version: 'v1', type: 'file', size: 32 }
+    }),
+    contains: vi.fn(() => true),
+    fileUrl: vi.fn((target: FakeTarget) => `file:///ws/${target.displayPath}`),
+    processPath: vi.fn(() => '/ws'),
+    readBytes: vi.fn(async () => new Uint8Array()),
+  }
+}
+
+function makeComposedHarness(): ComposedHarness {
+  const ctx = new Context()
+  const collector = createMutationCollector()
+  const fs = makeComposedFs()
+  const subprocess: ComposedSubprocess = {
+    resolveExecutable: vi.fn(async (command: string) => command),
+    spawn: vi.fn(() => {
+      throw new Error('unexpected spawn during unload matrix')
+    }),
+  }
+  const config = { ...DEFAULT_CONFIG, settleMs: 20, timeoutMs: 5000 } as unknown as Harness['config']
+  const runtime = new DiagnosticsRuntime({ fs, subprocess, config })
+  const coordinator = createDiagnosticsCoordinator({ collector, runtime, config, fs })
+  const offPost = (ctx.on as unknown as (name: string, listener: unknown) => () => boolean)(
+    'tools/post-execute',
+    coordinator.listener,
+  )
+  const offObserved = (ctx.on as unknown as (name: string, listener: unknown) => () => boolean)(
+    'fs/observed',
+    (target: unknown, observation: unknown, actor: unknown) => {
+      collector.observe(actor, target, observation)
+    },
+  )
+  return { ctx, collector, runtime, coordinator, fs, subprocess, config, offPost, offObserved }
+}
+
+/**
+ * The plugin cleanup order, executed against the composed harness exactly as
+ * `index.js` apply's single cleanup effect runs it: stop admission, dispose
+ * both listeners, abort operations, await active augment promises, await
+ * retired late-final-stat I/O, and only then dispose the runtime. Every stage
+ * records its name so each matrix phase can assert the full sequence.
+ * @param {ComposedHarness} harness - the composed harness.
+ * @param {string[]} order - shared order recorder.
+ */
+async function unloadComposed(harness: ComposedHarness, order: string[]): Promise<void> {
+  order.push('stopAdmission')
+  harness.coordinator.stopAdmission()
+  order.push('offPost')
+  await Promise.resolve(harness.offPost())
+  order.push('offObserved')
+  await Promise.resolve(harness.offObserved())
+  order.push('abortActiveOperations')
+  harness.coordinator.abortActiveOperations()
+  order.push('awaitActiveOperations')
+  await harness.coordinator.awaitActiveOperations()
+  order.push('awaitRetiredIo')
+  await harness.coordinator.awaitRetiredIo()
+  order.push('runtime.dispose')
+  await harness.runtime.dispose()
+}
+
+const CLEANUP_ORDER = [
+  'stopAdmission',
+  'offPost',
+  'offObserved',
+  'abortActiveOperations',
+  'awaitActiveOperations',
+  'awaitRetiredIo',
+  'runtime.dispose',
+] as const
+
 function drive(
-  harness: Harness,
+  harness: Harness | ComposedHarness,
   exec: FakeExec,
   result: unknown,
   terminalNext: () => Promise<unknown>,
@@ -337,6 +440,39 @@ describe('dsh-lsp-diagnostics coordinator waterfall contract', () => {
       },
     )
     await expect(drive(harness, exec, {}, acceptNext())).rejects.toBe(boom)
+  })
+
+  it('propagates the identical caller-abort rejection while downstream next() is pending, with candidate cleanup', async () => {
+    // Historical F5 caller-abort proof: hold next() pending in the real
+    // three-parameter waterfall, then let the caller signal abort and the
+    // downstream reject with the SAME abort object (as the real ToolRuntime
+    // does). The listener must rethrow that exact object — never a wrapped or
+    // recreated error — and still retire the exec's candidates.
+    const harness = makeHarness()
+    const caller = new AbortController()
+    const exec = makeExec('/ws', caller.signal)
+    const target = makeTarget('src/a.ts', 'f:a')
+    observe(harness, exec, target)
+    const candidate = { target, version: 'v1', generation: 1 }
+    // One fixed abort object shared by the downstream rejection and the
+    // assertion: identity must survive the waterfall untouched.
+    const boom = abortError(caller.signal)
+    // The real ToolRuntime rejects the pending next() with an AbortError
+    // derived from the caller signal when it aborts; the terminal listener
+    // here behaves identically with the SAME pre-created object.
+    const pending = drive(harness, exec, {}, () => new Promise<never>((_resolve, reject) => {
+      caller.signal.addEventListener('abort', () => reject(boom), { once: true })
+    }))
+    // The listener has entered and is now blocked inside downstream next().
+    await vi.advanceTimersByTimeAsync(0)
+    caller.abort()
+    await expect(pending).rejects.toBe(boom)
+    // Candidate cleanup happens even though the augment never started.
+    expect(harness.collector.take(exec)).toEqual([])
+    expect(harness.collector.isCurrent(candidate)).toBe(false)
+    expect(harness.fs.resolve).not.toHaveBeenCalled()
+    expect(harness.runtime.diagnose).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('returns the original decision unchanged when the plugin-owned runtime fails', async () => {
@@ -1349,5 +1485,176 @@ describe('dsh-lsp-diagnostics coordinator cleanup ownership', () => {
     expect(notice!.content[0]!.text).toBe(
       '[LSP diagnostics after write]\nFile: src/a.ts\nStatus: diagnostics unavailable (document too large)',
     )
+  })
+})
+
+describe('dsh-lsp-diagnostics coordinator unload stage matrix (real runtime composition)', () => {
+  // The REAL DiagnosticsRuntime is composed with the real collector and
+  // coordinator through a real Cordis context; the runtime-side phases of the
+  // unload matrix (contains before/after, target stat, target read, runtime
+  // admission/queue) are exercised under the exact plugin cleanup order —
+  // stop admission → off listeners → abort → await active → await retired →
+  // runtime.dispose — and each phase must end with zero I/O/context residue.
+  // No fs/observed event is hand-sent to fake the composition.
+
+  it('unloads before the contains loop: zero contains and zero runtime work', async () => {
+    const harness = makeComposedHarness()
+    const caller = new AbortController()
+    caller.abort()
+    const exec = makeExec('/ws', caller.signal)
+    const a = makeTarget('src/a.ts', 'f:a')
+    harness.collector.observe(exec, a, { kind: 'present', version: 'v1' })
+    const pending = drive(harness, exec, {}, acceptNext())
+    const order: string[] = []
+    await unloadComposed(harness, order)
+    const decision = await pending
+    expect(decision).toEqual({ kind: 'accept' })
+    expect(noticeOf(decision)).toBeUndefined()
+    // A pre-aborted operation must not even derive the canonical URI or reach
+    // the contains loop: zero workspace I/O of any kind before retirement.
+    expect(harness.fs.fileUrl).not.toHaveBeenCalled()
+    expect(harness.fs.contains).not.toHaveBeenCalled()
+    expect(harness.fs.readBytes).not.toHaveBeenCalled()
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+    expect(order).toEqual([...CLEANUP_ORDER])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('unloads between the contains checks of two candidates: one contains, no admission, full cleanup order', async () => {
+    const harness = makeComposedHarness()
+    const caller = new AbortController()
+    const exec = makeExec('/ws', caller.signal)
+    const a = makeTarget('src/a.ts', 'f:a')
+    const b = makeTarget('src/b.ts', 'f:b')
+    harness.collector.observe(exec, a, { kind: 'present', version: 'v1' })
+    harness.collector.observe(exec, b, { kind: 'present', version: 'v1' })
+    // contains is a synchronous seam with no abort signal, so the only way a
+    // caller abort can land "between" the coordinator's pre- and post-contains
+    // checks is while the first contains call runs. The post-contains signal
+    // check must then stop the loop: candidate B never reaches its contains
+    // check or any runtime admission.
+    let containsCalls = 0
+    harness.fs.contains.mockImplementation(() => {
+      containsCalls += 1
+      if (containsCalls === 1) caller.abort()
+      return true
+    })
+    const pending = drive(harness, exec, {}, acceptNext())
+    // Let the augment begin and reach the eligibility loop: the caller abort
+    // fires synchronously inside the first contains call, and the
+    // coordinator's post-contains signal check must stop the loop.
+    await vi.advanceTimersByTimeAsync(0)
+    const decision = await pending
+    expect(decision).toEqual({ kind: 'accept' })
+    expect(noticeOf(decision)).toBeUndefined()
+    expect(containsCalls).toBe(1)
+    expect(harness.fs.readBytes).not.toHaveBeenCalled()
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+    expect(harness.collector.isCurrent({ target: b, version: 'v1', generation: 1 })).toBe(false)
+    // The plugin cleanup still runs the full order afterwards, with zero
+    // residue: the abort already retired everything and no timer remains.
+    const order: string[] = []
+    await unloadComposed(harness, order)
+    expect(order).toEqual([...CLEANUP_ORDER])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('unloads during the runtime target stat: aborted read returns stale, zero further I/O', async () => {
+    const harness = makeComposedHarness()
+    const exec = makeExec()
+    const a = makeTarget('src/a.ts', 'f:a')
+    harness.collector.observe(exec, a, { kind: 'present', version: 'v1' })
+    let rejectStat!: (reason: Error) => void
+    const statGate = new Promise<{ version: string; type: string; size: number }>((_resolve, reject) => {
+      rejectStat = reject
+    })
+    harness.fs.stat.mockImplementation(async (target: FakeTarget, signal?: AbortSignal) => {
+      if (target.targetKey.startsWith('ws:')) return { version: 'ws-v', type: 'directory' }
+      // The target stat holds until the cleanup abort arrives, exactly like
+      // the real fs seam rejecting on its operation signal.
+      signal?.addEventListener('abort', () => rejectStat(abortError(signal)), { once: true })
+      return statGate
+    })
+    const pending = drive(harness, exec, {}, acceptNext())
+    // Let the augment reach the runtime's readDocument target stat.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.fs.resolve).toHaveBeenCalledTimes(1)
+    const order: string[] = []
+    await unloadComposed(harness, order)
+    const decision = await pending
+    expect(decision).toEqual({ kind: 'accept' })
+    expect(noticeOf(decision)).toBeUndefined()
+    expect(harness.fs.readBytes).not.toHaveBeenCalled()
+    expect(harness.subprocess.spawn).not.toHaveBeenCalled()
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+    expect(order).toEqual([...CLEANUP_ORDER])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('unloads during the runtime bounded read: readBytes aborted, no spawn, no context', async () => {
+    const harness = makeComposedHarness()
+    const exec = makeExec()
+    const a = makeTarget('src/a.ts', 'f:a')
+    harness.collector.observe(exec, a, { kind: 'present', version: 'v1' })
+    let rejectRead!: (reason: Error) => void
+    const readGate = new Promise<Uint8Array>((_resolve, reject) => {
+      rejectRead = reject
+    })
+    harness.fs.readBytes.mockImplementation((_target: FakeTarget, signal?: AbortSignal) => {
+      signal?.addEventListener('abort', () => rejectRead(abortError(signal)), { once: true })
+      return readGate
+    })
+    const pending = drive(harness, exec, {}, acceptNext())
+    // The augment reads the document (stat resolves) and parks on readBytes.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.fs.readBytes).toHaveBeenCalledTimes(1)
+    const order: string[] = []
+    await unloadComposed(harness, order)
+    const decision = await pending
+    expect(decision).toEqual({ kind: 'accept' })
+    expect(noticeOf(decision)).toBeUndefined()
+    expect(harness.subprocess.spawn).not.toHaveBeenCalled()
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+    expect(order).toEqual([...CLEANUP_ORDER])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('unloads with a second diagnosis queued behind a held first lifecycle: queue aborts without reading', async () => {
+    const harness = makeComposedHarness()
+    const first = makeExec()
+    const second = makeExec()
+    const a = makeTarget('src/a.ts', 'f:a')
+    const b = makeTarget('src/b.ts', 'f:b')
+    harness.collector.observe(first, a, { kind: 'present', version: 'v1' })
+    harness.collector.observe(second, b, { kind: 'present', version: 'v1' })
+    let rejectRead!: (reason: Error) => void
+    const readGate = new Promise<Uint8Array>((_resolve, reject) => {
+      rejectRead = reject
+    })
+    harness.fs.readBytes.mockImplementation((_target: FakeTarget, signal?: AbortSignal) => {
+      signal?.addEventListener('abort', () => rejectRead(abortError(signal)), { once: true })
+      return readGate
+    })
+    // Both augments admit to the same (provider, workspace) runtime tail: the
+    // first parks on its bounded read, the second queues behind it.
+    const firstPending = drive(harness, first, {}, acceptNext())
+    await vi.advanceTimersByTimeAsync(0)
+    const secondPending = drive(harness, second, {}, acceptNext())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.fs.readBytes).toHaveBeenCalledTimes(1)
+    const order: string[] = []
+    await unloadComposed(harness, order)
+    const [firstDecision, secondDecision] = await Promise.all([firstPending, secondPending])
+    expect(firstDecision).toEqual({ kind: 'accept' })
+    expect(secondDecision).toEqual({ kind: 'accept' })
+    expect(noticeOf(firstDecision)).toBeUndefined()
+    expect(noticeOf(secondDecision)).toBeUndefined()
+    // The queued diagnosis never ran its lifecycle: no second read, no spawn.
+    expect(harness.fs.readBytes).toHaveBeenCalledTimes(1)
+    expect(harness.subprocess.spawn).not.toHaveBeenCalled()
+    expect(harness.collector.isCurrent({ target: a, version: 'v1', generation: 1 })).toBe(false)
+    expect(harness.collector.isCurrent({ target: b, version: 'v1', generation: 1 })).toBe(false)
+    expect(order).toEqual([...CLEANUP_ORDER])
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

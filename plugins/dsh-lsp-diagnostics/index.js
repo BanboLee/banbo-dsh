@@ -241,6 +241,10 @@ function assertExtensionToLanguage(map, provider) {
 
 /**
  * Validate one provider's server config, merging per-field defaults.
+ * An own property explicitly set to `undefined` is NOT omission: the declared
+ * strict type check must run on the actual value and fail loud, exactly like
+ * an explicit `null`. Only a truly omitted key (no own enumerable property)
+ * falls back to the per-field default.
  * @param {unknown} value - the raw server config.
  * @param {'typescript' | 'go'} provider - the provider id.
  * @returns {ServerConfig}
@@ -251,15 +255,26 @@ function validateServer(value, provider) {
     if (!SERVER_KEYS.has(key)) fail(`unknown key "${key}" in servers.${provider}`)
   }
   const defaults = /** @type {ServerConfig} */ (DEFAULT_SERVERS[provider])
-  const command = record.command === undefined ? defaults.command : record.command
+  /** @param {string} key @returns {boolean} */
+  const own = (key) => Object.prototype.hasOwnProperty.call(record, key)
+  const command = own('command') ? record.command : defaults.command
   if (typeof command !== 'string' || command.length === 0) {
     fail(`servers.${provider}.command must be a non-empty string`)
   }
-  const args = record.args === undefined ? defaults.args : record.args
-  if (!Array.isArray(args) || args.some((entry) => typeof entry !== 'string')) {
+  const args = own('args') ? record.args : defaults.args
+  // `Array.prototype.some` skips holes, so a sparse array must be rejected
+  // explicitly: every index must exist AND hold a string, otherwise the
+  // validated config would spread the holes into real `undefined` argv
+  // entries at load time.
+  if (!Array.isArray(args)) {
     fail(`servers.${provider}.args must be a string array`)
   }
-  const env = assertRecord(record.env === undefined ? defaults.env : record.env, `servers.${provider}.env`)
+  for (let index = 0; index < args.length; index += 1) {
+    if (!(index in args) || typeof args[index] !== 'string') {
+      fail(`servers.${provider}.args must be a string array without holes`)
+    }
+  }
+  const env = assertRecord(own('env') ? record.env : defaults.env, `servers.${provider}.env`)
   for (const [key, entry] of Object.entries(env)) {
     if (typeof entry !== 'string') fail(`servers.${provider}.env.${key} must be a string`)
   }
@@ -281,7 +296,7 @@ function validateServer(value, provider) {
     ? canonicalizeJson(record.initializationOptions, `servers.${provider}.initializationOptions`)
     : canonicalizeJson(defaults.initializationOptions, `servers.${provider}.initializationOptions`)
   const extensionToLanguage = assertExtensionToLanguage(
-    record.extensionToLanguage === undefined ? defaults.extensionToLanguage : record.extensionToLanguage,
+    own('extensionToLanguage') ? record.extensionToLanguage : defaults.extensionToLanguage,
     provider,
   )
   return { command, args: [...args], env: envRecord, configuration, initializationOptions, extensionToLanguage }
@@ -306,24 +321,20 @@ function cloneDefaultServer(provider) {
 
 /**
  * Validate the servers block and enforce the complete closed extension route.
+ * An explicit `servers: undefined` (own property) must fail loud, so this
+ * function never treats `undefined` as omission; the caller clones the
+ * defaults only when the key is truly absent.
  * @param {unknown} value - the raw servers config.
  * @returns {{ typescript: ServerConfig, go: ServerConfig }}
  */
 function validateServers(value) {
-  let typescript
-  let go
-  if (value === undefined) {
-    typescript = cloneDefaultServer('typescript')
-    go = cloneDefaultServer('go')
-  } else {
-    const record = assertRecord(value, 'servers')
-    const providers = Object.keys(record)
-    if (providers.length !== PROVIDERS.length || !PROVIDERS.every((provider) => providers.includes(provider))) {
-      fail(`servers must declare exactly the providers ${PROVIDERS.join(', ')}`)
-    }
-    typescript = validateServer(record.typescript, 'typescript')
-    go = validateServer(record.go, 'go')
+  const record = assertRecord(value, 'servers')
+  const providers = Object.keys(record)
+  if (providers.length !== PROVIDERS.length || !PROVIDERS.every((provider) => providers.includes(provider))) {
+    fail(`servers must declare exactly the providers ${PROVIDERS.join(', ')}`)
   }
+  const typescript = validateServer(record.typescript, 'typescript')
+  const go = validateServer(record.go, 'go')
   // The closed route must be complete: exactly .ts/.tsx/.go across providers.
   const covered = new Set([...Object.keys(typescript.extensionToLanguage), ...Object.keys(go.extensionToLanguage)])
   const canonical = Object.keys(CANONICAL_ROUTE)
@@ -360,39 +371,46 @@ export const Config = {
       }
       /** @type {RawConfig} */
       const raw = record
-      const enabled = raw.enabled === undefined ? DEFAULTS.enabled : raw.enabled
+      /** @param {string} key @returns {boolean} */
+      const own = (key) => Object.prototype.hasOwnProperty.call(record, key)
+      const enabled = own('enabled') ? raw.enabled : DEFAULTS.enabled
       if (typeof enabled !== 'boolean') fail('enabled must be a boolean')
-      const timeoutMs = assertSafeTimer(raw.timeoutMs === undefined ? DEFAULTS.timeoutMs : raw.timeoutMs, 'timeoutMs')
-      const settleMs = assertSafeTimer(raw.settleMs === undefined ? DEFAULTS.settleMs : raw.settleMs, 'settleMs')
+      const timeoutMs = assertSafeTimer(own('timeoutMs') ? raw.timeoutMs : DEFAULTS.timeoutMs, 'timeoutMs')
+      const settleMs = assertSafeTimer(own('settleMs') ? raw.settleMs : DEFAULTS.settleMs, 'settleMs')
       if (settleMs >= timeoutMs) fail('settleMs must be < timeoutMs')
       const shutdownTimeoutMs = assertSafeTimer(
-        raw.shutdownTimeoutMs === undefined ? DEFAULTS.shutdownTimeoutMs : raw.shutdownTimeoutMs,
+        own('shutdownTimeoutMs') ? raw.shutdownTimeoutMs : DEFAULTS.shutdownTimeoutMs,
         'shutdownTimeoutMs',
       )
-      const killGraceMs = assertSafeTimer(raw.killGraceMs === undefined ? DEFAULTS.killGraceMs : raw.killGraceMs, 'killGraceMs')
+      const killGraceMs = assertSafeTimer(own('killGraceMs') ? raw.killGraceMs : DEFAULTS.killGraceMs, 'killGraceMs')
       const maxDocumentBytes = assertSafeTimer(
-        raw.maxDocumentBytes === undefined ? DEFAULTS.maxDocumentBytes : raw.maxDocumentBytes,
+        own('maxDocumentBytes') ? raw.maxDocumentBytes : DEFAULTS.maxDocumentBytes,
         'maxDocumentBytes',
       )
       const maxMessageBytes = assertSafeTimer(
-        raw.maxMessageBytes === undefined ? DEFAULTS.maxMessageBytes : raw.maxMessageBytes,
+        own('maxMessageBytes') ? raw.maxMessageBytes : DEFAULTS.maxMessageBytes,
         'maxMessageBytes',
       )
       const maxStderrBytes = assertSafeTimer(
-        raw.maxStderrBytes === undefined ? DEFAULTS.maxStderrBytes : raw.maxStderrBytes,
+        own('maxStderrBytes') ? raw.maxStderrBytes : DEFAULTS.maxStderrBytes,
         'maxStderrBytes',
       )
       const maxDiagnostics = assertSafeTimer(
-        raw.maxDiagnostics === undefined ? DEFAULTS.maxDiagnostics : raw.maxDiagnostics,
+        own('maxDiagnostics') ? raw.maxDiagnostics : DEFAULTS.maxDiagnostics,
         'maxDiagnostics',
       )
       const maxResultChars = assertSafeTimer(
-        raw.maxResultChars === undefined ? DEFAULTS.maxResultChars : raw.maxResultChars,
+        own('maxResultChars') ? raw.maxResultChars : DEFAULTS.maxResultChars,
         'maxResultChars',
       )
-      const reportClean = raw.reportClean === undefined ? DEFAULTS.reportClean : raw.reportClean
+      const reportClean = own('reportClean') ? raw.reportClean : DEFAULTS.reportClean
       if (typeof reportClean !== 'boolean') fail('reportClean must be a boolean')
-      const servers = validateServers(raw.servers)
+      // `servers` omitted (no own property) clones the frozen defaults; an own
+      // property with any value — including explicit `undefined` — goes
+      // through the strict validator and fails loud.
+      const servers = own('servers')
+        ? validateServers(raw.servers)
+        : { typescript: cloneDefaultServer('typescript'), go: cloneDefaultServer('go') }
       return {
         value: {
           enabled,

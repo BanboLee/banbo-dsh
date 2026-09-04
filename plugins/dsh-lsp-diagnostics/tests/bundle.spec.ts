@@ -215,6 +215,60 @@ describe('dsh-lsp-diagnostics Config schema', () => {
     }
   })
 
+  it('rejects every own-property explicit undefined typed field instead of treating it as omission', () => {
+    // An own property explicitly set to `undefined` is NOT omission: the
+    // declared strict type check must run on the actual value and fail loud.
+    // configuration/initializationOptions are covered separately above; these
+    // are the remaining typed top-level and per-server fields.
+    for (const key of [
+      'enabled',
+      'timeoutMs',
+      'settleMs',
+      'shutdownTimeoutMs',
+      'killGraceMs',
+      'maxDocumentBytes',
+      'maxMessageBytes',
+      'maxStderrBytes',
+      'maxDiagnostics',
+      'maxResultChars',
+      'reportClean',
+      'servers',
+    ] as const) {
+      expect(() => validated({ [key]: undefined }), `${key}=undefined`).toThrow()
+    }
+    for (const field of ['command', 'args', 'env', 'extensionToLanguage'] as const) {
+      const servers = mutableServers()
+      servers.typescript[field] = undefined
+      expect(() => validated({ servers }), `servers.typescript.${field}=undefined`).toThrow()
+    }
+    const servers = mutableServers()
+    servers.typescript = undefined as unknown as Record<string, unknown>
+    expect(() => validated({ servers }), 'servers.typescript=undefined').toThrow()
+  })
+
+  it('rejects sparse args arrays whose holes would materialize as undefined argv entries', () => {
+    // `Array.prototype.some` skips holes, so a hole in the middle or a
+    // trailing hole would pass a plain string-array check and later spread
+    // into a real `undefined` argv entry. The validator must reject every
+    // sparse array, regardless of where the hole sits.
+    const sparse = new Array(2)
+    sparse[0] = '--stdio'
+    // hole at index 1
+    const trailing = new Array(2)
+    trailing[0] = '--stdio'
+    // trailing hole at index 1
+    for (const args of [sparse, trailing]) {
+      const servers = mutableServers()
+      servers.typescript.args = args
+      expect(() => validated({ servers }), `sparse args ${String(args)}`).toThrow()
+    }
+    // A dense array with an explicit undefined element is equally invalid.
+    const denseWithUndefined = ['--stdio', undefined as unknown as string]
+    const servers = mutableServers()
+    servers.typescript.args = denseWithUndefined
+    expect(() => validated({ servers }), 'args containing undefined').toThrow()
+  })
+
   it('rejects non-plain JSON containers (Map/Set/Date/custom prototypes) at load time', () => {
     const bads: unknown[] = [
       new Map([['a', 1]]),
