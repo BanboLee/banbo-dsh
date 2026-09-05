@@ -34,7 +34,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     packageName: 'dsh-rtk',
     files: ['index.js', 'grep-compress.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
-      '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',
+      '@deepseek-ai/cordis': '^4.0.2',
     },
   },
   {
@@ -42,8 +42,8 @@ const bundleExpectations: readonly BundleExpectation[] = [
     packageName: 'dsh-codegraph-mcp',
     files: ['cordis.patch.yml', 'README.md'],
     peerDependencies: {
-      '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',
-      '@deepseek-ai/dsh-mcp-client': '^0.1.1-rc.2',
+      '@deepseek-ai/cordis': '^4.0.2',
+      '@deepseek-ai/dsh-mcp-client': '^0.1.2-rc.1',
     },
   },
   {
@@ -51,8 +51,8 @@ const bundleExpectations: readonly BundleExpectation[] = [
     packageName: 'dsh-llm-pi-ai-with-session',
     files: ['index.js', 'adapter.js', 'context.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
-      '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',
-      '@deepseek-ai/dsh-llm': '^0.1.1-rc.2 || ^0.1.2-alpha.4',
+      '@deepseek-ai/cordis': '^4.0.2',
+      '@deepseek-ai/dsh-llm': '^0.1.2-rc.1',
       '@earendil-works/pi-ai': '^0.84.2',
     },
   },
@@ -61,11 +61,22 @@ const bundleExpectations: readonly BundleExpectation[] = [
     packageName: 'dsh-lsp-diagnostics',
     files: ['index.js', 'collector.js', 'framing.js', 'runtime.js', 'render.js', 'coordinator.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
-      '@deepseek-ai/cordis': '>=4.0.1 <5.0.0-0',
-      '@deepseek-ai/dsh-fs': '>=0.1.1-rc.2 <0.1.2-0',
-      '@deepseek-ai/dsh-llm': '>=0.1.1-rc.2 <0.1.2-0',
-      '@deepseek-ai/dsh-subprocess': '>=0.1.1-rc.2 <0.1.2-0',
-      '@deepseek-ai/dsh-tools': '>=0.1.1-rc.2 <0.1.2-0',
+      '@deepseek-ai/cordis': '^4.0.2',
+      '@deepseek-ai/dsh-fs': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-llm': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-subprocess': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-tools': '^0.1.2-rc.1',
+    },
+  },
+  {
+    directory: 'plugins/fish-shell',
+    packageName: 'dsh-fish-shell',
+    files: ['index.js', 'local.js', 'tool.js', 'cordis.patch.yml', 'README.md'],
+    peerDependencies: {
+      '@deepseek-ai/cordis': '^4.0.2',
+      '@deepseek-ai/dsh-bash-local': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-bash-sandbox': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-home-paths': '^0.1.2-rc.1',
     },
   },
 ] as const
@@ -145,18 +156,18 @@ describe('DSH bundle package manifests', () => {
   }
 })
 
-describe('Todo 8 preflight baseline pins', () => {
-  it('codegraph-mcp pins @deepseek-ai/dsh-llm to the exact rc.2 baseline version', () => {
+describe('DSH dependency family ranges', () => {
+  it('codegraph-mcp declares @deepseek-ai/dsh-llm from the rc.1 family', () => {
     const manifest = readManifest('plugins/codegraph-mcp')
 
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('0.1.1-rc.2')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.1.2-rc.1')
   })
 
-  it('rtk pins @deepseek-ai/dsh-llm and @deepseek-ai/dsh-settings to the exact rc.2 baseline versions', () => {
+  it('rtk declares @deepseek-ai/dsh-llm and @deepseek-ai/dsh-settings from the rc.1 family', () => {
     const manifest = readManifest('plugins/rtk')
 
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('0.1.1-rc.2')
-    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('0.1.1-rc.2')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.1.2-rc.1')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('^0.1.2-rc.1')
   })
 })
 
@@ -262,7 +273,7 @@ function extractLockImporterDevDeps(
 }
 
 describe('dsh-lsp-diagnostics dependency locking', () => {
-  it('resolves every direct devDependency to its exact pinned version in pnpm-lock.yaml', () => {
+  it('resolves every direct devDependency to its declared range base in pnpm-lock.yaml', () => {
     const lock = readRepoFile('pnpm-lock.yaml')
     const manifest: unknown = JSON.parse(readRepoFile('plugins/dsh-lsp-diagnostics/package.json'))
     if (!isRecord(manifest)) throw new TypeError('dsh-lsp-diagnostics package.json is not an object')
@@ -270,12 +281,13 @@ describe('dsh-lsp-diagnostics dependency locking', () => {
     const resolved = extractLockImporterDevDeps(lock, 'plugins/dsh-lsp-diagnostics')
     for (const [name, expected] of Object.entries(devDeps)) {
       const entry = resolved[name]
+      const rangeBase = expected.startsWith('^') ? expected.slice(1) : expected
       expect(entry, `direct devDependency ${name} must be recorded in pnpm-lock.yaml`).toBeDefined()
       expect(entry?.specifier).toBe(expected)
-      expect(entry?.version.startsWith(expected)).toBe(true)
+      expect(entry?.version.startsWith(rangeBase)).toBe(true)
       // The resolved package key must exist at exactly this version — never a
       // transitive prerelease standing in for the direct dependency.
-      expect(lock.includes(`'${name}@${expected}`)).toBe(true)
+      expect(lock.includes(`'${name}@${rangeBase}`)).toBe(true)
     }
   })
 })

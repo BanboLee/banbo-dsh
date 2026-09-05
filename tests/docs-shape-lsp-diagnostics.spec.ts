@@ -15,7 +15,7 @@
  * `FS_TOO_LARGE` mapping, the Diagnostic consumed-field vs
  * optional/extension contract, 0→1 based rendering, the hard deadline and
  * final gate, the unique session teardown order, shell boundaries, server
- * self-installation, the rc.2/`dsh-tools` peer boundary, the sync script,
+ * self-installation, the rc.1/`dsh-tools` peer boundary, the sync script,
  * and the verification commands. It deliberately avoids asserting
  * incidental prose.
  *
@@ -316,15 +316,12 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
     failures.push('a missing server must be documented as fail open with server not found')
   }
 
-  // rc.2 and dsh-tools peer boundary.
-  if (!sentencesContaining(f, '0.1.1-rc.2').some((s) => s.includes('>=0.1.1-rc.2 <0.1.2-0'))) {
-    failures.push('the peer range >=0.1.1-rc.2 <0.1.2-0 must be documented')
+  // rc.1 and dsh-tools peer boundary.
+  if (!sentencesContaining(f, '0.1.2-rc.1').some((s) => s.includes('^0.1.2-rc.1'))) {
+    failures.push('the peer range ^0.1.2-rc.1 must be documented')
   }
   if (!f.includes('@deepseek-ai/dsh-tools')) {
     failures.push('@deepseek-ai/dsh-tools must be named in the peer boundary')
-  }
-  if (!sentencesContaining(f, '0.1.2').some((s) => s.includes('not supported'))) {
-    failures.push('0.1.2-* must be documented as not supported')
   }
 
   // Verification and sync script shape.
@@ -448,11 +445,10 @@ describe('dsh-lsp-diagnostics README shape', () => {
     expect(README).toContain('gopls')
   })
 
-  it('documents the rc.2 and dsh-tools peer boundary', () => {
-    expect(README).toContain('0.1.1-rc.2')
-    expect(README).toContain('>=0.1.1-rc.2 <0.1.2-0')
+  it('documents the rc.1 and dsh-tools peer boundary', () => {
+    expect(README).toContain('0.1.2-rc.1')
+    expect(README).toContain('^0.1.2-rc.1')
     expect(README).toContain('@deepseek-ai/dsh-tools')
-    expect(README).toContain('0.1.2')
   })
 
   it('documents the sync script and verification commands', () => {
@@ -532,8 +528,8 @@ describe('dsh-lsp-diagnostics README shape', () => {
     expect(validateLspDiagnosticsReadmeContract(mutated)).not.toEqual([])
   })
 
-  it('rejects a README that supports 0.1.2 (mutation regression)', () => {
-    const mutated = README.replace('0.1.2-* is not supported', '0.1.2-* is supported')
+  it('rejects a README that restores the old dsh peer family (mutation regression)', () => {
+    const mutated = README.replaceAll('^0.1.2-rc.1', '>=0.1.1-rc.2 <0.1.2-0')
     expect(mutated).not.toEqual(README)
     expect(validateLspDiagnosticsReadmeContract(mutated)).not.toEqual([])
   })

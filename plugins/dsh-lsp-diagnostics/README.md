@@ -188,9 +188,9 @@ unavailable`.
   server `env`). A missing server fails open with `diagnostics unavailable
   (server not found)`; tests use the repository fixture server, never a real
   server or the network.
-- Implementation and tests are pinned to `0.1.1-rc.2`; the peers
+- Implementation and tests use the `0.1.2-rc.1` dependency family; the peers
   `@deepseek-ai/dsh-fs`, `@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-subprocess`,
-  and `@deepseek-ai/dsh-tools` are `>=0.1.1-rc.2 <0.1.2-0`, and 0.1.2-* is not supported.
+  and `@deepseek-ai/dsh-tools` are `^0.1.2-rc.1`.
 
 ## Verification
 
