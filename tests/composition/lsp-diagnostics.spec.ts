@@ -551,10 +551,10 @@ describe('dsh-lsp-diagnostics real composition', () => {
     const llmModule = await loadAnchorModule('dsh-llm') as {
       LlmAdapter: new () => unknown
       createUserMessage: (input: unknown) => unknown
-      CallId: (id: string) => unknown
+      ToolCallId: (id: string) => unknown
     }
     const sessionModule = await loadAnchorModule('dsh-session') as { SessionId: (id: string) => unknown }
-    const { LlmAdapter, createUserMessage, CallId } = llmModule
+    const { LlmAdapter, createUserMessage, ToolCallId } = llmModule
     const { SessionId } = sessionModule
 
     class MockAdapter extends LlmAdapter {
@@ -578,7 +578,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
           type: 'block-end', index: 0,
           block: {
             type: 'tool-call',
-            id: CallId('c1'),
+            id: ToolCallId('c1'),
             name: 'run_code',
             arguments: JSON.stringify({
               code: 'await tools.write({ file_path: "src/from-agent-code.ts", content: "const f: number = \\"oops\\";\\n" }); return "done";',
@@ -641,7 +641,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
 
     // The nested run_code write's plugin notice reached the session log as a
     // user/message with the plugin source.
-    const events: any[] = agent.session.events as any[]
+    const events: any[] = agent.session.snapshotEvents()
     const pluginMessages = events.filter((event) => event.type === 'user/message' && event.data?.source?.kind === 'plugin')
     expect(pluginMessages.length).toBeGreaterThan(0)
     const noticeText = pluginMessages
@@ -690,10 +690,10 @@ describe('dsh-lsp-diagnostics real composition', () => {
     const llmModule = await loadAnchorModule('dsh-llm') as {
       LlmAdapter: new () => unknown
       createUserMessage: (input: unknown) => unknown
-      CallId: (id: string) => unknown
+      ToolCallId: (id: string) => unknown
     }
     const sessionModule = await loadAnchorModule('dsh-session') as { SessionId: (id: string) => unknown }
-    const { LlmAdapter, createUserMessage, CallId } = llmModule
+    const { LlmAdapter, createUserMessage, ToolCallId } = llmModule
     const { SessionId } = sessionModule
 
     class MockAdapter extends LlmAdapter {
@@ -715,7 +715,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
         { type: 'block-start', index: 0, blockType: 'tool-call' },
         {
           type: 'block-end', index: 0,
-          block: { type: 'tool-call', id: CallId('c1'), name: 'write', arguments: JSON.stringify({ file_path: filePath, content: badContent }) },
+          block: { type: 'tool-call', id: ToolCallId('c1'), name: 'write', arguments: JSON.stringify({ file_path: filePath, content: badContent }) },
         },
         { type: 'usage', usage: { inputTokens: 5, outputTokens: 5 } },
         { type: 'finish', reason: { kind: 'tool-calls' } },
@@ -726,7 +726,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
           type: 'block-end', index: 0,
           block: {
             type: 'tool-call',
-            id: CallId('c2'),
+            id: ToolCallId('c2'),
             name: 'edit',
             arguments: JSON.stringify({
               file_path: filePath,
@@ -786,7 +786,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
     await idle
 
     // The plugin notice reached the session log as a user/message with the plugin source.
-    const events: any[] = agent.session.events as any[]
+    const events: any[] = agent.session.snapshotEvents()
     const pluginMessages = events.filter((event) => event.type === 'user/message' && event.data?.source?.kind === 'plugin')
     expect(pluginMessages.length).toBeGreaterThan(0)
     const noticeText = pluginMessages

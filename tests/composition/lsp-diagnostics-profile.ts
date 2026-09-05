@@ -80,8 +80,8 @@ export interface LspDiagnosticsBootOptions {
   readonly extraRootEntries?: readonly string[]
   /**
    * The `dsh-tools` presentation mode; `code` is required for the run_code
-   * matrix (the installed 0.1.1-rc.2 enum is `native | code | both`; the
-   * newer `ptc` alias is normalized to `code`).
+   * matrix. The RC.1 enum is `native | ptc | both`; the legacy `code` alias
+   * is normalized to `ptc`.
    */
   readonly toolsMode?: 'native' | 'code' | 'ptc'
   /** When true, point the typescript server at a nonexistent executable (server not found coverage). */
@@ -141,7 +141,7 @@ function installBundle(dshBin: string, dshHome: string, profile: string): void {
 
 /** Root config entries shared by every lsp-diagnostics composition app. */
 function baseRootEntries(toolsMode: 'native' | 'code' | 'ptc', workspace: string): string[] {
-  const mode = toolsMode === 'ptc' ? 'code' : toolsMode
+  const mode = toolsMode === 'code' ? 'ptc' : toolsMode
   return [
     '- id: tools',
     "  name: '@deepseek-ai/dsh-tools'",
@@ -265,10 +265,14 @@ export async function bootLspDiagnosticsProfile(
     const { appBoot, installAnchor } = await loadAppBoot(dshBin)
     appBoot.initProfile(isolated.profile, [])
     installBundle(dshBin, isolated.dshHome, isolated.profile)
-    appBoot.healProfilesModuleFallback(installAnchor, isolated.dshHome)
     writeProfilePatch(isolated.profile, options, { typescript: typescriptLog, go: goLog })
-    const rootConfig = writeTestRoot(isolated.profile, options, workspace)
     const profile: LoadedProfile = appBoot.loadProfile('dsh', profileName, installAnchor, isolated.dshHome)
+    await appBoot.healProfilesModuleFallback({
+      installAnchor,
+      profile,
+      home: isolated.dshHome,
+    })
+    const rootConfig = writeTestRoot(isolated.profile, options, workspace)
     const patches = [...profile.layers.flatMap((layer) => layer.patches), ...profile.patches]
     ctx = await appBoot.boot('dsh', rootConfig, patches)
     proof = {
