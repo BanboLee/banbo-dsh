@@ -91,10 +91,16 @@ export interface LoadedProfile {
   readonly patches: unknown[]
 }
 
+interface ModuleFallbackOptions {
+  readonly installAnchor: string
+  readonly profile: LoadedProfile
+  readonly home: string
+}
+
 export interface AppBootModule {
   initProfile(dir: string, bundles: string[]): void
   loadProfile(binName: string, name: string, installAnchor: string, home: string): LoadedProfile
-  healProfilesModuleFallback(installAnchor: string, home: string): void
+  healProfilesModuleFallback(options: ModuleFallbackOptions): Promise<void>
   boot(binName: string, configPath: string, patches: unknown[]): Promise<BootContext>
 }
 
@@ -167,6 +173,7 @@ function writeTestRoot(profile: string): string {
   writeFileSync(root, [
     "- id: test-system-prompt\n  name: ./test-seams.mjs\n  config:\n    kind: systemPrompt",
     "- id: tools\n  name: '@deepseek-ai/dsh-tools'\n  config:\n    mode: native",
+    "- id: session-projection\n  name: '@deepseek-ai/dsh-session-projection'",
     "- id: sandbox\n  name: ./test-seams.mjs\n  config:\n    kind: sandbox",
     `- id: sandbox-policy\n  name: '@deepseek-ai/dsh-sandbox-policy'\n  config:\n    mode: read-only\n    workspaceRoot: ${JSON.stringify(profile)}`,
     "- id: subprocess\n  name: '@deepseek-ai/dsh-subprocess-local'",
@@ -206,10 +213,14 @@ export async function bootDshProfileWithInstalledBundles(
   const { appBoot, installAnchor } = await loadAppBoot(dshBin)
   appBoot.initProfile(isolated.profile, [])
   installBundles(dshBin, isolated.dshHome, isolated.profile, bundles)
-  appBoot.healProfilesModuleFallback(installAnchor, isolated.dshHome)
   writeProfilePatch(isolated.profile)
-  const rootConfig = writeTestRoot(isolated.profile)
   const profile = appBoot.loadProfile('dsh', profileName, installAnchor, isolated.dshHome)
+  await appBoot.healProfilesModuleFallback({
+    installAnchor,
+    profile,
+    home: isolated.dshHome,
+  })
+  const rootConfig = writeTestRoot(isolated.profile)
   const patches = [...profile.layers.flatMap((layer) => layer.patches), ...profile.patches]
   const ctx = await appBoot.boot('dsh', rootConfig, patches)
   return {
