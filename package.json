@@ -14,12 +14,6 @@
     "@types/node": "^22.20.1",
     "vitest": "^3.2.4"
   },
-  "pnpm": {
-    "overrides": {
-      "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-settings": "0.1.1-rc.2"
-    }
-  },
   "engines": {
     "node": ">=22"
   }
