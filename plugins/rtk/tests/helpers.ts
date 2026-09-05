@@ -8,6 +8,7 @@ import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox'
 import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, SandboxMode, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import rtkShellPlugin from '../index.js'
 
@@ -79,6 +80,7 @@ export async function createRtkShellHarness(
     }
   }
   const ctx = new Context()
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(FakeSandboxProvider)
   await ctx.plugin(SandboxPolicyService, {
     ...(mode !== undefined ? { mode } : {}),
@@ -98,7 +100,7 @@ export async function createRtkShellHarness(
   // injects the `tools` runtime, so provide a minimal stand-in here — the
   // plugin only registers a `tools/post-execute` listener against it and
   // never invokes a tool through it.
-  await ctx.provide('tools', {})
+  ctx.provide('tools', {})
   await ctx.plugin(SandboxBashExecutor, { graceMs: 200 })
   const shell = ctx.shell
   if (!(shell instanceof SandboxBashExecutor)) {
