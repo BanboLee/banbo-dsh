@@ -1,4 +1,4 @@
-import { cpSync, existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -118,6 +118,14 @@ export function isAppBootModule(value: unknown): value is AppBootModule {
     && typeof module.boot === 'function'
 }
 
+export function resolveDshInstallationBin(candidate: string): string {
+  const realCandidate = realpathSync(candidate)
+  const content = readFileSync(realCandidate, 'utf8')
+  const wrapperTarget = /^exec "[^"]+" "([^"]+)" "\$@"$/m.exec(content)?.[1]
+  if (wrapperTarget === undefined) return realCandidate
+  return existsSync(wrapperTarget) ? realpathSync(wrapperTarget) : wrapperTarget
+}
+
 function findExecutable(name: string, pathValue = process.env.PATH ?? ''): string {
   for (const directory of pathValue.split(':')) {
     if (directory.length === 0) continue
@@ -128,7 +136,7 @@ function findExecutable(name: string, pathValue = process.env.PATH ?? ''): strin
 }
 
 export async function loadAppBoot(dshBin: string): Promise<{ readonly appBoot: AppBootModule; readonly installAnchor: string }> {
-  const packageRoot = dirname(dirname(realpathSync(dshBin)))
+  const packageRoot = dirname(dirname(resolveDshInstallationBin(dshBin)))
   const appBootUrl = pathToFileURL(join(packageRoot, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')).href
   const loaded: unknown = await import(appBootUrl)
   if (!isAppBootModule(loaded)) throw new Error(`invalid dsh-app-boot module at ${appBootUrl}`)
