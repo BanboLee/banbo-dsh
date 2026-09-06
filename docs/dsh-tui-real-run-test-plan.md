@@ -47,7 +47,7 @@ The version matrix schema is:
   "dsh": "0.1.2-rc.1",
   "dshTui": "0.10.0-beta.5",
   "cordis": "4.0.2",
-  "piAi": "0.84.2",
+  "piAi": "0.84.4",
   "bundles": {
     "dsh-fish-shell": "0.4.0",
     "dsh-rtk": "0.1.0",
@@ -57,6 +57,11 @@ The version matrix schema is:
   }
 }
 ```
+
+`piAi` is the exact version that `pnpm-lock.yaml` resolves for the
+`dsh-llm-pi-ai-with-session` importer (its declared range is `^0.84.2`, which
+resolves to `0.84.4`). The graph validator enforces this exact version; a range
+base is never an acceptable matrix value.
 
 `run-dsh-tui-upgrade.mjs` is the only operator entrypoint for G4-G6:
 
