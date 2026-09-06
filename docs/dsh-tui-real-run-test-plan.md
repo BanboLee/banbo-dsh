@@ -130,15 +130,25 @@ DSH_REAL_E2E_NODE_BIN="$QA_NODE" \
 Preflight must fail unless `"$QA_NODE" --version` begins with `v26.` and
 `"$QA_DSH" --version` equals `"$TARGET_DSH_VERSION"`.
 
-Build and use the sibling artifacts expected by the real E2E suite:
+Build the sibling RTK artifact:
 
 ```sh
 (cd ../rtk && cargo build --release)
-(cd ../codegraph && npm run build)
 ```
 
-Do not substitute unrelated compatible binaries from `PATH`: the real suite
-checks that the RTK and CodeGraph executables resolve to these sibling builds.
+The legacy source-based `test:e2e:headless` suite still expects a sibling
+CodeGraph build and cannot be used until its Node 22/source assumptions are
+migrated. New Node 26 QA uses the official bundled CLI:
+
+```sh
+export QA_CODEGRAPH=/home/lixingxin/.codegraph/versions/v1.6.0/bin/codegraph
+test -x "$QA_CODEGRAPH"
+"$QA_CODEGRAPH" --version
+```
+
+`QA_CODEGRAPH` must resolve under `~/.codegraph/versions/`, not under the
+sibling source checkout. The official CLI bundles its supported Node runtime;
+do not execute `../codegraph/dist/bin/codegraph.js` with Node 26.
 
 Do not use production credentials. The plan uses a loopback gateway fixture,
 local CodeGraph, and local LSP servers. Never inherit `C4C_user_code`,
@@ -219,7 +229,7 @@ Generate a QA-only `cordis.patch.yml` and settings file after the install. They
 must contain only:
 
 - a loopback OpenAI-SSE gateway fixture and its disposable credential;
-- the local sibling CodeGraph build;
+- the official bundled CodeGraph CLI;
 - local TypeScript and Go language server paths;
 - the test workspace and no external MCP rows.
 
@@ -260,13 +270,8 @@ configured session header, and have no fallback provider:
   config:
     serverName: codegraph
     transport: stdio
-    command: <rendered-qa-node>
-    args:
-      - /data00/home/lixingxin/project/codegraph/dist/bin/codegraph.js
-      - serve
-      - --mcp
-      - --path
-      - <rendered-qa-workspace>
+    command: <rendered-QA_CODEGRAPH>
+    args: [serve, --mcp, --path, <rendered-qa-workspace>]
     env:
       CODEGRAPH_NO_DAEMON: "1"
       CODEGRAPH_NO_UPDATE_CHECK: "1"
@@ -419,7 +424,7 @@ port and renders all placeholders before any profile process starts:
 ```json
 {
   "HOME": "<qa-home>",
-  "PATH": "<qa-bin>:<node22-bin>:/usr/local/bin:/usr/bin:/bin",
+  "PATH": "<qa-bin>:<node26-bin>:/home/lixingxin/.local/bin:/usr/local/bin:/usr/bin:/bin",
   "DSH_HOME": "<qa-dsh-home>",
   "DSH_TUI_SESSION_ROOT": "<qa-session-root>",
   "DSH_TUI_WORKSPACE_TARGET": "<qa-workspace>",
@@ -429,13 +434,16 @@ port and renders all placeholders before any profile process starts:
   "QA_LOOPBACK_API_KEY": "qa-only-token",
   "QA_LOOPBACK_PORT": "<allocated-port>",
   "QA_RTK": "/data00/home/lixingxin/project/rtk/target/release/rtk",
+  "QA_CODEGRAPH": "/home/lixingxin/.codegraph/versions/v1.6.0/bin/codegraph",
   "QA_TS_LSP": "/data00/home/lixingxin/.local/share/nvim/mason/bin/typescript-language-server",
   "QA_GOPLS": "/data00/home/lixingxin/.local/bin/trae-gopls"
 }
 ```
 
-Before rendering the QA patch, the orchestrator requires `QA_RTK`, `QA_TS_LSP`,
-and `QA_GOPLS` to exist and be executable.
+Before rendering the QA patch, the orchestrator requires `QA_RTK`,
+`QA_CODEGRAPH`, `QA_TS_LSP`, and `QA_GOPLS` to exist and be executable.
+`QA_CODEGRAPH` must resolve below `~/.codegraph/versions/`; it must not resolve
+to the sibling source build.
 
 `run-dsh-tui-real.mjs --all-core` must execute these scenario names:
 
@@ -564,7 +572,7 @@ change.
 | ID | Level | Case | Procedure | Pass criteria |
 | --- | --- | --- | --- | --- |
 | CG-01 | Core | MCP process registration | Gateway emits a safe CodeGraph read tool call against the local MCP fixture. | Tool namespace is registered once and the MCP process starts. |
-| CG-02 | Core | End-to-end read request | Use the sibling CodeGraph build against a known indexed fixture. | Response comes from the configured CodeGraph server and includes the requested result. |
+| CG-02 | Core | End-to-end read request | Use the official bundled CodeGraph CLI against a known indexed fixture. | Response comes from the configured CodeGraph server and includes the requested result. |
 | CG-03 | Core | Startup failure policy | QA patch points the MCP command at a missing executable. | The configured failure policy is observed and the failure identifies the MCP row. |
 | CG-04 | Edge | Unexpected server tool set | Use the fake MCP fixture from composition tests. | The client exposes the fixture's advertised tool, not an assumed hard-coded tool name. |
 | CG-05 | Edge | Process cleanup | Close the profile after using CodeGraph. | No owned MCP child process remains. |
