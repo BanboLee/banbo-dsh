@@ -1,9 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { goBuildStatus } from '../helpers/go-tool'
 import {
   bootLspDiagnosticsProfile,
   loadAnchorModule,
@@ -39,34 +38,6 @@ afterEach(async () => {
     if (booted !== undefined) await booted.cleanup()
   }
 })
-
-/**
- * Compile a Go source in an isolated temp module with the real Go toolchain
- * (no network, isolated GOCACHE). Returns the `go build` exit status.
- * Proves that the fixture's Go error→fix transition repairs a genuinely
- * compilable program, not just a sentinel disappearance.
- */
-function goBuildStatus(source: string): number {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-lsp-go-'))
-  try {
-    writeFileSync(join(dir, 'main.go'), source)
-    const result = spawnSync('go', ['build', '.'], {
-      cwd: dir,
-      env: {
-        ...process.env,
-        GO111MODULE: 'off',
-        GOPATH: join(dir, 'gopath'),
-        GOCACHE: join(dir, 'gocache'),
-        GOFLAGS: '-mod=mod',
-      },
-      encoding: 'utf8',
-      timeout: 30_000,
-    })
-    return result.status ?? -1
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
 
 /** Execute one official tool through the real tools runtime with a session cwd. */
 async function executeTool(
