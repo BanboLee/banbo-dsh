@@ -55,14 +55,27 @@ deviation from the closed extension route fail loud at load time.
 | `maxDiagnostics` | `50` | Global cap on retained diagnostic lines. |
 | `maxResultChars` | `8000` | Unicode code-point cap on the final aggregate text. |
 | `reportClean` | `true` | Whether explicit empty results render `Status: clean`. |
-| `servers` | fixed set | Exactly `typescript` and `go`, see below. |
+| `servers` | TypeScript + Go | Closed provider catalog; TypeScript and Go are enabled by default, while `clangd`, `rust`, and `python` are opt-in. |
 
-The extension route is a closed set with exactly `.ts` → typescript/typescript,
-`.tsx` → typescript/typescriptreact, and `.go` → go/go; any other
-extension key, missing entry, duplicate normalized key, or rewritten language
-id fails loud at load time; other extensions at runtime are silently ignored.
-The `typescript` server defaults to `typescript-language-server --stdio` and
-`go` to `gopls`; per-server `env`, `configuration`, and
+The extension route is closed: `.ts` → typescript/typescript, `.tsx` →
+typescript/typescriptreact, `.go` → go/go, `.c` → clangd/c,
+`.cc`/`.cpp`/`.cxx` → clangd/cpp, `.h`/`.hh`/`.hpp`/`.hxx` → clangd/cpp,
+`.rs` → rust/rust, and `.py`/`.pyi` → python/python; any other extension key,
+missing canonical provider entry, cross-provider collision, or rewritten
+language id fails loud at load time, while other extensions at runtime are
+silently ignored.
+
+The `servers` block is a provider-level partial overlay: omitting `servers` or
+supplying `servers: {}` keeps exactly the TypeScript and Go defaults, while
+supplying a known optional `clangd`, `rust`, or `python` key activates that
+provider. For example, `servers: { go: { command: '/path/trae-gopls' } }`
+changes only Go without requiring a TypeScript block. The legacy
+`extensionToLanguage` field is accepted only when it exactly equals that
+provider's canonical mapping; it never defines new routes.
+
+Default commands are `typescript-language-server --stdio`, `gopls`, `clangd`,
+`rust-analyzer`, and `pyright-langserver --stdio`. clangd, rust-analyzer, and
+gopls receive no default arguments. Per-server `env`, `configuration`, and
 `initializationOptions` may be overridden and must be JSON-representable.
 
 ## Behavior
@@ -183,11 +196,13 @@ unavailable`.
 - Agentless tool execution, missing/empty or non-directory cwd, and
   outside-workspace targets are silently out of scope; they never produce a
   notice of any kind.
-- The plugin does not install or download `typescript-language-server` or
-  `gopls`; install them yourself and make them available on PATH (or via the
-  server `env`). A missing server fails open with `diagnostics unavailable
-  (server not found)`; tests use the repository fixture server, never a real
-  server or the network.
+- The plugin does not install or download `typescript-language-server`,
+  `gopls`, `clangd`, `rust-analyzer`, or `pyright-langserver`; install requested
+  executables yourself and configure their paths. A missing server fails open
+  with `diagnostics unavailable (server not found)`.
+- Portable deterministic tests use the repository fixture server and never use
+  a real server or the network. The separate explicit real-server lane is
+  opt-in, local-filesystem/process-only, and never installs or downloads tools.
 - Implementation and tests use the `0.1.2-rc.1` dependency family; the peers
   `@deepseek-ai/dsh-fs`, `@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-subprocess`,
   and `@deepseek-ai/dsh-tools` are `^0.1.2-rc.1`.
@@ -213,3 +228,28 @@ Type check and sync script help:
 pnpm exec tsc -p plugins/dsh-lsp-diagnostics/tsconfig.json --noEmit
 bash scripts/sync-lsp-diagnostics-to-profile.sh --help
 ```
+
+Explicit real-server verification is separate from portable coverage. It
+requires `RUN_REAL_LSP_SERVERS=1`, a non-empty `REAL_LSP_PROVIDERS` list, an
+explicit executable path for every requested provider, and an evidence path:
+
+```bash
+RUN_REAL_LSP_SERVERS=1 \
+REAL_LSP_PROVIDERS=rust \
+REAL_LSP_RUST_COMMAND=/data00/home/lixingxin/.cargo/bin/rust-analyzer \
+REAL_LSP_EVIDENCE_PATH=/tmp/dsh-real-rust.json \
+pnpm exec vitest run tests/composition/lsp-real-servers.spec.ts
+```
+
+The operator wrapper performs the same check:
+
+```bash
+node scripts/qa/run-lsp-real-servers.mjs \
+  --providers rust \
+  --rust-command /data00/home/lixingxin/.cargo/bin/rust-analyzer \
+  --evidence /tmp/dsh-real-rust.json
+```
+
+Each requested provider must complete bad → diagnostic → repair → clean. The
+JSON file is machine-readable evidence; a missing requested executable records
+`status: "blocked"` and exits nonzero rather than skipping or passing.

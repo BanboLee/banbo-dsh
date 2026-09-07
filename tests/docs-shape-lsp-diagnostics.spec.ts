@@ -105,8 +105,8 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
     failures.push('enabled=false must bind zero collector/runtime/coordinator/listener/effect/process')
   }
   const route = sentencesContaining(f, 'extension route')
-  if (!route.some((s) => s.includes('closed') && s.includes('exactly') && s.includes('.ts') && s.includes('typescript/typescript'))) {
-    failures.push('extension route must be a closed set with exactly .ts → typescript/typescript')
+  if (!route.some((s) => s.includes('closed') && s.includes('.ts') && s.includes('typescript/typescript'))) {
+    failures.push('extension route must be a closed set with .ts → typescript/typescript')
   }
   if (
     !route.some((s) => s.includes('.tsx') && s.includes('typescript/typescriptreact') && s.includes('.go') && s.includes('go/go'))
@@ -115,6 +115,28 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
   }
   if (!route.some((s) => s.includes('fail') && s.includes('load'))) {
     failures.push('extension route violations must fail loud at load')
+  }
+  if (
+    !route.some(
+      (s) => s.includes('.c') && s.includes('clangd/c') && s.includes('.h') && s.includes('clangd/cpp'),
+    )
+  ) {
+    failures.push('extension route must document canonical C/C++ mappings')
+  }
+  if (
+    !route.some(
+      (s) => s.includes('.rs') && s.includes('rust/rust') && s.includes('.py') && s.includes('python/python'),
+    )
+  ) {
+    failures.push('extension route must document canonical Rust/Python mappings')
+  }
+  const overlay = sentencesContaining(f, 'partial overlay')
+  if (
+    !overlay.some(
+      (s) => s.includes('servers: {}') && s.includes('TypeScript') && s.includes('Go') && s.includes('optional'),
+    )
+  ) {
+    failures.push('servers partial overlay must preserve TypeScript/Go defaults and opt in optional providers')
   }
 
   // Behavior: silent eligibility, fail-open, caller abort, waterfall.
@@ -331,6 +353,20 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
   if (!readme.includes('pnpm exec vitest run plugins/dsh-lsp-diagnostics')) {
     failures.push('missing plugin regression verification command')
   }
+  if (
+    !readme.includes('RUN_REAL_LSP_SERVERS=1')
+    || !readme.includes('scripts/qa/run-lsp-real-servers.mjs')
+    || !readme.includes('REAL_LSP_PROVIDERS')
+  ) {
+    failures.push('missing explicit real-server lane command')
+  }
+  if (
+    !sentencesContaining(f, 'machine-readable evidence').some(
+      (s) => s.includes('blocked') && s.includes('nonzero'),
+    )
+  ) {
+    failures.push('real-server evidence must document blocked nonzero missing-executable behavior')
+  }
   if (!readme.includes('bash scripts/sync-lsp-diagnostics-to-profile.sh --help')) {
     failures.push('missing sync script --help verification command')
   }
@@ -365,11 +401,19 @@ describe('dsh-lsp-diagnostics README shape', () => {
     ).toBe(true)
   })
 
-  it('documents the closed .ts/.tsx/.go extension route', () => {
+  it('documents the closed canonical extension route', () => {
     const route = sentencesContaining(flat(README), 'extension route')
     expect(route.some((s) => s.includes('closed') && s.includes('.ts') && s.includes('typescript/typescript'))).toBe(true)
     expect(route.some((s) => s.includes('.tsx') && s.includes('typescript/typescriptreact') && s.includes('.go') && s.includes('go/go'))).toBe(true)
+    expect(route.some((s) => s.includes('.c') && s.includes('clangd/c') && s.includes('.h') && s.includes('clangd/cpp'))).toBe(true)
+    expect(route.some((s) => s.includes('.rs') && s.includes('rust/rust') && s.includes('.py') && s.includes('python/python'))).toBe(true)
     expect(route.some((s) => s.includes('fail') && s.includes('load'))).toBe(true)
+  })
+
+  it('documents default-preserving provider-level partial overlays', () => {
+    expect(README).toContain('partial overlay')
+    expect(README).toContain('servers: {}')
+    expect(README).toContain('/path/trae-gopls')
   })
 
   it('documents silent workspace eligibility without unavailable notices', () => {
@@ -454,6 +498,7 @@ describe('dsh-lsp-diagnostics README shape', () => {
   it('documents the sync script and verification commands', () => {
     expect(README).toContain('scripts/sync-lsp-diagnostics-to-profile.sh')
     expect(README).toContain('pnpm exec vitest run tests/docs-shape-lsp-diagnostics.spec.ts')
+    expect(README).toContain('scripts/qa/run-lsp-real-servers.mjs')
   })
 
   it('satisfies the full documentation behavior contract', () => {
