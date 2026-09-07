@@ -1,9 +1,65 @@
 #!/usr/bin/env node
 import { createServer } from 'node:http'
 
-export function createLoopbackServer() {
+const LSP_TITLE = '[LSP diagnostics after write]'
+
+function writeSse(response, chunks) {
+  response.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'close',
+  })
+  for (const chunk of chunks) response.write(`data: ${JSON.stringify(chunk)}\n\n`)
+  response.end('data: [DONE]\n\n')
+}
+
+function toolCallChunk(id, name, args) {
+  return {
+    id: 'qa',
+    object: 'chat.completion.chunk',
+    choices: [{
+      index: 0,
+      delta: {
+        tool_calls: [{
+          index: 0,
+          id,
+          type: 'function',
+          function: { name, arguments: JSON.stringify(args) },
+        }],
+      },
+      finish_reason: null,
+    }],
+  }
+}
+
+function finishChunk(reason) {
+  return {
+    id: 'qa',
+    object: 'chat.completion.chunk',
+    choices: [{ index: 0, delta: {}, finish_reason: reason }],
+    ...(reason === 'stop'
+      ? { usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }
+      : {}),
+  }
+}
+
+export function createLoopbackServer(options = {}) {
+  if (options.scenario !== undefined && options.scenario !== 'lsp-repair') {
+    throw new TypeError(`unsupported loopback scenario: ${String(options.scenario)}`)
+  }
   const records = []
   const toolIssued = new Set()
+  const lsp = {
+    acceptedTurnCount: 0,
+    rejectedRequestCount: 0,
+    badWriteIssued: false,
+    diagnosticFeedbackSeen: false,
+    repairIssued: false,
+    cleanFeedbackSeen: false,
+    terminalIssued: false,
+    repairAfterDiagnostic: false,
+    terminalAfterClean: false,
+  }
   const server = createServer((request, response) => {
     let body = ''
     request.setEncoding('utf8')
@@ -15,8 +71,9 @@ export function createLoopbackServer() {
         toolNames: [],
         terminalStatus: 'stop',
       }
+      let parsed
       try {
-        const parsed = JSON.parse(body)
+        parsed = JSON.parse(body)
         const tools = Array.isArray(parsed.tools) ? parsed.tools : []
         record.toolNames = tools.flatMap((tool) => {
           const name = tool?.function?.name
@@ -26,27 +83,86 @@ export function createLoopbackServer() {
         if (!(error instanceof SyntaxError)) throw error
       }
       records.push(record)
-      response.writeHead(200, {
-        'content-type': 'text/event-stream',
-        'cache-control': 'no-cache',
-        connection: 'close',
-      })
+      if (options.scenario === 'lsp-repair') {
+        const messages = JSON.stringify(parsed?.messages ?? [])
+        const hasTitle = messages.includes(LSP_TITLE)
+        if (lsp.acceptedTurnCount === 0) {
+          lsp.acceptedTurnCount += 1
+          lsp.badWriteIssued = true
+          record.terminalStatus = 'tool_calls'
+          writeSse(response, [
+            toolCallChunk('qa-lsp-bad-write', 'write', {
+              file_path: 'src/loopback-repair.ts',
+              content: 'const value: number = "oops";\n',
+            }),
+            finishChunk('tool_calls'),
+          ])
+          return
+        }
+        if (lsp.acceptedTurnCount === 1 && hasTitle && messages.includes('TS2322')) {
+          lsp.diagnosticFeedbackSeen = true
+          lsp.repairAfterDiagnostic = lsp.diagnosticFeedbackSeen
+          lsp.acceptedTurnCount += 1
+          lsp.repairIssued = true
+          record.terminalStatus = 'tool_calls'
+          writeSse(response, [
+            toolCallChunk('qa-lsp-repair-write', 'write', {
+              file_path: 'src/loopback-repair.ts',
+              content: 'const value: number = 2;\n',
+            }),
+            finishChunk('tool_calls'),
+          ])
+          return
+        }
+        if (lsp.acceptedTurnCount === 2 && hasTitle && messages.includes('Status: clean')) {
+          lsp.cleanFeedbackSeen = true
+          lsp.terminalAfterClean = lsp.cleanFeedbackSeen
+          lsp.acceptedTurnCount += 1
+          lsp.terminalIssued = true
+          writeSse(response, [{
+            id: 'qa',
+            object: 'chat.completion.chunk',
+            choices: [{ index: 0, delta: { content: 'qa-ok' }, finish_reason: null }],
+          }, finishChunk('stop')])
+          return
+        }
+        lsp.rejectedRequestCount += 1
+        response.writeHead(409, { 'content-type': 'application/json', connection: 'close' })
+        response.end('{"error":"scenario feedback out of order"}')
+        return
+      }
       const affinityKey = record.affinity ?? `request-${records.length}`
       if (toolIssued.has(affinityKey)) {
-        response.write('data: {"id":"qa","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"qa-ok"},"finish_reason":null}]}\n\n')
-        response.write('data: {"id":"qa","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n')
+        writeSse(response, [{
+          id: 'qa',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: { content: 'qa-ok' }, finish_reason: null }],
+        }, finishChunk('stop')])
       } else {
         toolIssued.add(affinityKey)
         record.terminalStatus = 'tool_calls'
-        response.write('data: {"id":"qa","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"qa-fish-call","type":"function","function":{"name":"fish","arguments":"{\\"command\\":\\"printf qa-tool-ok\\",\\"description\\":\\"QA loopback tool\\"}"}}]},"finish_reason":null}]}\n\n')
-        response.write('data: {"id":"qa","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n')
+        writeSse(response, [
+          toolCallChunk('qa-fish-call', 'fish', {
+            command: 'printf qa-tool-ok',
+            description: 'QA loopback tool',
+          }),
+          finishChunk('tool_calls'),
+        ])
       }
-      response.end('data: [DONE]\n\n')
     })
   })
   return {
     server,
     evidence: () => {
+      if (options.scenario === 'lsp-repair') {
+        const affinities = records.map((record) => record.affinity).filter((value) => value !== undefined)
+        return {
+          requestCount: records.length,
+          ...lsp,
+          headerPresent: records.length > 0 && affinities.length === records.length,
+          sameSessionEqual: affinities.length >= 2 && affinities.every((value) => value === affinities[0]),
+        }
+      }
       const affinities = records.map((record) => record.affinity).filter((value) => value !== undefined)
       return {
         requestCount: records.length,
