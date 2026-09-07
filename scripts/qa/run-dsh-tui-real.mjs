@@ -24,8 +24,8 @@ const TEST_CASES = {
   'CG-03': ['tests/composition/rtk-codegraph-profile.spec.ts'],
   'LLM-01': ['plugins/dsh-llm-pi-ai-with-session/tests'],
   'LLM-03': ['plugins/dsh-llm-pi-ai-with-session/tests'],
-  'LSP-01': ['tests/composition/lsp-diagnostics.spec.ts'],
-  'LSP-02': ['tests/composition/lsp-diagnostics.spec.ts'],
+  'LSP-01': ['tests/composition/lsp-diagnostics.spec.ts', 'tests/composition/lsp-http-repair.spec.ts'],
+  'LSP-02': ['tests/composition/lsp-diagnostics.spec.ts', 'tests/composition/lsp-http-repair.spec.ts'],
   'LSP-03': ['tests/composition/lsp-diagnostics.spec.ts'],
   'LSP-04': ['tests/composition/lsp-diagnostics.spec.ts'],
   'LSP-05': ['tests/composition/lsp-diagnostics.spec.ts'],
@@ -87,7 +87,26 @@ async function main() {
   const reportPath = resolve(dirname(envFile), 'evidence', 'g6-results.json')
   writeFileSync(reportPath, `${JSON.stringify({ matrixPath, results }, null, 2)}\n`)
   assertCompleteResults(results)
-  process.stdout.write(`${JSON.stringify({ planIds: results.length, status: 'passed' })}\n`)
+  const realLspProviders = options.get('real-lsp-providers')
+  let realLspEvidencePath
+  if (typeof realLspProviders === 'string') {
+    realLspEvidencePath = resolve(dirname(envFile), 'evidence', 'g6-real-lsp-results.json')
+    const providers = realLspProviders.split(',').map((provider) => provider.trim())
+    const args = [
+      resolve(repoRoot, 'scripts/qa/run-lsp-real-servers.mjs'),
+      '--providers', providers.join(','),
+      '--evidence', realLspEvidencePath,
+    ]
+    for (const provider of providers) {
+      args.push(`--${provider}-command`, requireOption(options, `${provider}-command`))
+    }
+    await runChild(node, args, { cwd: repoRoot, env: compositionEnvironment })
+  }
+  process.stdout.write(`${JSON.stringify({
+    planIds: results.length,
+    status: 'passed',
+    ...(realLspEvidencePath === undefined ? {} : { realLspEvidencePath }),
+  })}\n`)
 }
 
 main().catch((error) => {

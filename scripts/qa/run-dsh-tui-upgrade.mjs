@@ -29,6 +29,9 @@ const DEFAULTS = {
   codegraph: '/home/lixingxin/.codegraph/versions/v1.6.0/bin/codegraph',
   typescriptLanguageServer: '/data00/home/lixingxin/.local/share/nvim/mason/bin/typescript-language-server',
   gopls: '/data00/home/lixingxin/.local/bin/trae-gopls',
+  clangd: '/usr/bin/clangd',
+  rustAnalyzer: '/data00/home/lixingxin/.cargo/bin/rust-analyzer',
+  pythonLanguageServer: '/data00/home/lixingxin/.local/bin/pyright-langserver',
   go: '/home/lixingxin/.goenv/shims/go',
 }
 
@@ -56,7 +59,10 @@ async function main() {
   const matrix = JSON.parse(readFileSync(matrixPath, 'utf8'))
   const layout = createQaLayout(qaRoot)
   process.once('exit', () => cleanupQaRuntimeHome(layout))
-  for (const [label, path] of Object.entries(DEFAULTS)) assertExecutable(path, label)
+  for (const [label, path] of Object.entries(DEFAULTS)) {
+    if (['clangd', 'rustAnalyzer', 'pythonLanguageServer'].includes(label)) continue
+    assertExecutable(path, label)
+  }
   const codegraphRealpath = realpathSync(DEFAULTS.codegraph)
   if (!codegraphRealpath.includes('/.codegraph/versions/')) {
     throw new Error(`QA_CODEGRAPH is not an official bundled release: ${codegraphRealpath}`)
@@ -107,12 +113,23 @@ async function main() {
     '--case', 'startup',
     '--env-file', envFile,
   ], { cwd: repoRoot, env: environment })
-  await runChild(DEFAULTS.node, [
+  const realRunArgs = [
     resolve(repoRoot, 'scripts/qa/run-dsh-tui-real.mjs'),
     '--all-core',
     '--env-file', envFile,
     '--matrix', matrixPath,
-  ], { cwd: repoRoot, env: environment })
+  ]
+  if (options.get('all-real-lsp-providers') === true) {
+    realRunArgs.push(
+      '--real-lsp-providers', 'typescript,go,clangd,rust,python',
+      '--typescript-command', DEFAULTS.typescriptLanguageServer,
+      '--go-command', DEFAULTS.gopls,
+      '--clangd-command', DEFAULTS.clangd,
+      '--rust-command', DEFAULTS.rustAnalyzer,
+      '--python-command', DEFAULTS.pythonLanguageServer,
+    )
+  }
+  await runChild(DEFAULTS.node, realRunArgs, { cwd: repoRoot, env: environment })
   const evidence = {
     qaRoot,
     nodeVersion,
