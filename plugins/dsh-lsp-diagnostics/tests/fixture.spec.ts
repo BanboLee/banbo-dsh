@@ -357,6 +357,7 @@ describe('fake LSP server', () => {
       'initialize',
       'initialized',
       `didOpen ${WORKSPACE_URI} v1`,
+      'languageId typescript',
       `publish ${WORKSPACE_URI} v1`,
       `didClose ${WORKSPACE_URI}`,
       'shutdown',

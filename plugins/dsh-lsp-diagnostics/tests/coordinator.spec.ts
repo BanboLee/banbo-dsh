@@ -538,6 +538,61 @@ describe('dsh-lsp-diagnostics coordinator waterfall contract', () => {
 })
 
 describe('dsh-lsp-diagnostics coordinator eligibility', () => {
+  it('admits every added canonical extension and rejects nearby noncanonical variants', async () => {
+    const optionalServers = {
+      clangd: {
+        command: 'clangd',
+        args: [],
+        env: {},
+        configuration: {},
+        initializationOptions: null,
+        extensionToLanguage: {
+          '.c': 'c',
+          '.cc': 'cpp',
+          '.cpp': 'cpp',
+          '.cxx': 'cpp',
+          '.h': 'cpp',
+          '.hh': 'cpp',
+          '.hpp': 'cpp',
+          '.hxx': 'cpp',
+        },
+      },
+      rust: {
+        command: 'rust-analyzer',
+        args: [],
+        env: {},
+        configuration: {},
+        initializationOptions: null,
+        extensionToLanguage: { '.rs': 'rust' },
+      },
+      python: {
+        command: 'pyright-langserver',
+        args: ['--stdio'],
+        env: {},
+        configuration: {},
+        initializationOptions: null,
+        extensionToLanguage: { '.py': 'python', '.pyi': 'python' },
+      },
+    }
+    const harness = makeHarness('/ws', undefined, {
+      servers: { ...DEFAULT_CONFIG.servers, ...optionalServers },
+    })
+    const exec = makeExec()
+    const supported = ['c', 'cc', 'cpp', 'cxx', 'h', 'hh', 'hpp', 'hxx', 'rs', 'py', 'pyi']
+    for (const extension of supported) observe(harness, exec, makeTarget(`src/a.${extension}`, `f:${extension}`))
+    for (const extension of ['cp', 'rust', 'pyx']) {
+      observe(harness, exec, makeTarget(`src/a.${extension}`, `f:${extension}`))
+    }
+
+    await drive(harness, exec, {}, acceptNext())
+
+    expect(harness.runtime.diagnose).toHaveBeenCalledTimes(supported.length)
+    const diagnosedUris = harness.runtime.diagnose.mock.calls.map((call) => call[2])
+    expect(diagnosedUris).toEqual(expect.arrayContaining(
+      supported.map((extension) => `file:///ws/src/a.${extension}`),
+    ))
+  })
+
   it('silently drops unsupported extensions before any workspace or runtime work', async () => {
     const harness = makeHarness()
     const exec = makeExec()

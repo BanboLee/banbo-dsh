@@ -628,6 +628,86 @@ async function diagnoseUntilAbort(h: Harness, value = candidate()): Promise<Diag
 // ---------------------------------------------------------------------------
 
 describe('dsh-lsp-diagnostics runtime pooling', () => {
+  it('routes every canonical extension to its unique provider and language id', async () => {
+    const h = makeHarness('clean')
+    const optionalServers = {
+      clangd: {
+        command: 'fake-clangd',
+        args: [],
+        env: {},
+        configuration: {},
+        initializationOptions: null,
+        extensionToLanguage: {
+          '.c': 'c',
+          '.cc': 'cpp',
+          '.cpp': 'cpp',
+          '.cxx': 'cpp',
+          '.h': 'cpp',
+          '.hh': 'cpp',
+          '.hpp': 'cpp',
+          '.hxx': 'cpp',
+        },
+      },
+      rust: {
+        command: 'fake-rust',
+        args: [],
+        env: {},
+        configuration: {},
+        initializationOptions: null,
+        extensionToLanguage: { '.rs': 'rust' },
+      },
+      python: {
+        command: 'fake-python',
+        args: ['--stdio'],
+        env: {},
+        configuration: {},
+        initializationOptions: null,
+        extensionToLanguage: { '.py': 'python', '.pyi': 'python' },
+      },
+    }
+    await h.runtime.dispose()
+    const config = makeConfig('clean', {
+      servers: { ...h.config.servers, ...optionalServers },
+    })
+    const { subprocess, servers, spawnSpecs } = makeSubprocess(Array(14).fill('clean'))
+    const runtime = new DiagnosticsRuntime({ fs: h.fs, subprocess, config })
+    harness = { ...h, runtime, config, subprocess, servers, spawnSpecs }
+    const routes = [
+      ['.ts', 'fake-ts', 'typescript'],
+      ['.tsx', 'fake-ts', 'typescriptreact'],
+      ['.go', 'fake-go', 'go'],
+      ['.c', 'fake-clangd', 'c'],
+      ['.cc', 'fake-clangd', 'cpp'],
+      ['.cpp', 'fake-clangd', 'cpp'],
+      ['.cxx', 'fake-clangd', 'cpp'],
+      ['.h', 'fake-clangd', 'cpp'],
+      ['.hh', 'fake-clangd', 'cpp'],
+      ['.hpp', 'fake-clangd', 'cpp'],
+      ['.hxx', 'fake-clangd', 'cpp'],
+      ['.rs', 'fake-rust', 'rust'],
+      ['.py', 'fake-python', 'python'],
+      ['.pyi', 'fake-python', 'python'],
+    ] as const
+
+    for (const [extension, command, languageId] of routes) {
+      const uri = `file:///workspace/src/route${extension}`
+      const routeWorkspace = { targetKey: `ws${extension}`, displayPath: '/workspace' }
+      const outcome = await runtime.diagnose(
+        candidate(target(`/workspace/src/route${extension}`)),
+        routeWorkspace,
+        uri,
+        undefined,
+      )
+      expect(outcome.kind, extension).toBe('ok')
+      const index = routes.findIndex(([candidateExtension]) => candidateExtension === extension)
+      expect(spawnSpecs[index]?.argv[0], extension).toBe(command)
+      const didOpen = servers[index]?.received.find((message) => message.method === 'textDocument/didOpen')
+      expect(didOpen, extension).toMatchObject({
+        params: { textDocument: { uri, languageId } },
+      })
+    }
+  })
+
   it('keeps provider and workspace sessions isolated in a two-level pool', async () => {
     const h = makeHarness('push-versioned')
     const tsA = await h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
