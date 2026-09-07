@@ -77,6 +77,71 @@ describe('dsh-lsp-diagnostics Config schema', () => {
   it('applies every default when config is omitted or empty', () => {
     expect(validated(undefined)).toEqual(DEFAULT_CONFIG)
     expect(validated({})).toEqual(DEFAULT_CONFIG)
+    expect(validated({ servers: {} })).toEqual(DEFAULT_CONFIG)
+  })
+
+  it('overlays one default-enabled provider without requiring its sibling', () => {
+    const result = validated({ servers: { go: { command: '/path/trae-gopls' } } }) as {
+      servers: Record<string, { command: string; args: string[]; extensionToLanguage: Record<string, string> }>
+    }
+
+    expect(result.servers).toEqual({
+      typescript: DEFAULT_CONFIG.servers.typescript,
+      go: {
+        ...DEFAULT_CONFIG.servers.go,
+        command: '/path/trae-gopls',
+      },
+    })
+  })
+
+  it('activates optional known providers with canonical defaults', () => {
+    const result = validated({
+      servers: {
+        clangd: {},
+        rust: {},
+        python: {},
+      },
+    }) as {
+      servers: Record<string, { command: string; args: string[]; extensionToLanguage: Record<string, string> }>
+    }
+
+    expect(result.servers).toEqual({
+      typescript: DEFAULT_CONFIG.servers.typescript,
+      go: DEFAULT_CONFIG.servers.go,
+      clangd: {
+        command: 'clangd',
+        args: [],
+        env: {},
+        configuration: {},
+        initializationOptions: null,
+        extensionToLanguage: {
+          '.c': 'c',
+          '.cc': 'cpp',
+          '.cpp': 'cpp',
+          '.cxx': 'cpp',
+          '.h': 'cpp',
+          '.hh': 'cpp',
+          '.hpp': 'cpp',
+          '.hxx': 'cpp',
+        },
+      },
+      rust: {
+        command: 'rust-analyzer',
+        args: [],
+        env: {},
+        configuration: {},
+        initializationOptions: null,
+        extensionToLanguage: { '.rs': 'rust' },
+      },
+      python: {
+        command: 'pyright-langserver',
+        args: ['--stdio'],
+        env: {},
+        configuration: {},
+        initializationOptions: null,
+        extensionToLanguage: { '.py': 'python', '.pyi': 'python' },
+      },
+    })
   })
 
   it('preserves explicit enabled=true and explicit enabled=false', () => {
@@ -112,13 +177,24 @@ describe('dsh-lsp-diagnostics Config schema', () => {
     expect(() => validated({ nope: true })).toThrow()
   })
 
-  it('rejects unknown servers provider keys and missing/renamed providers', () => {
+  it('rejects unknown server provider keys and renamed providers', () => {
     const servers = mutableServers()
-    expect(() => validated({ servers: { ...servers, rust: servers.go } })).toThrow()
-    expect(() => validated({ servers: { typescript: servers.typescript } })).toThrow()
+    expect(() => validated({ servers: { ...servers, ruby: servers.go } })).toThrow()
     expect(() => validated({ servers: { TypeScript: servers.typescript, go: servers.go } })).toThrow()
     expect(() => validated({ servers: [] })).toThrow()
     expect(() => validated({ servers: 'x' })).toThrow()
+  })
+
+  it('rejects incomplete or noncanonical legacy extension maps for optional providers', () => {
+    expect(() => validated({
+      servers: { clangd: { extensionToLanguage: { '.c': 'c' } } },
+    })).toThrow()
+    expect(() => validated({
+      servers: { rust: { extensionToLanguage: { '.rs': 'rust', '.py': 'python' } } },
+    })).toThrow()
+    expect(() => validated({
+      servers: { python: { extensionToLanguage: { '.py': 'python', '.pyi': 'pythonreact' } } },
+    })).toThrow()
   })
 
   it('rejects unknown keys inside a server', () => {
@@ -421,7 +497,7 @@ describe('dsh-lsp-diagnostics plugin entry', () => {
       ctx.plugin(await import('../index.js'), { timeoutMs: 0 } as unknown as Parameters<typeof apply>[1]),
     ).rejects.toThrow()
     await expect(
-      ctx.plugin(await import('../index.js'), { servers: { typescript: {} } } as unknown as Parameters<typeof apply>[1]),
+      ctx.plugin(await import('../index.js'), { servers: { ruby: {} } } as unknown as Parameters<typeof apply>[1]),
     ).rejects.toThrow()
   })
 

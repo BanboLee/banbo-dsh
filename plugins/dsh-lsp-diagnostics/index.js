@@ -35,7 +35,12 @@ const TOP_LEVEL_KEYS = new Set([
 
 const SERVER_KEYS = new Set(['command', 'args', 'env', 'configuration', 'initializationOptions', 'extensionToLanguage'])
 
-const PROVIDERS = ['typescript', 'go']
+/** @typedef {'typescript' | 'go' | 'clangd' | 'rust' | 'python'} ProviderId */
+
+/** @type {readonly ProviderId[]} */
+const PROVIDERS = Object.freeze(['typescript', 'go', 'clangd', 'rust', 'python'])
+/** @type {readonly ProviderId[]} */
+const DEFAULT_ENABLED_PROVIDERS = Object.freeze(['typescript', 'go'])
 
 /**
  * @typedef {object} ServerConfig
@@ -60,7 +65,7 @@ const PROVIDERS = ['typescript', 'go']
  * @property {number} [maxDiagnostics]
  * @property {number} [maxResultChars]
  * @property {boolean} [reportClean]
- * @property {{ typescript?: unknown, go?: unknown }} [servers]
+ * @property {{ typescript?: unknown, go?: unknown, clangd?: unknown, rust?: unknown, python?: unknown }} [servers]
  */
 
 /**
@@ -76,17 +81,28 @@ const PROVIDERS = ['typescript', 'go']
  * @property {number} maxDiagnostics
  * @property {number} maxResultChars
  * @property {boolean} reportClean
- * @property {{ typescript: ServerConfig, go: ServerConfig }} servers
+ * @property {Partial<Record<ProviderId, ServerConfig>>} servers
  */
 
 /**
  * Canonical, closed extension route: only these mappings may ever exist.
- * @type {Readonly<Record<string, Readonly<{ provider: string, language: string }>>>}
+ * @type {Readonly<Record<string, Readonly<{ provider: ProviderId, language: string }>>>}
  */
 const CANONICAL_ROUTE = Object.freeze({
   '.ts': Object.freeze({ provider: 'typescript', language: 'typescript' }),
   '.tsx': Object.freeze({ provider: 'typescript', language: 'typescriptreact' }),
   '.go': Object.freeze({ provider: 'go', language: 'go' }),
+  '.c': Object.freeze({ provider: 'clangd', language: 'c' }),
+  '.cc': Object.freeze({ provider: 'clangd', language: 'cpp' }),
+  '.cpp': Object.freeze({ provider: 'clangd', language: 'cpp' }),
+  '.cxx': Object.freeze({ provider: 'clangd', language: 'cpp' }),
+  '.h': Object.freeze({ provider: 'clangd', language: 'cpp' }),
+  '.hh': Object.freeze({ provider: 'clangd', language: 'cpp' }),
+  '.hpp': Object.freeze({ provider: 'clangd', language: 'cpp' }),
+  '.hxx': Object.freeze({ provider: 'clangd', language: 'cpp' }),
+  '.rs': Object.freeze({ provider: 'rust', language: 'rust' }),
+  '.py': Object.freeze({ provider: 'python', language: 'python' }),
+  '.pyi': Object.freeze({ provider: 'python', language: 'python' }),
 })
 
 /**
@@ -108,6 +124,39 @@ const DEFAULT_SERVERS = Object.freeze({
     configuration: Object.freeze({}),
     initializationOptions: null,
     extensionToLanguage: Object.freeze({ '.go': 'go' }),
+  }),
+  clangd: Object.freeze({
+    command: 'clangd',
+    args: Object.freeze([]),
+    env: Object.freeze({}),
+    configuration: Object.freeze({}),
+    initializationOptions: null,
+    extensionToLanguage: Object.freeze({
+      '.c': 'c',
+      '.cc': 'cpp',
+      '.cpp': 'cpp',
+      '.cxx': 'cpp',
+      '.h': 'cpp',
+      '.hh': 'cpp',
+      '.hpp': 'cpp',
+      '.hxx': 'cpp',
+    }),
+  }),
+  rust: Object.freeze({
+    command: 'rust-analyzer',
+    args: Object.freeze([]),
+    env: Object.freeze({}),
+    configuration: Object.freeze({}),
+    initializationOptions: null,
+    extensionToLanguage: Object.freeze({ '.rs': 'rust' }),
+  }),
+  python: Object.freeze({
+    command: 'pyright-langserver',
+    args: Object.freeze(['--stdio']),
+    env: Object.freeze({}),
+    configuration: Object.freeze({}),
+    initializationOptions: null,
+    extensionToLanguage: Object.freeze({ '.py': 'python', '.pyi': 'python' }),
   }),
 })
 
@@ -210,7 +259,7 @@ function canonicalizeJson(value, path, seen = new Set()) {
 /**
  * Validate a provider's extensionToLanguage map against the canonical route.
  * @param {unknown} map - the extension map.
- * @param {'typescript' | 'go'} provider - the owning provider id.
+ * @param {ProviderId} provider - the owning provider id.
  * @returns {Record<string, string>}
  */
 function assertExtensionToLanguage(map, provider) {
@@ -236,6 +285,16 @@ function assertExtensionToLanguage(map, provider) {
     }
     routes.set(extension, language)
   }
+  const defaults = DEFAULT_SERVERS[provider]
+  if (defaults === undefined) fail(`provider ${provider} has no catalog defaults`)
+  const expected = defaults.extensionToLanguage
+  const expectedExtensions = Object.keys(expected)
+  if (
+    routes.size !== expectedExtensions.length
+    || !expectedExtensions.every((extension) => routes.get(extension) === expected[extension])
+  ) {
+    fail(`servers.${provider}.extensionToLanguage must equal the canonical provider mapping`)
+  }
   return Object.fromEntries(routes)
 }
 
@@ -246,7 +305,7 @@ function assertExtensionToLanguage(map, provider) {
  * an explicit `null`. Only a truly omitted key (no own enumerable property)
  * falls back to the per-field default.
  * @param {unknown} value - the raw server config.
- * @param {'typescript' | 'go'} provider - the provider id.
+ * @param {ProviderId} provider - the provider id.
  * @returns {ServerConfig}
  */
 function validateServer(value, provider) {
@@ -310,7 +369,7 @@ function validateServer(value, provider) {
 
 /**
  * Build the default server config for a provider.
- * @param {'typescript' | 'go'} provider - the provider id.
+ * @param {ProviderId} provider - the provider id.
  * @returns {ServerConfig}
  */
 function cloneDefaultServer(provider) {
@@ -326,28 +385,30 @@ function cloneDefaultServer(provider) {
 }
 
 /**
- * Validate the servers block and enforce the complete closed extension route.
+ * Validate the closed servers catalog. Default-enabled providers are always
+ * present; a supplied provider object overlays only that provider's defaults,
+ * and an optional provider is activated only when its known key is supplied.
  * An explicit `servers: undefined` (own property) must fail loud, so this
  * function never treats `undefined` as omission; the caller clones the
  * defaults only when the key is truly absent.
  * @param {unknown} value - the raw servers config.
- * @returns {{ typescript: ServerConfig, go: ServerConfig }}
+ * @returns {Partial<Record<ProviderId, ServerConfig>>}
  */
 function validateServers(value) {
   const record = assertRecord(value, 'servers')
-  const providers = Object.keys(record)
-  if (providers.length !== PROVIDERS.length || !PROVIDERS.every((provider) => providers.includes(provider))) {
-    fail(`servers must declare exactly the providers ${PROVIDERS.join(', ')}`)
+  for (const provider of Object.keys(record)) {
+    if (!PROVIDERS.includes(/** @type {ProviderId} */ (provider))) {
+      fail(`unknown provider "${provider}" in servers`)
+    }
   }
-  const typescript = validateServer(record.typescript, 'typescript')
-  const go = validateServer(record.go, 'go')
-  // The closed route must be complete: exactly .ts/.tsx/.go across providers.
-  const covered = new Set([...Object.keys(typescript.extensionToLanguage), ...Object.keys(go.extensionToLanguage)])
-  const canonical = Object.keys(CANONICAL_ROUTE)
-  if (covered.size !== canonical.length || !canonical.every((extension) => covered.has(extension))) {
-    fail(`extension route must cover exactly ${canonical.join(', ')}`)
+  /** @type {Partial<Record<ProviderId, ServerConfig>>} */
+  const servers = {}
+  for (const provider of PROVIDERS) {
+    const supplied = Object.prototype.hasOwnProperty.call(record, provider)
+    if (!supplied && !DEFAULT_ENABLED_PROVIDERS.includes(provider)) continue
+    servers[provider] = supplied ? validateServer(record[provider], provider) : cloneDefaultServer(provider)
   }
-  return { typescript, go }
+  return servers
 }
 
 /**
@@ -411,12 +472,9 @@ export const Config = {
       )
       const reportClean = own('reportClean') ? raw.reportClean : DEFAULTS.reportClean
       if (typeof reportClean !== 'boolean') fail('reportClean must be a boolean')
-      // `servers` omitted (no own property) clones the frozen defaults; an own
-      // property with any value — including explicit `undefined` — goes
-      // through the strict validator and fails loud.
       const servers = own('servers')
         ? validateServers(raw.servers)
-        : { typescript: cloneDefaultServer('typescript'), go: cloneDefaultServer('go') }
+        : validateServers({})
       return {
         value: {
           enabled,
