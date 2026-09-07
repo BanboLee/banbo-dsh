@@ -21,7 +21,7 @@ The bundles in scope are:
 | `dsh-rtk` | Decorates the active shell's `run` and `start` methods with `rtk rewrite`; optionally compresses grep results. |
 | `dsh-codegraph-mcp` | Registers the CodeGraph MCP server through the official MCP client. |
 | `dsh-llm-pi-ai-with-session` | Adds session-affinity LLM provider routes and request headers. |
-| `dsh-lsp-diagnostics` | Adds bounded post-write TypeScript/TSX/Go diagnostics. |
+| `dsh-lsp-diagnostics` | Adds bounded post-write TypeScript/TSX/Go diagnostics plus opt-in C/C++, Rust, and Python routes. |
 
 ## Required QA Harness Deliverables
 
@@ -34,6 +34,7 @@ release gate until their tests pass:
 | `scripts/qa/validate-dsh-tui-graph.mjs` | `"$QA_NODE" scripts/qa/validate-dsh-tui-graph.mjs --profile dsh-tui --matrix docs/dsh-tui-qa-version-matrix.json` | Reads `dsh plugin --profile dsh-tui list --depth=8 --json`; rejects missing bundles, target-version mismatch, and incompatible duplicate DSH/Cordis/pi-ai families. |
 | `scripts/qa/run-dsh-tui-pty.mjs` | `"$QA_NODE" scripts/qa/run-dsh-tui-pty.mjs --case startup --env-file "$QA_ROOT/env.json"` | Starts the QA-local TUI through its QA-local dsh wrapper, waits for input, issues `/exit`, and enforces PID cleanup. |
 | `scripts/qa/run-dsh-tui-real.mjs` | `"$QA_NODE" scripts/qa/run-dsh-tui-real.mjs --all-core --env-file "$QA_ROOT/env.json"` | Starts the loopback SSE fixture and executes every Core ID through named scenarios; exits nonzero when any case is missing, skipped, or fails. |
+| `scripts/qa/run-lsp-real-servers.mjs` | `"$QA_NODE" scripts/qa/run-lsp-real-servers.mjs --providers rust --rust-command "$QA_RUST_ANALYZER" --evidence "$QA_ROOT/evidence/g6-real-lsp-results.json"` | Explicit opt-in real-server lane; requires each requested executable, runs bad → diagnostic → repair → clean, writes JSON evidence, and exits nonzero with `blocked` evidence when preflight fails. |
 | `scripts/qa/fixtures/loopback-openai-sse.mjs` | Started by `run-dsh-tui-real.mjs` | Emits scripted SSE sequences and records only sanitized header presence, opaque identity equality, selected tool names, and terminal status. |
 | `scripts/qa/fixtures/dsh-tui-qa-settings.yaml` | Copied into `QA_DSH_HOME/settings.yaml` | Defines only the loopback provider, session route, model, and QA credential variable. |
 | `scripts/qa/fixtures/dsh-tui-qa.patch.yml` | Copied into the QA profile | Defines only local CodeGraph, local LSP, explicit preset rows, and no external MCP entries. |
@@ -172,7 +173,7 @@ compensates for an earlier failure.
 | G3 | Real isolated Loader composition | `pnpm exec vitest run tests/composition/fish-rtk-coexist.spec.ts tests/composition/rtk-codegraph-profile.spec.ts tests/composition/lsp-diagnostics.spec.ts` | Real profiles boot through `dsh-app-boot`; no loader import failure. |
 | G4 | Create isolated dsh-tui QA profile | Use `QA_DSH_HOME`, `QA_HOME`, target TUI package, and the five-bundle install below. | Profile-local graph validator accepts all target versions. |
 | G5 | Real interactive startup and clean exit | Start the isolated TUI with a PTY, wait for input, issue `/exit`, and reap the process group. | Input screen appears; status is zero; no owned TUI/MCP/LSP process remains. |
-| G6 | Deterministic real-run matrix | Drive the isolated TUI through the loopback gateway fixture and Loader driver. | Every required Core ID has a fixture, expected observable result, and sanitized evidence. |
+| G6 | Deterministic real-run matrix | Drive the isolated TUI through the loopback gateway fixture and Loader driver. | Every required Core ID has a fixture, expected observable result, and sanitized evidence. Portable fake-LSP coverage remains mandatory. |
 
 For an upgraded pre-release, G0-G5 are mandatory even when the package manager
 reports no manifest conflict. Pre-release peer ranges can resolve to a valid
@@ -419,6 +420,7 @@ Before declaring this plan operational, add these checked-in QA fixtures:
 | Full-profile graph validator | Parses `dsh plugin --profile dsh-tui list --depth=8 --json` and validates the exact dependency matrix. |
 | Loader driver | Boots the QA profile through the real Loader and exposes `ctx.shell.start`, tool catalog, and plugin disposal for cases that the model-facing TUI cannot invoke directly. |
 | Local server fixtures | Provides deterministic CodeGraph MCP, RTK, TypeScript/Go LSP, and workspace fixture behavior. |
+| Explicit real LSP runner | Runs only when an operator names requested providers and executable paths; emits machine-readable bad/diagnostic/repair/clean evidence. |
 
 Every Core ID below must name one of these drivers or an existing exact test
 command. A model prompt is never a test driver.
@@ -449,6 +451,23 @@ Before rendering the QA patch, the orchestrator requires `QA_RTK`,
 `QA_CODEGRAPH`, `QA_TS_LSP`, and `QA_GOPLS` to exist and be executable.
 `QA_CODEGRAPH` must resolve below `~/.codegraph/versions/`; it must not resolve
 to the sibling source build.
+
+The portable G6 matrix uses the deterministic fake LSP fixture and does not
+claim that optional real servers passed. Real clangd, rust-analyzer, and Python
+LSP verification is a separate operator-visible gate:
+
+```sh
+"$QA_NODE" scripts/qa/run-lsp-real-servers.mjs \
+  --providers rust \
+  --rust-command /data00/home/lixingxin/.cargo/bin/rust-analyzer \
+  --evidence "$QA_ROOT/evidence/g6-real-lsp-results.json"
+```
+
+To require every real provider during the full upgrade, pass
+`--all-real-lsp-providers` to `run-dsh-tui-upgrade.mjs`. That flag requires
+explicit executable paths configured by the runner for TypeScript, Go, clangd,
+rust-analyzer, and Python. A missing requested executable is `blocked`
+machine-readable evidence and a nonzero gate result, never a skip or pass.
 
 `run-dsh-tui-real.mjs --all-core` must execute these scenario names:
 
