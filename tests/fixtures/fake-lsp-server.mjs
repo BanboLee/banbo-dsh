@@ -127,6 +127,7 @@ function handleDidOpen(params) {
   const version = typeof document.version === 'number' ? document.version : 1
   const text = typeof document.text === 'string' ? document.text : ''
   log(`didOpen ${uri} v${version}`)
+  log(`languageId ${typeof document.languageId === 'string' ? document.languageId : ''}`)
   const diagnostics = [ERROR_DIAG, WARNING_DIAG]
   switch (mode) {
     case 'content-aware':

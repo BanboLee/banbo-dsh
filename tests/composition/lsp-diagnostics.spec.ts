@@ -233,6 +233,38 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(readFileSync(join(booted.workspace, 'src', 'main.go'), 'utf8')).toContain('var x string = "1"')
   }, 30_000)
 
+  it('routes every added extension through the real Loader to its canonical provider and language id', async () => {
+    const booted = await bootLspDiagnosticsProfile({
+      clangdMode: 'clean',
+      rustMode: 'clean',
+      pythonMode: 'clean',
+    })
+    bootedProfiles.push(booted)
+    const routes = [
+      ['src/a.c', 'c', booted.clangdLog],
+      ['src/a.cc', 'cpp', booted.clangdLog],
+      ['src/a.cpp', 'cpp', booted.clangdLog],
+      ['src/a.cxx', 'cpp', booted.clangdLog],
+      ['src/a.h', 'cpp', booted.clangdLog],
+      ['src/a.hh', 'cpp', booted.clangdLog],
+      ['src/a.hpp', 'cpp', booted.clangdLog],
+      ['src/a.hxx', 'cpp', booted.clangdLog],
+      ['src/a.rs', 'rust', booted.rustLog],
+      ['src/a.py', 'python', booted.pythonLog],
+      ['src/a.pyi', 'python', booted.pythonLog],
+    ] as const
+
+    for (const [relativePath, languageId, logPath] of routes) {
+      const result = await writeFileThroughRealTool(booted, relativePath, 'fixture content\n')
+      expect(pluginNoticeText(result), relativePath).toBe(
+        expectedSingleFileNotice(booted.workspace, relativePath, ['Status: clean']),
+      )
+      const protocol = readFileSync(logPath, 'utf8')
+      expect(protocol, relativePath).toContain(`didOpen ${pathToFileURL(join(booted.workspace, relativePath)).href} v`)
+      expect(protocol, relativePath).toContain(`languageId ${languageId}`)
+    }
+  }, 30_000)
+
   it('silently ignores unsupported extensions, missing session cwd, and outside-workspace targets', async () => {
     const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'push-versioned' })
     bootedProfiles.push(booted)
