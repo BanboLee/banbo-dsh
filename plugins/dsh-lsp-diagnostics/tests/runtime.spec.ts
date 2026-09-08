@@ -628,6 +628,27 @@ async function diagnoseUntilAbort(h: Harness, value = candidate()): Promise<Diag
 // ---------------------------------------------------------------------------
 
 describe('dsh-lsp-diagnostics runtime pooling', () => {
+  it('keeps automatic diagnose behavior by delegating candidate.target and candidate.version', async () => {
+    const h = makeHarness('clean')
+    const diagnoseTarget = vi.spyOn(h.runtime, 'diagnoseTarget')
+
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
+
+    expect(diagnoseTarget).toHaveBeenCalledWith(target(), WORKSPACE, WORKSPACE_URI, undefined, 'v1')
+  })
+
+  it('rejects an expected FsVersion mismatch before reading or spawning', async () => {
+    const h = makeHarness('clean', {}, {
+      stat: vi.fn(async () => ({ version: 'v2', type: 'file', size: 16 })),
+    })
+
+    await expect(
+      h.runtime.diagnoseTarget(target(), WORKSPACE, WORKSPACE_URI, undefined, 'v1'),
+    ).resolves.toEqual({ kind: 'stale' })
+    expect(h.fs.readBytes).not.toHaveBeenCalled()
+    expect(h.subprocess.spawn).not.toHaveBeenCalled()
+  })
+
   it('routes every canonical extension to its unique provider and language id', async () => {
     const h = makeHarness('clean')
     const optionalServers = {

@@ -507,6 +507,27 @@ export class DiagnosticsRuntime {
    * @returns {Promise<DiagnosisOutcome>}
    */
   async diagnose(candidate, canonicalWorkspace, canonicalUri, executionSignal) {
+    return this.diagnoseTarget(
+      candidate.target,
+      canonicalWorkspace,
+      canonicalUri,
+      executionSignal,
+      candidate.version,
+    )
+  }
+
+  /**
+   * Diagnose one canonical target through the same provider/workspace queue and
+   * pooled sessions as the automatic post-write path.
+   *
+   * @param {unknown} target - the canonical document target.
+   * @param {{ targetKey: string, displayPath?: string }} canonicalWorkspace - the canonical workspace target.
+   * @param {string} canonicalUri - the canonical document URI.
+   * @param {AbortSignal} [executionSignal] - caller-owned cancellation.
+   * @param {string} [expectedVersion] - optional pre-diagnosis FsVersion freshness guard.
+   * @returns {Promise<DiagnosisOutcome>}
+   */
+  async diagnoseTarget(target, canonicalWorkspace, canonicalUri, executionSignal, expectedVersion) {
     if (!this.admissionOpen) return { kind: 'stale' }
     if (executionSignal !== undefined && executionSignal.aborted) return { kind: 'stale' }
     const uri = canonicalUri
@@ -519,7 +540,7 @@ export class DiagnosticsRuntime {
       return await this.enqueue(
         providerId,
         workspaceKey,
-        () => this.runDiagnosis(candidate, canonicalWorkspace, route, uri, executionSignal),
+        () => this.runDiagnosis(target, canonicalWorkspace, route, uri, executionSignal, expectedVersion),
         executionSignal,
       )
     } catch (error) {
@@ -558,9 +579,10 @@ export class DiagnosticsRuntime {
    * @param {unknown} target - the document target.
    * @param {string} uri - canonical URI already derived for routing and correlation.
    * @param {AbortSignal} [signal] - operation cancellation.
-   * @returns {Promise<{ kind: 'ok', uri: string, text: string } | { kind: 'unavailable', reason: UnavailableReason }>}
+   * @param {string} [expectedVersion] - optional FsVersion required before the read.
+   * @returns {Promise<{ kind: 'ok', uri: string, text: string } | { kind: 'stale' } | { kind: 'unavailable', reason: UnavailableReason }>}
    */
-  async readDocument(target, uri, signal) {
+  async readDocument(target, uri, signal, expectedVersion) {
     /** @type {{ version: string, type: string, size?: number } | undefined} */
     let info
     try {
@@ -576,6 +598,9 @@ export class DiagnosticsRuntime {
     }
     if (info === undefined || info.type !== 'file') {
       return { kind: 'unavailable', reason: 'diagnostics unavailable' }
+    }
+    if (expectedVersion !== undefined && info.version !== expectedVersion) {
+      return { kind: 'stale' }
     }
     if (typeof info.size === 'number' && info.size > this.config.maxDocumentBytes) {
       return { kind: 'unavailable', reason: 'document too large' }
@@ -608,21 +633,22 @@ export class DiagnosticsRuntime {
   /**
    * Run one diagnosis for an eligible route, with a single same-call restart
    * on a fresh instance after an unaccepted transport failure.
-   * @param {{ target: unknown, version: string, generation: number }} candidate - the mutated target.
+   * @param {unknown} target - the canonical document target.
    * @param {{ targetKey: string, displayPath?: string }} canonicalWorkspace - the canonical workspace target.
    * @param {{ providerId: string, languageId: string, server: ServerConfig }} route - the route.
    * @param {string} uri - the canonical document URI.
    * @param {AbortSignal} [executionSignal] - operation cancellation.
+   * @param {string} [expectedVersion] - optional FsVersion required before reading.
    * @returns {Promise<DiagnosisOutcome>}
    */
-  async runDiagnosis(candidate, canonicalWorkspace, route, uri, executionSignal) {
+  async runDiagnosis(target, canonicalWorkspace, route, uri, executionSignal, expectedVersion) {
     if (!this.admissionOpen) return { kind: 'stale' }
     if (executionSignal !== undefined && executionSignal.aborted) return { kind: 'stale' }
     const providerId = route.providerId
     const workspaceKey = canonicalWorkspace.targetKey
     const workspacePath = this.fs.processPath(canonicalWorkspace)
     const workspaceUri = this.fs.fileUrl(canonicalWorkspace)
-    const read = await this.readDocument(candidate.target, uri, executionSignal)
+    const read = await this.readDocument(target, uri, executionSignal, expectedVersion)
     if (read.kind !== 'ok') return read
     if (!this.admissionOpen) return { kind: 'stale' }
     if (executionSignal !== undefined && executionSignal.aborted) return { kind: 'stale' }
