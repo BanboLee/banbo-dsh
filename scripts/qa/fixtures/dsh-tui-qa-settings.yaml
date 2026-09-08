@@ -1,0 +1,17 @@
+llm-pi-ai:
+  providers:
+    qa-loopback:
+      api: openai-completions
+      baseURL: http://127.0.0.1:{{QA_LOOPBACK_PORT}}/v1
+      apiKeyEnv: QA_LOOPBACK_API_KEY
+      models:
+        - id: qa-model
+          contextWindow: 32768
+          maxTokens: 4096
+agent-default-model:
+  provider: qa-session
+  model: qa-model
+dsh-tui:
+  lang: en
+  whale: false
+  fullscreen: true

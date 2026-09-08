@@ -8,17 +8,14 @@
   "scripts": {
     "test": "vitest run",
     "test:harness": "vitest run tests/harness.spec.ts",
-    "test:e2e:headless": "RUN_REAL_HEADLESS_E2E=1 vitest run tests/e2e"
+    "test:e2e:headless": "RUN_REAL_HEADLESS_E2E=1 vitest run tests/e2e",
+    "test:qa": "vitest run tests/qa",
+    "qa:dsh-tui": "node scripts/qa/run-dsh-tui-upgrade.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
+    "node-pty": "1.2.0-beta.15",
     "vitest": "^3.2.4"
-  },
-  "pnpm": {
-    "overrides": {
-      "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-settings": "0.1.1-rc.2"
-    }
   },
   "engines": {
     "node": ">=22"

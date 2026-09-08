@@ -10,6 +10,7 @@ Install either bundle into a DSH profile from the repository root:
 dsh plugin --profile <profile> add -w ./plugins/rtk
 dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp
 dsh plugin --profile <profile> add -w ./plugins/dsh-llm-pi-ai-with-session
+dsh plugin --profile <profile> add -w ./plugins/dsh-lsp-diagnostics
 ```
 
 `dsh-llm-pi-ai-with-session` 是 `llm-pi-ai` 的一个通用 session wrapper：按配置显式注册

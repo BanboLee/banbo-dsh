@@ -1,0 +1,4 @@
+# dsh-lsp-diagnostics bundle: register the host-plane plugin row
+- insert:
+    - id: lsp-diagnostics
+      name: dsh-lsp-diagnostics

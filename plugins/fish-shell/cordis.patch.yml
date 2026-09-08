@@ -27,30 +27,6 @@
     - id: tool-fish
       name: dsh-fish-shell/tool
 
-# Roster default switch for BOTH roster row ids (web: `agent-presets`;
-# dsh-tui: `dsh-tui-agent-presets`). A patch replaces the whole `config`, so
-# the system root expression is restated; the bundle's own `presets/`
-# directory is added as a system root so the `fish` preset ships with the
-# package. A row id absent from the composition is a no-op.
-- id: agent-presets
-  config:
-    default: fish
-    roots: !!js >-
-      (() => {
-        const base = ctx.baseUrl
-        if (!base) return []
-        const resolvePath = (url) => {
-          const path = decodeURIComponent(url.pathname)
-          return /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path
-        }
-        const system = new URL('../node_modules/@deepseek-ai/dsh/config/agent-presets/', base)
-        const own = new URL('./node_modules/dsh-fish-shell/presets/', base)
-        return [
-          { path: resolvePath(system), trust: 'system' },
-          { path: resolvePath(own), trust: 'system' },
-        ]
-      })()
-
 - id: dsh-tui-agent-presets
   config:
     default: fish

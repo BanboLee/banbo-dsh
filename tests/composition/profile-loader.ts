@@ -1,4 +1,4 @@
-import { cpSync, existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -91,10 +91,16 @@ export interface LoadedProfile {
   readonly patches: unknown[]
 }
 
+interface ModuleFallbackOptions {
+  readonly installAnchor: string
+  readonly profile: LoadedProfile
+  readonly home: string
+}
+
 export interface AppBootModule {
   initProfile(dir: string, bundles: string[]): void
   loadProfile(binName: string, name: string, installAnchor: string, home: string): LoadedProfile
-  healProfilesModuleFallback(installAnchor: string, home: string): void
+  healProfilesModuleFallback(options: ModuleFallbackOptions): Promise<void>
   boot(binName: string, configPath: string, patches: unknown[]): Promise<BootContext>
 }
 
@@ -112,6 +118,14 @@ export function isAppBootModule(value: unknown): value is AppBootModule {
     && typeof module.boot === 'function'
 }
 
+export function resolveDshInstallationBin(candidate: string): string {
+  const realCandidate = realpathSync(candidate)
+  const content = readFileSync(realCandidate, 'utf8')
+  const wrapperTarget = /^exec "[^"]+" "([^"]+)" "\$@"$/m.exec(content)?.[1]
+  if (wrapperTarget === undefined) return realCandidate
+  return existsSync(wrapperTarget) ? realpathSync(wrapperTarget) : wrapperTarget
+}
+
 function findExecutable(name: string, pathValue = process.env.PATH ?? ''): string {
   for (const directory of pathValue.split(':')) {
     if (directory.length === 0) continue
@@ -122,7 +136,7 @@ function findExecutable(name: string, pathValue = process.env.PATH ?? ''): strin
 }
 
 export async function loadAppBoot(dshBin: string): Promise<{ readonly appBoot: AppBootModule; readonly installAnchor: string }> {
-  const packageRoot = dirname(dirname(realpathSync(dshBin)))
+  const packageRoot = dirname(dirname(resolveDshInstallationBin(dshBin)))
   const appBootUrl = pathToFileURL(join(packageRoot, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')).href
   const loaded: unknown = await import(appBootUrl)
   if (!isAppBootModule(loaded)) throw new Error(`invalid dsh-app-boot module at ${appBootUrl}`)
@@ -167,6 +181,7 @@ function writeTestRoot(profile: string): string {
   writeFileSync(root, [
     "- id: test-system-prompt\n  name: ./test-seams.mjs\n  config:\n    kind: systemPrompt",
     "- id: tools\n  name: '@deepseek-ai/dsh-tools'\n  config:\n    mode: native",
+    "- id: session-projection\n  name: '@deepseek-ai/dsh-session-projection'",
     "- id: sandbox\n  name: ./test-seams.mjs\n  config:\n    kind: sandbox",
     `- id: sandbox-policy\n  name: '@deepseek-ai/dsh-sandbox-policy'\n  config:\n    mode: read-only\n    workspaceRoot: ${JSON.stringify(profile)}`,
     "- id: subprocess\n  name: '@deepseek-ai/dsh-subprocess-local'",
@@ -206,10 +221,14 @@ export async function bootDshProfileWithInstalledBundles(
   const { appBoot, installAnchor } = await loadAppBoot(dshBin)
   appBoot.initProfile(isolated.profile, [])
   installBundles(dshBin, isolated.dshHome, isolated.profile, bundles)
-  appBoot.healProfilesModuleFallback(installAnchor, isolated.dshHome)
   writeProfilePatch(isolated.profile)
-  const rootConfig = writeTestRoot(isolated.profile)
   const profile = appBoot.loadProfile('dsh', profileName, installAnchor, isolated.dshHome)
+  await appBoot.healProfilesModuleFallback({
+    installAnchor,
+    profile,
+    home: isolated.dshHome,
+  })
+  const rootConfig = writeTestRoot(isolated.profile)
   const patches = [...profile.layers.flatMap((layer) => layer.patches), ...profile.patches]
   const ctx = await appBoot.boot('dsh', rootConfig, patches)
   return {
