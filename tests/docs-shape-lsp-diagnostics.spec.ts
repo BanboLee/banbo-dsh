@@ -172,6 +172,40 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
     failures.push('waterfall must document (exec, _result, next) with a single await next() outside any catch')
   }
 
+  // Model-callable direct tool: read-only existing-file scope, explicit errors,
+  // canonical outcomes, and complementary automatic/direct guidance.
+  const callable = sentencesContaining(f, 'lsp_diagnostics(file_path)')
+  if (!callable.some((s) => s.includes('model-callable') && s.includes('read-only') && s.includes('existing file'))) {
+    failures.push('lsp_diagnostics(file_path) must be documented as a model-callable read-only existing-file tool')
+  }
+  const explicitErrors = [
+    'file_path must be a non-empty string',
+    'session workspace cwd',
+    'session workspace is not an existing directory',
+    'target is outside the session workspace',
+    'target does not exist',
+    'target is not a regular file',
+    'no configured diagnostics provider',
+    'target changed during diagnosis',
+  ]
+  for (const message of explicitErrors) {
+    if (!f.includes(message)) failures.push(`missing direct-tool error contract: ${message}`)
+  }
+  if (!f.includes('`diagnostics`') || !f.includes('`no_diagnostics`') || !f.includes('`unavailable`')) {
+    failures.push('direct tool must document diagnostics/no_diagnostics/unavailable as its three canonical outcomes')
+  }
+  if (!f.includes('No diagnostics reported for this file snapshot.')) {
+    failures.push('no_diagnostics wording must be documented exactly')
+  }
+  const directBehavior = sentencesContaining(f, 'fresh automatic feedback')
+  if (
+    !directBehavior.some(
+      (s) => s.includes('shell') && s.includes('formatter') && s.includes('generator') && s.includes('avoid redundant'),
+    )
+  ) {
+    failures.push('direct guidance must prefer bypass cases and avoid redundant calls after fresh automatic feedback')
+  }
+
   // Freshness: monotonic generation counter, active marker, overflow fail-safe.
   const generations = sentencesContaining(f, 'generation')
   if (!generations.some((s) => s.includes('monotonic') && s.includes('counter') && s.includes('never'))) {
@@ -227,11 +261,15 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
     failures.push('coordinator must own the active augment and retiredIo registries')
   }
   const cleanupOrder = [
-    'stop admission',
+    'stop direct-tool admission',
+    'stop coordinator admission',
+    'offTool',
     'offPost',
     'offObserved',
     'abort coordinator operations',
+    'abort direct-tool operations',
     'await all active augment promises',
+    'await all active direct-tool promises',
     'retiredIo',
     'runtime.dispose()',
   ]
@@ -453,7 +491,9 @@ describe('dsh-lsp-diagnostics README shape', () => {
 
   it('documents coordinator active + retiredIo ownership and cleanup order', () => {
     expect(README).toContain('retiredIo')
-    expect(README).toContain('stop admission')
+    expect(README).toContain('stop direct-tool admission')
+    expect(README).toContain('stop coordinator admission')
+    expect(README).toContain('offTool')
     expect(README).toContain('offPost')
     expect(README).toContain('offObserved')
     expect(README).toContain('runtime.dispose()')
@@ -508,7 +548,7 @@ describe('dsh-lsp-diagnostics README shape', () => {
   // --- Mutation regressions: every check must stay semantically bound. ---
 
   it('rejects a README that claims shell bypasses are diagnosed (mutation regression)', () => {
-    const mutated = README.replace('are not covered', 'are also diagnosed')
+    const mutated = README.replace('are out of scope for automatic', 'are always diagnosed by automatic')
     expect(mutated).not.toEqual(README)
     expect(validateLspDiagnosticsReadmeContract(mutated)).not.toEqual([])
   })
@@ -539,8 +579,8 @@ describe('dsh-lsp-diagnostics README shape', () => {
 
   it('rejects a README whose cleanup disposes the runtime before awaiting retiredIo (mutation regression)', () => {
     const mutated = README.replace(
-      'stop admission \u2192 offPost \u2192 offObserved \u2192 abort coordinator operations \u2192 await all active augment promises \u2192 await all `retiredIo` \u2192 `runtime.dispose()`',
-      '`runtime.dispose()` \u2192 stop admission \u2192 offPost \u2192 offObserved \u2192 abort coordinator operations \u2192 await all active augment promises \u2192 await all `retiredIo`',
+      /await all\s+active direct-tool promises \u2192 await all `retiredIo` \u2192 `runtime\.dispose\(\)`/,
+      '`runtime.dispose()` \u2192 await all active direct-tool promises \u2192 await all `retiredIo`',
     )
     expect(mutated).not.toEqual(README)
     expect(validateLspDiagnosticsReadmeContract(mutated)).not.toEqual([])

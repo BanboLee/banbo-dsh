@@ -4,6 +4,7 @@ import { createMutationCollector } from '../collector.js'
 import { createDiagnosticsCoordinator } from '../coordinator.js'
 import { apply, Config, inject, name } from '../index.js'
 import { DiagnosticsRuntime } from '../runtime.js'
+import { createDiagnosticsTool } from '../tool.js'
 import { DEFAULT_CONFIG } from './helpers.js'
 
 // Count real component construction without replacing their behavior. The
@@ -25,6 +26,39 @@ vi.mock('../runtime.js', async (importOriginal) => {
   MockRuntime.prototype = original.DiagnosticsRuntime.prototype
   ;(MockRuntime as unknown as { __instances: typeof instances }).__instances = instances
   return { ...original, DiagnosticsRuntime: MockRuntime }
+})
+
+vi.mock('../tool.js', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../tool.js')>()
+  const instances: Array<Record<string, unknown>> = []
+  const mocked = vi.fn((options: Parameters<typeof original.createDiagnosticsTool>[0]) => {
+    const real = original.createDiagnosticsTool(options)
+    const calls: string[] = []
+    const wrapped = {
+      definition: real.definition,
+      stopAdmission: (...args: Parameters<typeof real.stopAdmission>) => {
+        calls.push('stopAdmission')
+        return real.stopAdmission(...args)
+      },
+      abortActiveOperations: (...args: Parameters<typeof real.abortActiveOperations>) => {
+        calls.push('abortActiveOperations')
+        return real.abortActiveOperations(...args)
+      },
+      awaitActiveOperations: (...args: Parameters<typeof real.awaitActiveOperations>) => {
+        calls.push('awaitActiveOperations')
+        return real.awaitActiveOperations(...args)
+      },
+      observeMutation: (...args: Parameters<typeof real.observeMutation>) => {
+        calls.push('observeMutation')
+        return real.observeMutation(...args)
+      },
+      __calls: calls,
+    }
+    instances.push(wrapped)
+    return wrapped
+  })
+  ;(mocked as unknown as { __instances: typeof instances }).__instances = instances
+  return { ...original, createDiagnosticsTool: mocked }
 })
 
 // Wrap the real coordinator so cleanup order and await boundaries can be
@@ -67,6 +101,10 @@ function mutableServers(): {
     typescript: Record<string, unknown>
     go: Record<string, unknown>
   }
+}
+
+function fakeTools(register = vi.fn(() => vi.fn(() => true))): { register: typeof register } {
+  return { register }
 }
 
 describe('dsh-lsp-diagnostics Config schema', () => {
@@ -484,7 +522,7 @@ describe('dsh-lsp-diagnostics plugin entry', () => {
     const ctx = new Context()
     await ctx.provide('fs', {})
     await ctx.provide('subprocess', {})
-    await ctx.provide('tools', {})
+    await ctx.provide('tools', fakeTools())
     await ctx.plugin(await import('../index.js'), DEFAULT_CONFIG)
   })
 
@@ -492,7 +530,7 @@ describe('dsh-lsp-diagnostics plugin entry', () => {
     const ctx = new Context()
     await ctx.provide('fs', {})
     await ctx.provide('subprocess', {})
-    await ctx.provide('tools', {})
+    await ctx.provide('tools', fakeTools())
     await expect(
       ctx.plugin(await import('../index.js'), { timeoutMs: 0 } as unknown as Parameters<typeof apply>[1]),
     ).rejects.toThrow()
@@ -501,28 +539,32 @@ describe('dsh-lsp-diagnostics plugin entry', () => {
     ).rejects.toThrow()
   })
 
-  it('registers zero listeners/effects/processes when enabled=false', async () => {
+  it('registers zero components/tools/listeners/effects/processes when enabled=false', async () => {
     const ctx = new Context()
     const spawn = vi.fn()
+    const tools = fakeTools()
     await ctx.provide('fs', {})
     await ctx.provide('subprocess', { spawn })
-    await ctx.provide('tools', {})
+    await ctx.provide('tools', tools)
     const onSpy = vi.spyOn(ctx, 'on')
     const effectSpy = vi.spyOn(ctx, 'effect')
     const before = {
       collector: vi.mocked(createMutationCollector).mock.calls.length,
       runtime: vi.mocked(DiagnosticsRuntime).mock.calls.length,
       coordinator: vi.mocked(createDiagnosticsCoordinator).mock.calls.length,
+      tool: vi.mocked(createDiagnosticsTool).mock.calls.length,
     }
     await ctx.plugin(await import('../index.js'), { enabled: false } as unknown as Parameters<typeof apply>[1])
     const events = onSpy.mock.calls.map((call) => call[0])
     expect(events).not.toContain('fs/observed')
     expect(events).not.toContain('tools/post-execute')
     expect(effectSpy).not.toHaveBeenCalled()
+    expect(tools.register).not.toHaveBeenCalled()
     expect(spawn).not.toHaveBeenCalled()
     expect(vi.mocked(createMutationCollector).mock.calls.length).toBe(before.collector)
     expect(vi.mocked(DiagnosticsRuntime).mock.calls.length).toBe(before.runtime)
     expect(vi.mocked(createDiagnosticsCoordinator).mock.calls.length).toBe(before.coordinator)
+    expect(vi.mocked(createDiagnosticsTool).mock.calls.length).toBe(before.tool)
   })
 
   it('apply(enabled=false) returns without touching a bare context', () => {
@@ -538,14 +580,60 @@ describe('dsh-lsp-diagnostics plugin entry', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics Todo 5 assembly', () => {
+describe('dsh-lsp-diagnostics tool assembly', () => {
+  it('registers exactly one lsp_diagnostics definition backed by the coordinator runtime', async () => {
+    const ctx = new Context()
+    const tools = fakeTools()
+    await ctx.provide('fs', {})
+    await ctx.provide('subprocess', {})
+    await ctx.provide('tools', tools)
+
+    await ctx.plugin(await import('../index.js'), DEFAULT_CONFIG)
+
+    expect(tools.register).toHaveBeenCalledTimes(1)
+    const definition = tools.register.mock.calls[0]?.[0]
+    expect(definition).toMatchObject({ name: 'lsp_diagnostics' })
+    const toolCall = vi.mocked(createDiagnosticsTool).mock.calls.at(-1)?.[0]
+    const coordinatorCall = vi.mocked(createDiagnosticsCoordinator).mock.calls.at(-1)?.[0]
+    expect(toolCall?.runtime).toBe(coordinatorCall?.runtime)
+    expect(definition).toBe((createDiagnosticsTool as unknown as {
+      __instances: Array<{ definition: unknown }>
+    }).__instances.at(-1)?.definition)
+  })
+
+  it('forwards only accepted present mutations to the direct-tool ABA epoch through one fs observer', async () => {
+    const ctx = new Context()
+    const observed: Array<(...args: unknown[]) => unknown> = []
+    await ctx.provide('fs', {})
+    await ctx.provide('subprocess', {})
+    await ctx.provide('tools', fakeTools())
+    vi.spyOn(ctx, 'on').mockImplementation(((event: never, listener: never, options?: never) => {
+      if (event === 'fs/observed') observed.push(listener as (...args: unknown[]) => unknown)
+      return ctx.events.on(event, listener, options)
+    }) as never)
+    await ctx.plugin(await import('../index.js'), DEFAULT_CONFIG)
+    const toolOwner = (createDiagnosticsTool as unknown as {
+      __instances: Array<{ __calls: string[] }>
+    }).__instances.at(-1)!
+    toolOwner.__calls.length = 0
+    const target = { targetKey: 'ws/a.ts', displayPath: '/ws/a.ts' }
+
+    expect(observed).toHaveLength(1)
+    observed[0]!(target, { kind: 'present', version: 'v1' }, { name: 'read' })
+    observed[0]!(target, { kind: 'absent' }, { name: 'write' })
+    observed[0]!(target, { kind: 'present', version: 'v2' }, { name: 'str_replace_editor', arguments: { command: 'view' } })
+    observed[0]!(target, { kind: 'present', version: 'v3' }, { name: 'write' })
+
+    expect(toolOwner.__calls).toEqual(['observeMutation'])
+  })
+
   it('enabled=true registers fs/observed + tools/post-execute and exactly one cleanup effect', async () => {
     const ctx = new Context()
     const onEvents: string[] = []
     const effectLabels: string[] = []
     await ctx.provide('fs', {})
     await ctx.provide('subprocess', {})
-    await ctx.provide('tools', {})
+    await ctx.provide('tools', fakeTools())
     const onSpy = vi.spyOn(ctx, 'on').mockImplementation(((name: never, listener: never, options?: never) => {
       onEvents.push(String(name))
       return ctx.events.on(name, listener, options)
@@ -557,14 +645,14 @@ describe('dsh-lsp-diagnostics Todo 5 assembly', () => {
     await ctx.plugin(await import('../index.js'), DEFAULT_CONFIG)
     expect(onEvents).toEqual(['fs/observed', 'tools/post-execute'])
     expect(effectLabels).toHaveLength(1)
-    expect(effectLabels[0]).toBe('dsh-lsp-diagnostics listeners, operations, retired I/O, and runtime teardown')
+    expect(effectLabels[0]).toBe('dsh-lsp-diagnostics tool, listeners, operations, retired I/O, and runtime teardown')
   })
 
   it('waits a listener already entered but still blocked in downstream next before cleanup resolves', async () => {
     const ctx = new Context()
     await ctx.provide('fs', {})
     await ctx.provide('subprocess', {})
-    await ctx.provide('tools', {})
+    await ctx.provide('tools', fakeTools())
     const fiber = await ctx.plugin(await import('../index.js'), DEFAULT_CONFIG)
     let releaseNext!: () => void
     const nextGate = new Promise<void>((resolve) => { releaseNext = resolve })
@@ -592,12 +680,13 @@ describe('dsh-lsp-diagnostics Todo 5 assembly', () => {
     expect(disposed).toBe(true)
   })
 
-  it('tears down in the exact plan order and awaits both quiescence barriers', async () => {
+  it('tears down direct and automatic paths in exact order before runtime disposal', async () => {
     const ctx = new Context()
     const order: string[] = []
+    const offTool = vi.fn(() => { order.push('off:tool'); return true })
     await ctx.provide('fs', {})
     await ctx.provide('subprocess', {})
-    await ctx.provide('tools', {})
+    await ctx.provide('tools', fakeTools(vi.fn(() => offTool)))
     vi.spyOn(ctx, 'on').mockImplementation(((name: never, listener: never, options?: never) => {
       order.push(`on:${String(name)}`)
       const dispose = ctx.events.on(name, listener, options)
@@ -615,35 +704,54 @@ describe('dsh-lsp-diagnostics Todo 5 assembly', () => {
       return Promise.resolve()
     })
     const coordinatorMock = createDiagnosticsCoordinator as unknown as {
-      __calls: string[]
       __instances: Array<Record<string, (...args: unknown[]) => unknown>>
     }
-    coordinatorMock.__calls.length = 0
+    const toolMock = createDiagnosticsTool as unknown as {
+      __instances: Array<Record<string, (...args: unknown[]) => unknown>>
+    }
     const fiber = await ctx.plugin(await import('../index.js'), DEFAULT_CONFIG)
     const coordinator = coordinatorMock.__instances.at(-1)!
-    let releaseActive!: () => void
+    const toolOwner = toolMock.__instances.at(-1)!
+    const coordinatorStop = coordinator.stopAdmission!
+    coordinator.stopAdmission = vi.fn(() => {
+      order.push('coordinator.stopAdmission')
+      return coordinatorStop()
+    })
+    coordinator.abortActiveOperations = vi.fn(() => { order.push('coordinator.abort') })
+    toolOwner.stopAdmission = vi.fn(() => { order.push('tool.stopAdmission') })
+    toolOwner.abortActiveOperations = vi.fn(() => { order.push('tool.abort') })
+    let releaseCoordinator!: () => void
+    let releaseTool!: () => void
     let releaseRetired!: () => void
-    const activeGate = new Promise<void>((resolve) => { releaseActive = resolve })
+    const coordinatorGate = new Promise<void>((resolve) => { releaseCoordinator = resolve })
+    const toolGate = new Promise<void>((resolve) => { releaseTool = resolve })
     const retiredGate = new Promise<void>((resolve) => { releaseRetired = resolve })
     coordinator.awaitActiveOperations = vi.fn(async () => {
-      coordinatorMock.__calls.push('awaitActiveOperations')
-      order.push('awaitActive:start')
-      await activeGate
-      order.push('awaitActive:end')
+      order.push('coordinator.await:start')
+      await coordinatorGate
+      order.push('coordinator.await:end')
+    })
+    toolOwner.awaitActiveOperations = vi.fn(async () => {
+      order.push('tool.await:start')
+      await toolGate
+      order.push('tool.await:end')
     })
     coordinator.awaitRetiredIo = vi.fn(async () => {
-      coordinatorMock.__calls.push('awaitRetiredIo')
-      order.push('awaitRetired:start')
+      order.push('retired:start')
       await retiredGate
-      order.push('awaitRetired:end')
+      order.push('retired:end')
     })
 
     const disposing = fiber.dispose()
-    await vi.waitFor(() => expect(order).toContain('awaitActive:start'))
-    expect(order).not.toContain('awaitRetired:start')
+    await vi.waitFor(() => expect(order).toContain('coordinator.await:start'))
+    expect(order).not.toContain('tool.await:start')
     expect(order).not.toContain('runtime.dispose')
-    releaseActive()
-    await vi.waitFor(() => expect(order).toContain('awaitRetired:start'))
+    releaseCoordinator()
+    await vi.waitFor(() => expect(order).toContain('tool.await:start'))
+    expect(order).not.toContain('retired:start')
+    expect(order).not.toContain('runtime.dispose')
+    releaseTool()
+    await vi.waitFor(() => expect(order).toContain('retired:start'))
     expect(order).not.toContain('runtime.dispose')
     releaseRetired()
     await disposing
@@ -651,20 +759,22 @@ describe('dsh-lsp-diagnostics Todo 5 assembly', () => {
     expect(order).toEqual([
       'on:fs/observed',
       'on:tools/post-execute',
+      'tool.stopAdmission',
+      'coordinator.stopAdmission',
       'runtime.stopAdmission',
+      'off:tool',
       'off:tools/post-execute',
       'off:fs/observed',
-      'awaitActive:start',
-      'awaitActive:end',
-      'awaitRetired:start',
-      'awaitRetired:end',
+      'coordinator.abort',
+      'tool.abort',
+      'coordinator.await:start',
+      'coordinator.await:end',
+      'tool.await:start',
+      'tool.await:end',
+      'retired:start',
+      'retired:end',
       'runtime.dispose',
     ])
-    expect(coordinatorMock.__calls).toEqual([
-      'stopAdmission',
-      'abortActiveOperations',
-      'awaitActiveOperations',
-      'awaitRetiredIo',
-    ])
+    expect(offTool).toHaveBeenCalledTimes(1)
   })
 })

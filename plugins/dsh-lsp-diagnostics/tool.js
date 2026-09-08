@@ -357,7 +357,7 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
 
   const definition = defineTool({
     name: 'lsp_diagnostics',
-    description: 'Read-only diagnostics for one existing source file using its configured language server. file_path may be workspace-relative or absolute.',
+    description: 'Diagnose an existing file explicitly with its configured language server. This read-only tool is especially useful after shell commands, formatters, or generators bypass automatic write/edit feedback; avoid redundant calls when fresh automatic feedback already exists. file_path may be workspace-relative or absolute.',
     parameters: {
       file_path: {
         type: 'string',

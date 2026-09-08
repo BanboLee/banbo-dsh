@@ -59,7 +59,7 @@ const SUPPORTED_EDITOR_COMMANDS = new Set(['create', 'str_replace', 'insert'])
  * Create a mutation collector.
  * @param {CollectorOptions} [options] - optional test seam options.
  * @returns {{
- *   observe(exec: unknown, target: unknown, observation: unknown): void
+ *   observe(exec: unknown, target: unknown, observation: unknown): boolean
  *   take(exec: unknown): MutationCandidate[]
  *   isCurrent(candidate: unknown): boolean
  *   retireIfCurrent(candidate: unknown): boolean
@@ -104,18 +104,19 @@ export function createMutationCollector(options = {}) {
    * @param {unknown} exec - the tool-execution context (actor).
    * @param {unknown} target - the mutated target.
    * @param {unknown} observation - the fs/observed payload.
+   * @returns {boolean} true only when a supported present mutation was recorded.
    */
   function observe(exec, target, observation) {
     try {
-      if (!isSupportedMutation(exec)) return
-      if (typeof observation !== 'object' || observation === null) return
+      if (!isSupportedMutation(exec)) return false
+      if (typeof observation !== 'object' || observation === null) return false
       const kind = /** @type {{ kind?: unknown }} */ (observation).kind
-      if (kind !== 'present') return
+      if (kind !== 'present') return false
       const version = /** @type {{ version?: unknown }} */ (observation).version
-      if (typeof version !== 'string') return
-      if (typeof target !== 'object' || target === null) return
+      if (typeof version !== 'string') return false
+      if (typeof target !== 'object' || target === null) return false
       const targetKey = /** @type {CollectorTargetLike} */ (target).targetKey
-      if (typeof targetKey !== 'string' || targetKey.length === 0) return
+      if (typeof targetKey !== 'string' || targetKey.length === 0) return false
 
       const next = nextGenerationByTarget.get(targetKey)
       let generation
@@ -125,12 +126,12 @@ export function createMutationCollector(options = {}) {
         // Permanent exhaustion: retire the active marker and suppress the
         // candidate; never wrap or reset the counter.
         latestObserved.delete(targetKey)
-        return
+        return false
       } else if (typeof next === 'number' && Number.isSafeInteger(next) && next > 0) {
         generation = next
       } else {
         // Internal counter anomaly: contain it silently, record nothing.
-        return
+        return false
       }
 
       const following = generation < Number.MAX_SAFE_INTEGER ? generation + 1 : 'exhausted'
@@ -149,8 +150,10 @@ export function createMutationCollector(options = {}) {
         version,
         generation,
       })
+      return true
     } catch {
       // Containment: a hostile observation must never throw.
+      return false
     }
   }
 

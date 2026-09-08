@@ -1,7 +1,7 @@
 {
   "name": "dsh-lsp-diagnostics",
   "version": "0.1.0",
-  "description": "Host-plane write-after LSP diagnostics for DeepSeek Harness: after an official write/edit/str_replace_editor mutation lands inside the session workspace, a single bounded aggregate diagnostics notice is appended to the tool result through the tools/post-execute waterfall.",
+  "description": "Automatic post-write and model-callable read-only LSP diagnostics for existing files in DeepSeek Harness.",
   "type": "module",
   "main": "index.js",
   "exports": {

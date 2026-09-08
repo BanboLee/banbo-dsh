@@ -9,6 +9,7 @@
 import { createMutationCollector } from './collector.js'
 import { createDiagnosticsCoordinator } from './coordinator.js'
 import { DiagnosticsRuntime } from './runtime.js'
+import { createDiagnosticsTool } from './tool.js'
 
 /** Bundle row id this plugin is mounted under (`cordis.patch.yml`). */
 export const name = 'lsp-diagnostics'
@@ -499,13 +500,12 @@ export const Config = {
  * Apply the plugin. `enabled === false` short-circuits with zero collector/
  * runtime/coordinator, zero listeners/effects, and zero subprocesses.
  *
- * When enabled, assembles the mutation collector, the bounded diagnostics
- * runtime, and the post-execute coordinator, registers exactly two listeners
- * (`fs/observed` and `tools/post-execute`) whose disposers are held
- * explicitly, and registers exactly one cleanup effect running the strict
- * plan order: stop admission → offPost → offObserved → abort coordinator
- * operations → await all active augment promises → await all retired
- * late-final-stat I/O → `runtime.dispose()`.
+ * When enabled, assembles one mutation collector, one diagnostics runtime, the
+ * post-execute coordinator, and one direct tool owner sharing that runtime.
+ * It registers the tool plus exactly two listeners (`fs/observed` and
+ * `tools/post-execute`), holds every exact disposer, and registers one cleanup
+ * effect: stop direct/coordinator admission → off tool/post/observed → abort
+ * both owners → await both owners → await retired I/O → `runtime.dispose()`.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
  * @param {PluginConfig} config - validated plugin configuration.
@@ -514,11 +514,12 @@ export function apply(ctx, config) {
   if (config.enabled === false) return
   const collector = createMutationCollector()
   // The public services are consumed through the plugin's loose structural
-  // seams: `ctx.fs`/`ctx.subprocess` are the harness services and are not
-  // statically visible on the cordis Context surface here.
-  const services = /** @type {{ fs: unknown, subprocess: unknown }} */ (/** @type {unknown} */ (ctx))
+  // seams: `ctx.fs`/`ctx.subprocess`/`ctx.tools` are harness services and are
+  // not statically visible on the cordis Context surface here.
+  const services = /** @type {{ fs: unknown, subprocess: unknown, tools: { register(definition: unknown): () => unknown } }} */ (/** @type {unknown} */ (ctx))
+  const fs = /** @type {import('./tool.js').FsSeam} */ (services.fs)
   const runtime = new DiagnosticsRuntime({
-    fs: /** @type {import('./runtime.js').FsSeam} */ (services.fs),
+    fs: /** @type {import('./runtime.js').FsSeam} */ (fs),
     subprocess: /** @type {import('./runtime.js').SubprocessSeam} */ (services.subprocess),
     config,
   })
@@ -526,32 +527,44 @@ export function apply(ctx, config) {
     collector,
     runtime,
     config,
-    fs: /** @type {import('./coordinator.js').FsSeam} */ (services.fs),
+    fs: /** @type {import('./coordinator.js').FsSeam} */ (fs),
   })
+  const toolOwner = createDiagnosticsTool({ fs, runtime, config })
+  const offTool = services.tools.register(toolOwner.definition)
   const offObserved = ctx.on('fs/observed', (target, observation, actor) => {
-    collector.observe(actor, target, observation)
+    if (collector.observe(actor, target, observation) === true) toolOwner.observeMutation(target)
   })
   const onPostExecute = /** @type {(name: string, listener: unknown) => () => boolean} */ (ctx.on)
   const offPost = onPostExecute('tools/post-execute', coordinator.listener)
   ctx.effect(() => async () => {
-    coordinator.stopAdmission()
     const errors = []
-    for (const off of [offPost, offObserved]) {
+    for (const stop of [toolOwner.stopAdmission, coordinator.stopAdmission]) {
+      try {
+        stop()
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    for (const off of [offTool, offPost, offObserved]) {
       try {
         await Promise.resolve(off())
       } catch (error) {
         errors.push(error)
       }
     }
-    try {
-      coordinator.abortActiveOperations()
-    } catch (error) {
-      errors.push(error)
+    for (const abort of [coordinator.abortActiveOperations, toolOwner.abortActiveOperations]) {
+      try {
+        abort()
+      } catch (error) {
+        errors.push(error)
+      }
     }
-    try {
-      await coordinator.awaitActiveOperations()
-    } catch (error) {
-      errors.push(error)
+    for (const awaitActive of [coordinator.awaitActiveOperations, toolOwner.awaitActiveOperations]) {
+      try {
+        await awaitActive()
+      } catch (error) {
+        errors.push(error)
+      }
     }
     try {
       await coordinator.awaitRetiredIo()
@@ -564,5 +577,5 @@ export function apply(ctx, config) {
       errors.push(error)
     }
     if (errors.length > 0) throw new AggregateError(errors)
-  }, 'dsh-lsp-diagnostics listeners, operations, retired I/O, and runtime teardown')
+  }, 'dsh-lsp-diagnostics tool, listeners, operations, retired I/O, and runtime teardown')
 }

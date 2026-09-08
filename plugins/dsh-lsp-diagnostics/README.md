@@ -3,7 +3,8 @@
 Host-plane Cordis bundle plugin for DeepSeek Harness: after an official
 `write`/`edit`/`str_replace_editor` mutation lands inside the session
 workspace, the tool result still succeeds and the next model inference carries
-a single persistent LSP diagnostics plugin notice.
+a single persistent LSP diagnostics plugin notice. It also registers the
+model-callable `lsp_diagnostics(file_path)` tool for explicit diagnosis.
 
 The plugin is a named namespace function plugin: it exports `name`, `inject`,
 `Config`, and `apply`, and has no default export. The real Loader reads the
@@ -44,7 +45,7 @@ deviation from the closed extension route fail loud at load time.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `true` | With `enabled=false` the plugin creates zero collector, runtime, and coordinator, registers zero listeners/effects, and spawns zero processes. |
+| `enabled` | `true` | With `enabled=false` the plugin creates zero collector, runtime, coordinator, or tool, registers zero tools/listeners/effects, and spawns zero processes. |
 | `timeoutMs` | `5000` | Single non-extendable deadline for one post-execute aggregate. |
 | `settleMs` | `200` | Quiet window; must be `< timeoutMs`. |
 | `shutdownTimeoutMs` | `1000` | Graceful `shutdown`/`exit` budget. |
@@ -135,8 +136,12 @@ and render as 1-based start-end coordinates.
 
 The coordinator owns both the active augment-operation registry and the
 `retiredIo` late-final-stat registry. Unload quiesces in the exact order:
-stop admission → offPost → offObserved → abort coordinator operations → await all active augment promises → await all `retiredIo` → `runtime.dispose()`.
-Every operation's outermost `finally` clears the deadline timer and removes
+stop direct-tool admission → stop coordinator admission (which closes runtime
+admission) → offTool → offPost → offObserved → abort coordinator operations →
+abort direct-tool operations → await all active augment promises → await all
+active direct-tool promises → await all `retiredIo` → `runtime.dispose()`.
+Cleanup continues after individual failures and aggregates them; therefore no
+direct call can race runtime disposal. Every operation's outermost `finally` clears the deadline timer and removes
 the caller/cleanup relay listeners, leaving zero residue.
 
 `stopAdmission()` only closes the gate and the runtime's own admission; it
@@ -170,6 +175,25 @@ natural-close wait → conditional `handle.terminate()` (only while still alive)
 
 ## Model Experience
 
+`lsp_diagnostics(file_path)` is a model-callable, read-only tool for one
+existing file under the session workspace. It accepts a workspace-relative or
+absolute path and uses every configured provider and the closed extension route
+documented above. It never creates, edits, or deletes a file. Invalid requests
+fail explicitly with `file_path must be a non-empty string`, `session workspace
+cwd`, `session workspace is not an existing directory`, `target is outside the
+session workspace`, `target does not exist`, `target is not a regular file`,
+`no configured diagnostics provider`, or `target changed during diagnosis`.
+
+The direct tool has exactly three canonical outcomes: `diagnostics` with the
+bounded normalized list, `no_diagnostics`, rendered as `No diagnostics reported
+for this file snapshot.`, and `unavailable` with one closed reason. Call it to
+diagnose an existing file explicitly, especially after a shell command,
+formatter, or generator bypasses automatic `fs/observed` feedback; avoid
+redundant calls when fresh automatic feedback already exists. Automatic
+post-write feedback remains the default after supported write/edit mutations,
+while the direct tool is deliberate and reports path/workspace errors instead
+of silently treating them as ineligible.
+
 From the model's point of view each mutation tool (`write`, `edit`,
 `str_replace_editor` create/str_replace/insert) returns its original result
 unchanged; the plugin appends one bounded aggregate notice to
@@ -190,12 +214,14 @@ unavailable`.
 ## Known Limitations and Deferred Work
 
 - shell redirection, `sed -i`, scripts, formatters, generators, and external
-  editors that bypass `ctx.fs`/`fs/observed` are not covered; there is no
+  editors that bypass `ctx.fs`/`fs/observed` are out of scope for automatic
+  feedback; the model may call `lsp_diagnostics(file_path)` afterward. There is no
   filesystem watcher and no project-root probing — the session cwd is the
   workspace root.
-- Agentless tool execution, missing/empty or non-directory cwd, and
-  outside-workspace targets are silently out of scope; they never produce a
-  notice of any kind.
+- For automatic feedback, agentless tool execution, missing/empty or
+  non-directory cwd, and outside-workspace targets are silently out of scope
+  and never produce a notice. Direct calls instead return the explicit
+  path/workspace errors documented above.
 - The plugin does not install or download `typescript-language-server`,
   `gopls`, `clangd`, `rust-analyzer`, or `pyright-langserver`; install requested
   executables yourself and configure their paths. A missing server fails open

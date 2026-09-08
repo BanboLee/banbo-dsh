@@ -28,7 +28,7 @@ describe('dsh-lsp-diagnostics mutation collector', () => {
     const collector = createMutationCollector()
     const e = exec('write')
     const t = target()
-    collector.observe(e, t, present('v1'))
+    expect(collector.observe(e, t, present('v1'))).toBe(true)
     const taken = collector.take(e)
     expect(taken).toHaveLength(1)
     const candidate = taken[0]!
@@ -42,7 +42,7 @@ describe('dsh-lsp-diagnostics mutation collector', () => {
     const collector = createMutationCollector()
     const e = exec('edit')
     const t = target('ws/b.go')
-    collector.observe(e, t, present('v9'))
+    expect(collector.observe(e, t, present('v9'))).toBe(true)
     const [candidate] = collector.take(e)
     expect(candidate?.generation).toBe(1)
     expect(candidate?.version).toBe('v9')
@@ -54,7 +54,7 @@ describe('dsh-lsp-diagnostics mutation collector', () => {
       const collector = createMutationCollector()
       const e = exec('str_replace_editor', command)
       const t = target(`ws/${command}.ts`)
-      collector.observe(e, t, present(`v-${command}`))
+      expect(collector.observe(e, t, present(`v-${command}`))).toBe(true)
       const [candidate] = collector.take(e)
       expect(candidate?.generation).toBe(1)
       expect(candidate?.version).toBe(`v-${command}`)
@@ -62,11 +62,26 @@ describe('dsh-lsp-diagnostics mutation collector', () => {
     }
   })
 
+  it('returns false for view, unsupported/read tools, absent or malformed observations, invalid actors/targets, and hostile inputs', () => {
+    const collector = createMutationCollector()
+    const t = target()
+    expect(collector.observe(exec('str_replace_editor', 'view'), t, present('v1'))).toBe(false)
+    for (const name of ['read', 'run_code', 'bash', 'grep', '']) {
+      expect(collector.observe(exec(name), t, present('v1')), `tool ${name}`).toBe(false)
+    }
+    expect(collector.observe(exec('write'), t, { kind: 'absent' })).toBe(false)
+    expect(collector.observe(exec('write'), t, { kind: 'present' })).toBe(false)
+    expect(collector.observe(undefined, t, present('v1'))).toBe(false)
+    expect(collector.observe(exec('write'), { displayPath: 'x' }, present('v1'))).toBe(false)
+    const hostileExec = new Proxy({}, { get() { throw new Error('boom') } })
+    expect(collector.observe(hostileExec, t, present('v1'))).toBe(false)
+  })
+
   it('ignores str_replace_editor view', () => {
     const collector = createMutationCollector()
     const e = exec('str_replace_editor', 'view')
     const t = target()
-    collector.observe(e, t, present('v1'))
+    expect(collector.observe(e, t, present('v1'))).toBe(false)
     expect(collector.take(e)).toEqual([])
   })
 

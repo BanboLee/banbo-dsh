@@ -97,6 +97,10 @@ describe('lsp_diagnostics tool definition', () => {
     const { tool, fs } = makeTool()
 
     expect(tool.name).toBe('lsp_diagnostics')
+    expect(tool.description).toMatch(/diagnose an existing file explicitly/i)
+    expect(tool.description).toMatch(/shell|formatter|generator/i)
+    expect(tool.description).toMatch(/automatic feedback/i)
+    expect(tool.description).toMatch(/avoid redundant calls/i)
     expect(tool.parameters).toMatchObject({
       type: 'object',
       required: ['file_path'],
