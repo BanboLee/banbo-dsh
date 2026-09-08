@@ -33,6 +33,8 @@ async function main() {
         status: 'blocked',
         diagnosticObserved: false,
         cleanObserved: false,
+        directDiagnosticObserved: false,
+        directNoDiagnosticsObserved: false,
         reason: `requested executable is unavailable: ${command}: ${reason}`,
       })
     }

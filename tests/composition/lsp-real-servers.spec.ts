@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   bootLspDiagnosticsProfile,
@@ -6,8 +8,10 @@ import {
 import {
   COMMAND_ENV,
   configuredServer,
+  directToolValue,
   executeTool,
   noticeText,
+  renderedToolText,
   parseRequestedProviders,
   PROVIDER_CASES,
   type RealLaneResult,
@@ -53,6 +57,8 @@ describe('dsh-lsp-diagnostics explicit real-server lane', () => {
           status: 'blocked',
           diagnosticObserved: false,
           cleanObserved: false,
+          directDiagnosticObserved: false,
+          directNoDiagnosticsObserved: false,
           reason,
         })
         preflightErrors.push(toError(error))
@@ -68,6 +74,8 @@ describe('dsh-lsp-diagnostics explicit real-server lane', () => {
       const executable = overrides[provider]?.command ?? ''
       let diagnosticObserved = false
       let cleanObserved = false
+      let directDiagnosticObserved = false
+      let directNoDiagnosticsObserved = false
       try {
         const booted = await bootLspDiagnosticsProfile({
           timeoutMs: 30_000,
@@ -101,12 +109,36 @@ describe('dsh-lsp-diagnostics explicit real-server lane', () => {
         })
         cleanObserved = noticeText(repaired)?.includes('Status: clean') === true
         expect(cleanObserved, `${provider} must publish a clean result after repair`).toBe(true)
+
+        const absolutePath = join(booted.workspace, providerCase.path)
+        mkdirSync(dirname(absolutePath), { recursive: true })
+        writeFileSync(absolutePath, providerCase.bad)
+        const directBad = await executeTool(booted, 'lsp_diagnostics', { file_path: providerCase.path })
+        const directBadValue = directToolValue(directBad)
+        const directBadText = renderedToolText(directBad)
+        directDiagnosticObserved = directBadValue.kind === 'diagnostics'
+          && directBadText.includes('[LSP diagnostics]')
+          && directBadText.includes(absolutePath)
+        expect(directDiagnosticObserved, `${provider} direct call must publish real diagnostics`).toBe(true)
+        expect(readFileSync(absolutePath, 'utf8')).toBe(providerCase.bad)
+
+        const directRepairedBytes = providerCase.bad.replace(providerCase.oldText, providerCase.newText)
+        writeFileSync(absolutePath, directRepairedBytes)
+        const directRepaired = await executeTool(booted, 'lsp_diagnostics', { file_path: providerCase.path })
+        const directRepairedValue = directToolValue(directRepaired)
+        directNoDiagnosticsObserved = directRepairedValue.kind === 'no_diagnostics'
+          && renderedToolText(directRepaired).includes('No diagnostics reported for this file snapshot.')
+        expect(directNoDiagnosticsObserved, `${provider} direct call must report no_diagnostics after repair`).toBe(true)
+        expect(readFileSync(absolutePath, 'utf8')).toBe(directRepairedBytes)
+
         results.push({
           provider,
           executable,
           status: 'passed',
           diagnosticObserved,
           cleanObserved,
+          directDiagnosticObserved,
+          directNoDiagnosticsObserved,
         })
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
@@ -116,6 +148,8 @@ describe('dsh-lsp-diagnostics explicit real-server lane', () => {
           status: 'failed',
           diagnosticObserved,
           cleanObserved,
+          directDiagnosticObserved,
+          directNoDiagnosticsObserved,
           reason,
         })
         failures.push(toError(error))

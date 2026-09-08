@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -81,6 +81,21 @@ async function unloadDiagnostics(booted: LspDiagnosticsBooted): Promise<void> {
   await entry.update({ disabled: true })
 }
 
+/** Return the real Loader-backed catalog exposed to model tool calls. */
+function toolNames(booted: LspDiagnosticsBooted): string[] {
+  const tools = booted.ctx.get('tools') as unknown as { schemas(): Array<{ name: string }> }
+  return tools.schemas().map((schema) => schema.name).sort()
+}
+
+/** Join the model-rendered text blocks of one real tool result. */
+function renderedToolText(result: any): string {
+  const content: any[] = result?.content ?? []
+  return content
+    .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block) => block.text)
+    .join('\n')
+}
+
 /** Extract the plugin notice text from a tool result, or undefined. */
 function pluginNoticeText(result: any): string | undefined {
   const contexts: any[] = result?.additionalContexts ?? []
@@ -123,9 +138,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
     const entries = [...loader.entries()]
     expect(entries.some((entry) => entry.options.name === 'dsh-lsp-diagnostics' && !entry.disabled)).toBe(true)
     // The official tools are registered in the real app.
-    const tools = booted.ctx.get('tools') as unknown as { schemas(): Array<{ name: string }> }
-    const names = tools.schemas().map((schema) => schema.name).sort()
-    expect(names).toEqual(expect.arrayContaining(['write', 'edit', 'str_replace_editor']))
+    expect(toolNames(booted)).toEqual(expect.arrayContaining(['write', 'edit', 'str_replace_editor', 'lsp_diagnostics']))
 
     const result = await executeTool(booted, 'write', {
       file_path: 'src/a.ts',
@@ -143,6 +156,38 @@ describe('dsh-lsp-diagnostics real composition', () => {
     const canonicalUrl = pathToFileURL(join(booted.workspace, 'src', 'a.ts')).href
     expect(protocol).toContain(`didOpen ${canonicalUrl} v1`)
     expect(protocol).toContain(`publish ${canonicalUrl} v1`)
+  })
+
+  it('directly diagnoses a pre-existing file without mutating it, then reports no_diagnostics after an out-of-band repair', async () => {
+    const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'content-aware' })
+    bootedProfiles.push(booted)
+    const relativePath = 'src/direct.ts'
+    const absolutePath = join(booted.workspace, relativePath)
+    const bad = 'const direct: number = "oops";\n'
+    const repaired = 'const direct: number = 42;\n'
+    mkdirSync(join(booted.workspace, 'src'), { recursive: true })
+    writeFileSync(absolutePath, bad)
+
+    const diagnostics = await executeTool(booted, 'lsp_diagnostics', { file_path: relativePath }, booted.workspace)
+
+    expect(diagnostics.isError).toBe(false)
+    expect(diagnostics.value).toMatchObject({
+      kind: 'diagnostics',
+      file_path: absolutePath,
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'TS2322' })]),
+    })
+    expect(renderedToolText(diagnostics)).toContain('[LSP diagnostics]')
+    expect(renderedToolText(diagnostics)).toContain(absolutePath)
+    expect(renderedToolText(diagnostics)).toContain('TS2322')
+    expect(readFileSync(absolutePath, 'utf8')).toBe(bad)
+
+    writeFileSync(absolutePath, repaired)
+    const clean = await executeTool(booted, 'lsp_diagnostics', { file_path: relativePath }, booted.workspace)
+
+    expect(clean.isError).toBe(false)
+    expect(clean.value).toEqual({ kind: 'no_diagnostics', file_path: absolutePath })
+    expect(renderedToolText(clean)).toContain('No diagnostics reported for this file snapshot.')
+    expect(readFileSync(absolutePath, 'utf8')).toBe(repaired)
   })
 
   it('reports diagnostics then clean after an actual edit fixes the same TypeScript file', async () => {
@@ -265,6 +310,96 @@ describe('dsh-lsp-diagnostics real composition', () => {
     }
   }, 30_000)
 
+  it('routes direct calls for every configured extension to the canonical language id', async () => {
+    const booted = await bootLspDiagnosticsProfile({
+      typescriptMode: 'clean',
+      goMode: 'clean',
+      clangdMode: 'clean',
+      rustMode: 'clean',
+      pythonMode: 'clean',
+    })
+    bootedProfiles.push(booted)
+    const routes = [
+      ['src/direct.ts', 'typescript', booted.typescriptLog],
+      ['src/direct.tsx', 'typescriptreact', booted.typescriptLog],
+      ['src/direct.go', 'go', booted.goLog],
+      ['src/direct.c', 'c', booted.clangdLog],
+      ['src/direct.cc', 'cpp', booted.clangdLog],
+      ['src/direct.cpp', 'cpp', booted.clangdLog],
+      ['src/direct.cxx', 'cpp', booted.clangdLog],
+      ['src/direct.h', 'cpp', booted.clangdLog],
+      ['src/direct.hh', 'cpp', booted.clangdLog],
+      ['src/direct.hpp', 'cpp', booted.clangdLog],
+      ['src/direct.hxx', 'cpp', booted.clangdLog],
+      ['src/direct.rs', 'rust', booted.rustLog],
+      ['src/direct.py', 'python', booted.pythonLog],
+      ['src/direct.pyi', 'python', booted.pythonLog],
+    ] as const
+    mkdirSync(join(booted.workspace, 'src'), { recursive: true })
+
+    for (const [relativePath, languageId, logPath] of routes) {
+      const absolutePath = join(booted.workspace, relativePath)
+      const bytes = `fixture for ${relativePath}\n`
+      writeFileSync(absolutePath, bytes)
+
+      const result = await executeTool(booted, 'lsp_diagnostics', { file_path: relativePath }, booted.workspace)
+
+      expect(result.isError, relativePath).toBe(false)
+      expect(result.value, relativePath).toEqual({ kind: 'no_diagnostics', file_path: absolutePath })
+      expect(readFileSync(absolutePath, 'utf8'), relativePath).toBe(bytes)
+      const protocol = readFileSync(logPath, 'utf8')
+      expect(protocol, relativePath).toContain(`didOpen ${pathToFileURL(absolutePath).href} v1\nlanguageId ${languageId}`)
+    }
+  }, 30_000)
+
+  it('returns explicit direct-tool errors for missing cwd, outside-workspace targets, and unsupported extensions', async () => {
+    const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'clean' })
+    bootedProfiles.push(booted)
+    mkdirSync(join(booted.workspace, 'src'), { recursive: true })
+    writeFileSync(join(booted.workspace, 'src', 'unsupported.js'), 'const value = 1;\n')
+    const outsidePath = join(booted.profile, 'outside.ts')
+    writeFileSync(outsidePath, 'const outside: number = 1;\n')
+
+    const noCwd = await executeTool(booted, 'lsp_diagnostics', { file_path: 'src/unsupported.js' })
+    expect(noCwd.isError).toBe(true)
+    expect(noCwd.error?.message).toBe('lsp_diagnostics requires a session workspace cwd')
+    expect(renderedToolText(noCwd)).toContain('Error: lsp_diagnostics requires a session workspace cwd')
+
+    const outside = await executeTool(booted, 'lsp_diagnostics', { file_path: outsidePath }, booted.workspace)
+    expect(outside.isError).toBe(true)
+    expect(outside.error?.message).toBe(`lsp_diagnostics: target is outside the session workspace: ${outsidePath}`)
+
+    const unsupported = await executeTool(booted, 'lsp_diagnostics', { file_path: 'src/unsupported.js' }, booted.workspace)
+    expect(unsupported.isError).toBe(true)
+    expect(unsupported.error?.message).toBe('lsp_diagnostics: no configured diagnostics provider for extension .js')
+  })
+
+  it('serializes automatic and direct diagnoses through one provider session with monotonic URI versions', async () => {
+    const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'content-aware' })
+    bootedProfiles.push(booted)
+    const relativePath = 'src/interleaved.ts'
+    const absolutePath = join(booted.workspace, relativePath)
+
+    const automatic = await writeFileThroughRealTool(booted, relativePath, 'const interleaved: number = "oops";\n')
+    expect(pluginNoticeText(automatic)).toContain(TS_ERROR_SUBSTRING)
+    const direct = await executeTool(booted, 'lsp_diagnostics', { file_path: relativePath }, booted.workspace)
+    expect(direct.value).toMatchObject({ kind: 'diagnostics', file_path: absolutePath })
+
+    const uri = pathToFileURL(absolutePath).href
+    const events = readFileSync(booted.typescriptLog, 'utf8').trim().split('\n')
+    expect(events.filter((event) => event === 'initialize')).toHaveLength(1)
+    expect(events.filter((event) => event.startsWith('didOpen '))).toEqual([
+      `didOpen ${uri} v1`,
+      `didOpen ${uri} v2`,
+    ])
+    const firstClose = events.indexOf(`didClose ${uri}`)
+    const secondOpen = events.indexOf(`didOpen ${uri} v2`)
+    const secondClose = events.lastIndexOf(`didClose ${uri}`)
+    expect(firstClose).toBeGreaterThan(events.indexOf(`didOpen ${uri} v1`))
+    expect(secondOpen).toBeGreaterThan(firstClose)
+    expect(secondClose).toBeGreaterThan(secondOpen)
+  })
+
   it('silently ignores unsupported extensions, missing session cwd, and outside-workspace targets', async () => {
     const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'push-versioned' })
     bootedProfiles.push(booted)
@@ -292,6 +427,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
     const booted = await bootLspDiagnosticsProfile({ enabled: false, typescriptMode: 'push-versioned' })
     bootedProfiles.push(booted)
 
+    expect(toolNames(booted)).not.toContain('lsp_diagnostics')
     const result = await executeTool(booted, 'write', { file_path: 'src/a.ts', content: 'const x: number = "oops";\n' }, booted.workspace)
     expect(result.isError).toBe(false)
     expect(pluginNoticeText(result)).toBeUndefined()

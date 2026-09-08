@@ -37,6 +37,8 @@ describe('explicit real LSP runner', () => {
         status: 'blocked',
         diagnosticObserved: false,
         cleanObserved: false,
+        directDiagnosticObserved: false,
+        directNoDiagnosticsObserved: false,
       }],
     })
   }, 30_000)

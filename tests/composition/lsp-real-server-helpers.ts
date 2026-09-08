@@ -23,6 +23,15 @@ export type RealLaneResult = {
   readonly status: 'passed' | 'blocked' | 'failed'
   readonly diagnosticObserved: boolean
   readonly cleanObserved: boolean
+  readonly directDiagnosticObserved: boolean
+  readonly directNoDiagnosticsObserved: boolean
+  readonly reason?: string
+}
+
+export type DirectDiagnosticsValue = {
+  readonly kind: 'diagnostics' | 'no_diagnostics' | 'unavailable'
+  readonly file_path: string
+  readonly diagnostics?: readonly { readonly code: string }[]
   readonly reason?: string
 }
 
@@ -151,6 +160,39 @@ export function noticeText(result: unknown): string | undefined {
     }
   }
   return undefined
+}
+
+export function directToolValue(result: unknown): DirectDiagnosticsValue {
+  if (typeof result !== 'object' || result === null) throw new Error('lsp_diagnostics returned no result object')
+  if ('isError' in result && result.isError === true) {
+    const message = 'error' in result
+      && typeof result.error === 'object'
+      && result.error !== null
+      && 'message' in result.error
+      && typeof result.error.message === 'string'
+      ? result.error.message
+      : 'unknown tool error'
+    throw new Error(`lsp_diagnostics failed: ${message}`)
+  }
+  if (!('value' in result) || typeof result.value !== 'object' || result.value === null || !('kind' in result.value)) {
+    throw new Error('lsp_diagnostics returned no canonical value')
+  }
+  return result.value as DirectDiagnosticsValue
+}
+
+export function renderedToolText(result: unknown): string {
+  if (typeof result !== 'object' || result === null || !('content' in result) || !Array.isArray(result.content)) return ''
+  return result.content.flatMap((block) => {
+    if (
+      typeof block === 'object'
+      && block !== null
+      && 'type' in block
+      && block.type === 'text'
+      && 'text' in block
+      && typeof block.text === 'string'
+    ) return [block.text]
+    return []
+  }).join('\n')
 }
 
 export function writeEvidence(path: string, evidence: RealLaneEvidence): void {
