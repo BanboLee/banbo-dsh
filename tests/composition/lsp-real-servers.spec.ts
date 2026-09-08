@@ -76,8 +76,10 @@ describe('dsh-lsp-diagnostics explicit real-server lane', () => {
       let cleanObserved = false
       let directDiagnosticObserved = false
       let directNoDiagnosticsObserved = false
+      let booted: LspDiagnosticsBooted | undefined
+      let providerError: Error | undefined
       try {
-        const booted = await bootLspDiagnosticsProfile({
+        booted = await bootLspDiagnosticsProfile({
           timeoutMs: 30_000,
           settleMs: 3_000,
           shutdownTimeoutMs: 5_000,
@@ -110,50 +112,67 @@ describe('dsh-lsp-diagnostics explicit real-server lane', () => {
         cleanObserved = noticeText(repaired)?.includes('Status: clean') === true
         expect(cleanObserved, `${provider} must publish a clean result after repair`).toBe(true)
 
-        const absolutePath = join(booted.workspace, providerCase.path)
-        mkdirSync(dirname(absolutePath), { recursive: true })
-        writeFileSync(absolutePath, providerCase.bad)
-        const directBad = await executeTool(booted, 'lsp_diagnostics', { file_path: providerCase.path })
+        const directBadRoot = 'direct-bad'
+        const directCleanRoot = 'direct-clean'
+        const directBadPath = join(directBadRoot, providerCase.path)
+        const directCleanPath = join(directCleanRoot, providerCase.path)
+        const absoluteBadPath = join(booted.workspace, directBadPath)
+        const absoluteCleanPath = join(booted.workspace, directCleanPath)
+        for (const setup of providerCase.setup ?? []) {
+          for (const root of [directBadRoot, directCleanRoot]) {
+            const setupPath = join(booted.workspace, root, setup.path)
+            mkdirSync(dirname(setupPath), { recursive: true })
+            writeFileSync(setupPath, setup.content)
+          }
+        }
+        mkdirSync(dirname(absoluteBadPath), { recursive: true })
+        mkdirSync(dirname(absoluteCleanPath), { recursive: true })
+        const directRepairedBytes = providerCase.bad.replace(providerCase.oldText, providerCase.newText)
+        writeFileSync(absoluteBadPath, providerCase.bad)
+        writeFileSync(absoluteCleanPath, directRepairedBytes)
+
+        const directBad = await executeTool(booted, 'lsp_diagnostics', { file_path: directBadPath })
         const directBadValue = directToolValue(directBad)
         const directBadText = renderedToolText(directBad)
         directDiagnosticObserved = directBadValue.kind === 'diagnostics'
           && directBadText.includes('[LSP diagnostics]')
-          && directBadText.includes(absolutePath)
+          && directBadText.includes(absoluteBadPath)
         expect(directDiagnosticObserved, `${provider} direct call must publish real diagnostics`).toBe(true)
-        expect(readFileSync(absolutePath, 'utf8')).toBe(providerCase.bad)
+        expect(readFileSync(absoluteBadPath, 'utf8')).toBe(providerCase.bad)
 
-        const directRepairedBytes = providerCase.bad.replace(providerCase.oldText, providerCase.newText)
-        writeFileSync(absolutePath, directRepairedBytes)
-        const directRepaired = await executeTool(booted, 'lsp_diagnostics', { file_path: providerCase.path })
+        const directRepaired = await executeTool(booted, 'lsp_diagnostics', { file_path: directCleanPath })
         const directRepairedValue = directToolValue(directRepaired)
         directNoDiagnosticsObserved = directRepairedValue.kind === 'no_diagnostics'
           && renderedToolText(directRepaired).includes('No diagnostics reported for this file snapshot.')
         expect(directNoDiagnosticsObserved, `${provider} direct call must report no_diagnostics after repair`).toBe(true)
-        expect(readFileSync(absolutePath, 'utf8')).toBe(directRepairedBytes)
-
-        results.push({
-          provider,
-          executable,
-          status: 'passed',
-          diagnosticObserved,
-          cleanObserved,
-          directDiagnosticObserved,
-          directNoDiagnosticsObserved,
-        })
+        expect(readFileSync(absoluteCleanPath, 'utf8')).toBe(directRepairedBytes)
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error)
-        results.push({
-          provider,
-          executable,
-          status: 'failed',
-          diagnosticObserved,
-          cleanObserved,
-          directDiagnosticObserved,
-          directNoDiagnosticsObserved,
-          reason,
-        })
-        failures.push(toError(error))
+        providerError = toError(error)
+      } finally {
+        if (booted !== undefined) {
+          const index = bootedProfiles.lastIndexOf(booted)
+          if (index !== -1) bootedProfiles.splice(index, 1)
+          try {
+            await booted.cleanup()
+          } catch (error) {
+            const cleanupError = toError(error)
+            providerError = providerError === undefined
+              ? cleanupError
+              : new AggregateError([providerError, cleanupError], `${provider} verification and cleanup failed`)
+          }
+        }
       }
+      results.push({
+        provider,
+        executable,
+        status: providerError === undefined ? 'passed' : 'failed',
+        diagnosticObserved,
+        cleanObserved,
+        directDiagnosticObserved,
+        directNoDiagnosticsObserved,
+        ...(providerError === undefined ? {} : { reason: providerError.message }),
+      })
+      if (providerError !== undefined) failures.push(providerError)
     }
     writeEvidence(evidencePath, { enabled: true, requestedProviders, results })
     if (failures.length > 0) throw new AggregateError(failures, 'real LSP provider verification failed')

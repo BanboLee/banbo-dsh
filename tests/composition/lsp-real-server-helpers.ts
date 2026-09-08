@@ -29,10 +29,17 @@ export type RealLaneResult = {
 }
 
 export type DirectDiagnosticsValue = {
-  readonly kind: 'diagnostics' | 'no_diagnostics' | 'unavailable'
+  readonly kind: 'diagnostics'
   readonly file_path: string
-  readonly diagnostics?: readonly { readonly code: string }[]
-  readonly reason?: string
+  readonly diagnostics: readonly { readonly code: string }[]
+  readonly omitted_diagnostics: number
+} | {
+  readonly kind: 'no_diagnostics'
+  readonly file_path: string
+} | {
+  readonly kind: 'unavailable'
+  readonly file_path: string
+  readonly reason: string
 }
 
 export type RealLaneEvidence = {

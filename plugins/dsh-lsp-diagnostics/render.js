@@ -329,7 +329,7 @@ function compareCodePoints(a, b) {
  * @param {NormalizedDiagnostic} b - second diagnostic.
  * @returns {number}
  */
-function compareDiagnostics(a, b) {
+export function compareDiagnostics(a, b) {
   const byStartLine = a.range.start.line - b.range.start.line
   if (byStartLine !== 0) return byStartLine
   const byStartCharacter = a.range.start.character - b.range.start.character

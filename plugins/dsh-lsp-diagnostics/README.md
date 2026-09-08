@@ -53,7 +53,7 @@ deviation from the closed extension route fail loud at load time.
 | `maxDocumentBytes` | `2097152` | Hard UTF-8 byte cap for the document sent via `didOpen`. |
 | `maxMessageBytes` | `4194304` | LSP message body cap. |
 | `maxStderrBytes` | `16384` | Bounded stderr tail cap. |
-| `maxDiagnostics` | `50` | Global cap on retained diagnostic lines. |
+| `maxDiagnostics` | `50` | Global cap on automatic diagnostic lines and per-call cap on the canonical direct-tool diagnostics array. |
 | `maxResultChars` | `8000` | Unicode code-point cap on the final aggregate text. |
 | `reportClean` | `true` | Whether explicit empty results render `Status: clean`. |
 | `servers` | TypeScript + Go | Closed provider catalog; TypeScript and Go are enabled by default, while `clangd`, `rust`, and `python` are opt-in. |
@@ -162,10 +162,18 @@ frame (responses, `shutdown`, `exit`) can be written after cleanup resolves.
 A matching `publishDiagnostics` that races the `didOpen` write is buffered
 until the open write succeeds; only a successfully written open generation
 accepts notifications, and a failed `didOpen` write still allows the allowed
-fresh-instance retry.
+fresh-instance retry. The shared runtime applies a generic correctness-over-performance policy: it
+still pools one provider/workspace session across distinct canonical URIs, but
+before a URI already opened by that session is diagnosed again it evicts and
+asynchronously retires the session, then opens the URI at version 1 in a fresh
+process; this avoids provider VFS caches returning stale same-URI diagnostics,
+and retired teardown remains tracked and drained on unload.
 
 `timeoutMs` is a single non-extendable deadline for the whole post-execute;
 the final freshness round is a one-shot final stat/deadline/generation gate.
+The direct tool likewise captures one absolute deadline from its injected
+monotonic clock, and every gate transitions to timeout when `now() >= deadlineAt`
+even if event-loop starvation has not run the scheduled timer callback yet.
 A deadline/caller/cleanup loss never waits for late final stats: unsettled
 records are retired into `retiredIo` before the decision returns. Session
 teardown is the single order: `shutdown` request → `exit` notification/
@@ -185,8 +193,12 @@ session workspace`, `target does not exist`, `target is not a regular file`,
 `no configured diagnostics provider`, or `target changed during diagnosis`.
 
 The direct tool has exactly three canonical outcomes: `diagnostics` with the
-bounded normalized list, `no_diagnostics`, rendered as `No diagnostics reported
-for this file snapshot.`, and `unavailable` with one closed reason. Call it to
+normalized list sorted by the same comparator as automatic rendering and sliced
+to `maxDiagnostics` before ToolRuntime/PTC receives it, plus an always-present
+nonnegative integer `omitted_diagnostics`; `no_diagnostics`, rendered as `No
+diagnostics reported for this file snapshot.`; and `unavailable` with one closed
+reason. The renderer preserves the omission marker from that canonical count.
+Call it to
 diagnose an existing file explicitly, especially after a shell command,
 formatter, or generator bypasses automatic `fs/observed` feedback; avoid
 redundant calls when fresh automatic feedback already exists. Automatic
@@ -251,7 +263,7 @@ pnpm exec vitest run tests/docs-shape-lsp-diagnostics.spec.ts
 Type check and sync script help:
 
 ```bash
-pnpm exec tsc -p plugins/dsh-lsp-diagnostics/tsconfig.json --noEmit
+pnpm dlx --package=typescript@6.0.3 tsc -p plugins/dsh-lsp-diagnostics/tsconfig.json --noEmit
 bash scripts/sync-lsp-diagnostics-to-profile.sh --help
 ```
 

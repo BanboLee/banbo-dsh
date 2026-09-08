@@ -374,7 +374,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(unsupported.error?.message).toBe('lsp_diagnostics: no configured diagnostics provider for extension .js')
   })
 
-  it('serializes automatic and direct diagnoses through one provider session with monotonic URI versions', async () => {
+  it('shares one runtime across automatic/direct diagnoses while rotating before the same-uri reopen', async () => {
     const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'content-aware' })
     bootedProfiles.push(booted)
     const relativePath = 'src/interleaved.ts'
@@ -387,17 +387,16 @@ describe('dsh-lsp-diagnostics real composition', () => {
 
     const uri = pathToFileURL(absolutePath).href
     const events = readFileSync(booted.typescriptLog, 'utf8').trim().split('\n')
-    expect(events.filter((event) => event === 'initialize')).toHaveLength(1)
+    expect(events.filter((event) => event === 'initialize')).toHaveLength(2)
     expect(events.filter((event) => event.startsWith('didOpen '))).toEqual([
       `didOpen ${uri} v1`,
-      `didOpen ${uri} v2`,
+      `didOpen ${uri} v1`,
     ])
-    const firstClose = events.indexOf(`didClose ${uri}`)
-    const secondOpen = events.indexOf(`didOpen ${uri} v2`)
-    const secondClose = events.lastIndexOf(`didClose ${uri}`)
-    expect(firstClose).toBeGreaterThan(events.indexOf(`didOpen ${uri} v1`))
-    expect(secondOpen).toBeGreaterThan(firstClose)
-    expect(secondClose).toBeGreaterThan(secondOpen)
+    const opens = events.flatMap((event, index) => event === `didOpen ${uri} v1` ? [index] : [])
+    const closes = events.flatMap((event, index) => event === `didClose ${uri}` ? [index] : [])
+    expect(closes[0]).toBeGreaterThan(opens[0]!)
+    expect(opens[1]).toBeGreaterThan(closes[0]!)
+    expect(closes[1]).toBeGreaterThan(opens[1]!)
   })
 
   it('silently ignores unsupported extensions, missing session cwd, and outside-workspace targets', async () => {
@@ -644,10 +643,11 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(readFileSync(booted.typescriptLog, 'utf8')).toContain('shutdown')
   })
 
-  it('forwards a nested real run_code write notice onto the outer result', async () => {
+  it('forwards a nested real run_code write notice and keeps callable canonical values bounded in PTC mode', async () => {
     const booted = await bootLspDiagnosticsProfile({
       toolsMode: 'ptc',
       typescriptMode: 'push-versioned',
+      maxDiagnostics: 1,
       extraRootEntries: [
         '- id: code-runtime',
         "  name: '@deepseek-ai/dsh-code-runtime-worker-thread'",
@@ -662,7 +662,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
       callId: 'composition-run-code',
       name: 'run_code',
       arguments: {
-        code: 'await tools.write({ file_path: "src/from-code.ts", content: "const f: number = \\"oops\\";\\n" }); return "done";',
+        code: 'await tools.write({ file_path: "src/from-code.ts", content: "const f: number = \\"oops\\";\\n" }); return await tools.lsp_diagnostics({ file_path: "src/from-code.ts" });',
         description: 'Run the test program',
       },
       // The code-mode transport threads the agent down to nested tool calls,
@@ -679,10 +679,17 @@ describe('dsh-lsp-diagnostics real composition', () => {
     expect(result.isError).toBe(false)
     // The nested write's plugin notice is deferred onto the outer run_code result.
     expect(pluginNoticeText(result)).toBe(expectedSingleFileNotice(booted.workspace, 'src/from-code.ts', [
-      TS_DIAGNOSTIC_LINES,
+      TS_DIAGNOSTIC_LINES.split('\n')[0]!,
       '',
       'Fix these diagnostics before considering the change complete.',
     ]))
+    expect(result.value.result).toMatchObject({
+      kind: 'diagnostics',
+      file_path: join(booted.workspace, 'src', 'from-code.ts'),
+      diagnostics: [{ code: 'TS6133' }],
+      omitted_diagnostics: 1,
+    })
+    expect(result.value.result.diagnostics).toHaveLength(1)
     expect(readFileSync(join(booted.workspace, 'src', 'from-code.ts'), 'utf8')).toBe('const f: number = "oops";\n')
   })
 

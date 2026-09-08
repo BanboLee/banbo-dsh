@@ -197,6 +197,13 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
   if (!f.includes('No diagnostics reported for this file snapshot.')) {
     failures.push('no_diagnostics wording must be documented exactly')
   }
+  const omittedDiagnostics = sentencesContaining(f, 'omitted_diagnostics')
+  if (!omittedDiagnostics.some((s) => s.includes('always-present') && s.includes('nonnegative integer'))) {
+    failures.push('diagnostics must document always-present nonnegative integer omitted_diagnostics')
+  }
+  if (!omittedDiagnostics.some((s) => s.includes('maxDiagnostics') && s.includes('ToolRuntime/PTC') && s.includes('sorted'))) {
+    failures.push('direct canonical diagnostics must be sorted and capped before ToolRuntime/PTC receives them')
+  }
   const directBehavior = sentencesContaining(f, 'fresh automatic feedback')
   if (
     !directBehavior.some(
@@ -342,6 +349,14 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
   }
   if (!sentencesContaining(f, 'late final stat').some((s) => s.includes('never') && s.includes('wait'))) {
     failures.push('the tool result must never wait for late final stats')
+  }
+  if (!sentencesContaining(f, 'deadlineAt').some((s) => s.includes('monotonic') && s.includes('now() >= deadlineAt') && s.includes('timer callback'))) {
+    failures.push('direct deadline gates must enforce the monotonic equality boundary even before the timer callback')
+  }
+
+  const sessionRotation = sentencesContaining(f, 'correctness-over-performance')
+  if (!sessionRotation.some((s) => s.includes('distinct canonical URI') && s.includes('version 1') && s.includes('fresh process'))) {
+    failures.push('runtime must document distinct-URI reuse and fresh-process same-URI rotation at version 1')
   }
 
   // Unique session teardown order with terminate as the only hard stop.
@@ -538,6 +553,7 @@ describe('dsh-lsp-diagnostics README shape', () => {
   it('documents the sync script and verification commands', () => {
     expect(README).toContain('scripts/sync-lsp-diagnostics-to-profile.sh')
     expect(README).toContain('pnpm exec vitest run tests/docs-shape-lsp-diagnostics.spec.ts')
+    expect(README).toContain('pnpm dlx --package=typescript@6.0.3 tsc -p plugins/dsh-lsp-diagnostics/tsconfig.json --noEmit')
     expect(README).toContain('scripts/qa/run-lsp-real-servers.mjs')
   })
 

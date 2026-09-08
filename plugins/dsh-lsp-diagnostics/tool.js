@@ -1,5 +1,5 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { sanitizeDisplayPath } from './render.js'
+import { compareDiagnostics, sanitizeDisplayPath } from './render.js'
 
 /** Closed runtime reasons exposed by the canonical tool output. */
 const UNAVAILABLE_REASONS = /** @type {const} */ ([
@@ -59,6 +59,7 @@ const OUTPUT_SCHEMA = /** @type {const} */ ({
           required: true,
           items: DIAGNOSTIC_SCHEMA,
         },
+        omitted_diagnostics: { type: 'integer', required: true },
       },
     },
     {
@@ -95,7 +96,7 @@ const OUTPUT_SCHEMA = /** @type {const} */ ({
  */
 
 /**
- * @typedef {{ kind: 'diagnostics', file_path: string, diagnostics: CanonicalDiagnostic[] } |
+ * @typedef {{ kind: 'diagnostics', file_path: string, diagnostics: CanonicalDiagnostic[], omitted_diagnostics: number } |
  *           { kind: 'no_diagnostics', file_path: string } |
  *           { kind: 'unavailable', file_path: string, reason: import('./runtime.js').UnavailableReason }} CanonicalResult
  */
@@ -128,6 +129,7 @@ const OUTPUT_SCHEMA = /** @type {const} */ ({
  * @property {boolean} callerAborted
  * @property {boolean} cleanupAborted
  * @property {boolean} deadlineFired
+ * @property {number} deadlineAt
  * @property {string} filePath
  * @property {ReturnType<typeof setTimeout> | undefined} [timer]
  * @property {() => void} onCallerAbort
@@ -208,14 +210,13 @@ function renderResult(value, config) {
     lines.push(`Diagnostics unavailable (${value.reason}).`)
     return capResult(lines.join('\n'), config.maxResultChars)
   }
-  const shown = value.diagnostics.slice(0, config.maxDiagnostics)
-  lines.push(...shown.map((diagnostic) => {
+  lines.push(...value.diagnostics.map((diagnostic) => {
     const start = diagnostic.range.start
     const end = diagnostic.range.end
     return `- ${diagnostic.severity} ${start.line + 1}:${start.character + 1}-${end.line + 1}:${end.character + 1} source=${JSON.stringify(singleLine(diagnostic.source))} code=${JSON.stringify(singleLine(diagnostic.code))} ${singleLine(diagnostic.message)}`
   }))
-  const omitted = value.diagnostics.length - shown.length
-  if (omitted > 0) {
+  if (value.omitted_diagnostics > 0) {
+    const omitted = value.omitted_diagnostics
     lines.push(`… ${omitted} more diagnostic${omitted === 1 ? '' : 's'} omitted (limit ${config.maxDiagnostics}).`)
   }
   return capResult(lines.join('\n'), config.maxResultChars)
@@ -249,7 +250,7 @@ function projectDiagnostic(diagnostic) {
  * Build the reusable model-facing tool and its direct-operation lifecycle owner.
  * Registration and plugin cleanup deliberately remain outside this pure factory.
  *
- * @param {{ fs: FsSeam, runtime: RuntimeSeam, config: ToolConfig }} deps
+ * @param {{ fs: FsSeam, runtime: RuntimeSeam, config: ToolConfig, now?: () => number }} deps
  * @returns {{
  *   definition: import('@deepseek-ai/dsh-tools').ToolDefinition,
  *   stopAdmission(): void,
@@ -258,7 +259,7 @@ function projectDiagnostic(diagnostic) {
  *   observeMutation(target: any): void,
  * }}
  */
-export function createDiagnosticsTool({ fs, runtime, config }) {
+export function createDiagnosticsTool({ fs, runtime, config, now = () => performance.now() }) {
   const supportedExtensions = new Set()
   for (const server of Object.values(config.servers)) {
     for (const extension of Object.keys(server.extensionToLanguage)) supportedExtensions.add(extension)
@@ -285,6 +286,7 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
       callerAborted: callerSignal.aborted,
       cleanupAborted: false,
       deadlineFired: false,
+      deadlineAt: now() + config.timeoutMs,
       filePath: '',
       onCallerAbort: () => {},
       promise: Promise.resolve(),
@@ -295,10 +297,7 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
     }
     if (callerSignal.aborted) operation.onCallerAbort()
     else callerSignal.addEventListener('abort', operation.onCallerAbort, { once: true })
-    operation.timer = setTimeout(() => {
-      operation.deadlineFired = true
-      if (!controller.signal.aborted) controller.abort(new Error('lsp_diagnostics deadline exceeded'))
-    }, config.timeoutMs)
+    operation.timer = setTimeout(() => expireDeadline(operation), config.timeoutMs)
     const promise = Promise.resolve()
       .then(() => run(operation))
       .finally(() => {
@@ -312,11 +311,27 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
   }
 
   /**
+   * Run the owned deadline transition once.
+   * @param {ActiveOperation} operation
+   * @returns {void}
+   */
+  function expireDeadline(operation) {
+    if (operation.deadlineFired) return
+    operation.deadlineFired = true
+    if (!operation.controller.signal.aborted) {
+      operation.controller.abort(new Error('lsp_diagnostics deadline exceeded'))
+    }
+  }
+
+  /**
    * Throw external cancellation; report an owned deadline as canonical unavailable.
+   * Every gate checks the absolute monotonic deadline, so event-loop starvation
+   * cannot extend the operation while its timer callback is still queued.
    * @param {ActiveOperation} operation
    * @returns {Extract<CanonicalResult, { kind: 'unavailable' }> | undefined}
    */
   function abortOutcome(operation) {
+    if (!operation.deadlineFired && now() >= operation.deadlineAt) expireDeadline(operation)
     if (operation.callerAborted || operation.cleanupAborted) throw abortError(operation.callerSignal)
     if (operation.deadlineFired) {
       return { kind: 'unavailable', file_path: operation.filePath, reason: 'timeout' }
@@ -399,10 +414,13 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
       if (outcome.diagnostics.length === 0) {
         return { kind: 'no_diagnostics', file_path: operation.filePath }
       }
+      const diagnostics = outcome.diagnostics.slice().sort(compareDiagnostics)
+      const retained = diagnostics.slice(0, config.maxDiagnostics)
       return {
         kind: 'diagnostics',
         file_path: operation.filePath,
-        diagnostics: outcome.diagnostics.map(projectDiagnostic),
+        diagnostics: retained.map(projectDiagnostic),
+        omitted_diagnostics: diagnostics.length - retained.length,
       }
     } catch (error) {
       const early = abortOutcome(operation)

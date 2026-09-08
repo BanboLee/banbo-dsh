@@ -6,7 +6,8 @@
  * and the same-shaped serialization tails), the complete JSON-RPC state
  * machine, bounded document reads, exact-URI-first version correlation, strict
  * consumed-field Diagnostic projection, transport eviction with a single
- * same-call restart, and the unique graceful-first session teardown. The
+ * same-call restart, generic fresh-session rotation before a same-URI reopen,
+ * and the unique graceful-first session teardown. The
  * runtime never creates or extends the execution deadline — it only consumes
  * the caller-provided operation signal (the coordinator relays caller abort,
  * its absolute deadline, and cleanup abort into it).
@@ -631,8 +632,10 @@ export class DiagnosticsRuntime {
   }
 
   /**
-   * Run one diagnosis for an eligible route, with a single same-call restart
-   * on a fresh instance after an unaccepted transport failure.
+   * Run one diagnosis for an eligible route. Distinct URIs reuse the pooled
+   * provider/workspace session; a URI already opened by that process rotates to
+   * a fresh session before diagnosis. An unaccepted transport failure still
+   * receives at most one same-call restart.
    * @param {unknown} target - the canonical document target.
    * @param {{ targetKey: string, displayPath?: string }} canonicalWorkspace - the canonical workspace target.
    * @param {{ providerId: string, languageId: string, server: ServerConfig }} route - the route.
@@ -653,6 +656,11 @@ export class DiagnosticsRuntime {
     if (!this.admissionOpen) return { kind: 'stale' }
     if (executionSignal !== undefined && executionSignal.aborted) return { kind: 'stale' }
     let session = this.getOrCreateSession(providerId, workspaceKey, workspacePath, workspaceUri, route, executionSignal)
+    if (session.hasOpenedUri(uri)) {
+      this.evictIfCurrent(providerId, workspaceKey, session)
+      this.startSessionTeardown(session)
+      session = this.getOrCreateSession(providerId, workspaceKey, workspacePath, workspaceUri, route, executionSignal)
+    }
     let attempt = 0
     for (;;) {
       try {
@@ -837,6 +845,16 @@ class LspSession {
    */
   isClosing() {
     return this.closing || this.poisoned
+  }
+
+  /**
+   * Whether this process has already completed or attempted an open lifecycle
+   * for the canonical URI.
+   * @param {string} uri - canonical document URI.
+   * @returns {boolean}
+   */
+  hasOpenedUri(uri) {
+    return this.openedUris.has(uri)
   }
 
   /**

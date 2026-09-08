@@ -73,11 +73,17 @@ function makeTool(options: {
   fs?: FakeFs
   runtime?: FakeRuntime
   config?: Record<string, unknown>
+  now?: () => number
 } = {}): { owner: ToolOwner; tool: Tool; fs: FakeFs; runtime: FakeRuntime } {
   const fs = options.fs ?? makeFs()
   const runtime = options.runtime ?? makeRuntime()
   const config = options.config ?? structuredClone(DEFAULT_CONFIG)
-  const owner = createDiagnosticsTool({ fs, runtime, config } as Parameters<typeof createDiagnosticsTool>[0])
+  const owner = createDiagnosticsTool({
+    fs,
+    runtime,
+    config,
+    ...(options.now === undefined ? {} : { now: options.now }),
+  } as Parameters<typeof createDiagnosticsTool>[0])
   return { owner, tool: owner.definition, fs, runtime }
 }
 
@@ -143,7 +149,55 @@ describe('lsp_diagnostics tool definition', () => {
         source: 'typescript',
         message: "Type 'string' is not assignable to type 'number'.",
       }],
+      omitted_diagnostics: 0,
     })
+  })
+
+  it('sorts and bounds the canonical diagnostics value before ToolRuntime sees it', async () => {
+    const earliest = {
+      ...DIAGNOSTIC,
+      range: { start: { line: 0, character: 2 }, end: { line: 0, character: 3 } },
+      severity: 'warning',
+      severityRank: 1,
+      code: 'EARLY',
+      message: 'earliest',
+    } as const
+    const middle = {
+      ...DIAGNOSTIC,
+      range: { start: { line: 5, character: 0 }, end: { line: 5, character: 1 } },
+      code: 'MIDDLE',
+      message: 'middle',
+    } as const
+    const runtime = makeRuntime({
+      kind: 'ok',
+      diagnostics: [DIAGNOSTIC, middle, earliest],
+      uri: DIAGNOSTIC.uri,
+      version: 1,
+    })
+    const { tool } = makeTool({
+      runtime,
+      config: { ...structuredClone(DEFAULT_CONFIG), maxDiagnostics: 1 },
+    })
+
+    const result = await tool.execute({ file_path: 'src/a.ts' }, execution())
+
+    expect(result).toEqual({
+      kind: 'diagnostics',
+      file_path: '/workspace/src/a.ts',
+      diagnostics: [{
+        range: earliest.range,
+        severity: 'warning',
+        code: 'EARLY',
+        source: 'typescript',
+        message: 'earliest',
+      }],
+      omitted_diagnostics: 2,
+    })
+    const text = rendered(tool, { file_path: 'src/a.ts' }, result)
+    expect(text).toContain('warning 1:3-1:4')
+    expect(text).toContain('2 more diagnostics omitted')
+    expect(text).not.toContain('TS2322')
+    expect(text).not.toContain('MIDDLE')
   })
 
   it('returns no_diagnostics and never renders an empty result as clean', async () => {
@@ -197,22 +251,14 @@ describe('lsp_diagnostics tool definition', () => {
     const value = {
       kind: 'diagnostics',
       file_path: '/workspace/src/a.ts',
-      diagnostics: [
-        {
-          range: DIAGNOSTIC.range,
-          severity: DIAGNOSTIC.severity,
-          code: DIAGNOSTIC.code,
-          source: DIAGNOSTIC.source,
-          message: DIAGNOSTIC.message,
-        },
-        {
-          range: { start: { line: 20, character: 1 }, end: { line: 20, character: 2 } },
-          severity: 'warning',
-          code: 'TS2',
-          source: 'typescript',
-          message: 'second',
-        },
-      ],
+      diagnostics: [{
+        range: DIAGNOSTIC.range,
+        severity: DIAGNOSTIC.severity,
+        code: DIAGNOSTIC.code,
+        source: DIAGNOSTIC.source,
+        message: DIAGNOSTIC.message,
+      }],
+      omitted_diagnostics: 1,
     }
 
     const text = rendered(tool, { file_path: 'src/a.ts' }, value)
@@ -331,6 +377,38 @@ describe('lsp_diagnostics eligibility and freshness', () => {
 })
 
 describe('lsp_diagnostics cancellation', () => {
+  it('expires at the monotonic deadline boundary even before the timer callback runs', async () => {
+    vi.useFakeTimers()
+    let monotonicNow = 100
+    let operationSignal: AbortSignal | undefined
+    const caller = new AbortController()
+    const removeSpy = vi.spyOn(caller.signal, 'removeEventListener')
+    const runtime: FakeRuntime = {
+      diagnoseTarget: vi.fn(async (_target, _workspace, _uri, signal: AbortSignal) => {
+        operationSignal = signal
+        expect(vi.getTimerCount()).toBe(1)
+        monotonicNow = 125
+        return { kind: 'ok', diagnostics: [DIAGNOSTIC], uri: DIAGNOSTIC.uri, version: 1 }
+      }),
+    }
+    const { tool } = makeTool({
+      runtime,
+      config: { ...structuredClone(DEFAULT_CONFIG), timeoutMs: 25 },
+      now: () => monotonicNow,
+    })
+
+    const result = await tool.execute({ file_path: 'src/a.ts' }, execution(caller.signal))
+
+    expect(result).toEqual({
+      kind: 'unavailable',
+      file_path: '/workspace/src/a.ts',
+      reason: 'timeout',
+    })
+    expect(operationSignal?.aborted).toBe(true)
+    expect(removeSpy).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('owns a non-extendable timeout, awaits diagnosis quiescence, and reports timeout unavailable', async () => {
     vi.useFakeTimers()
     let settled = false

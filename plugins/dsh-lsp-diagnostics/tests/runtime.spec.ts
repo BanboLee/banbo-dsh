@@ -758,7 +758,7 @@ describe('dsh-lsp-diagnostics runtime pooling', () => {
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(3)
   })
 
-  it('single-flights one session per workspace and serializes the full lifecycle', async () => {
+  it('reuses one pooled provider/workspace session for distinct uris', async () => {
     const h = makeHarness('push-versioned')
     const first = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
     const second = h.runtime.diagnose(
@@ -797,37 +797,31 @@ describe('dsh-lsp-diagnostics runtime pooling', () => {
     await vi.useRealTimers()
   })
 
-  it('serializes repeated opens of the same uri with monotonic versions', async () => {
+  it('rotates the pooled session before reopening the same uri so each process starts at version one', async () => {
     const h = makeHarness('push-versioned')
     const first = await h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
     const second = await h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
     expect(first).toMatchObject({ kind: 'ok', version: 1 })
-    expect(second).toMatchObject({ kind: 'ok', version: 2 })
-    expect(h.subprocess.spawn).toHaveBeenCalledTimes(1)
-    expect(h.servers[0]?.events.filter((event) => event.startsWith('didOpen'))).toEqual([
-      'didOpen file:///workspace/src/a.ts v1',
-      'didOpen file:///workspace/src/a.ts v2',
+    expect(second).toMatchObject({ kind: 'ok', version: 1 })
+    expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
+    expect(h.servers.map((server) => server.events.filter((event) => event.startsWith('didOpen')))).toEqual([
+      ['didOpen file:///workspace/src/a.ts v1'],
+      ['didOpen file:///workspace/src/a.ts v1'],
     ])
   })
 
-  it('fully serializes concurrent same-uri diagnoses with monotonic versions through one write tail', async () => {
+  it('fully serializes concurrent same-uri diagnoses while rotating before the queued reopen', async () => {
     const h = makeHarness('push-versioned')
     const first = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
     const second = h.runtime.diagnose(candidate(target('/workspace/src/a.ts')), WORKSPACE, WORKSPACE_URI, undefined)
     await expect(Promise.all([first, second])).resolves.toMatchObject([
       { kind: 'ok', version: 1 },
-      { kind: 'ok', version: 2 },
+      { kind: 'ok', version: 1 },
     ])
-    expect(h.subprocess.spawn).toHaveBeenCalledTimes(1)
-    expect(h.servers[0]!.events).toEqual([
-      'initialize',
-      'initialized',
-      'didOpen file:///workspace/src/a.ts v1',
-      'publish file:///workspace/src/a.ts v1',
-      'didClose file:///workspace/src/a.ts',
-      'didOpen file:///workspace/src/a.ts v2',
-      'publish file:///workspace/src/a.ts v2',
-      'didClose file:///workspace/src/a.ts',
+    expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
+    expect(h.servers.map((server) => server.events.filter((event) => event.startsWith('didOpen')))).toEqual([
+      ['didOpen file:///workspace/src/a.ts v1'],
+      ['didOpen file:///workspace/src/a.ts v1'],
     ])
   })
 
@@ -1075,26 +1069,18 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
     expect(h.servers[0]!.events).toContain('shutdown')
   })
 
-  it('poisons a versionless publish when the same process re-opens the uri', async () => {
+  it('prevents a versionless same-process reopen by rotating before the uri is opened again', async () => {
     const h = makeHarness('versioned-then-versionless')
     const first = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
-    expect(first).toMatchObject({ kind: 'ok' })
-    // The second open of the same uri receives a versionless publish: the session
-    // is poisoned while still open (no didClose) and evicted. The same-call retry
-    // recovers on a fresh instance.
     const second = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
-    expect(second).toMatchObject({ kind: 'ok' })
+    expect(first).toMatchObject({ kind: 'ok', version: 1 })
+    expect(second).toMatchObject({ kind: 'ok', version: 1 })
     expect(h.subprocess.spawn).toHaveBeenCalledTimes(2)
-    const poisoned = h.servers[0]!
-    expect(poisoned.events.filter((event) => event.startsWith('didOpen'))).toEqual([
-      'didOpen file:///workspace/src/a.ts v1',
-      'didOpen file:///workspace/src/a.ts v2',
+    expect(h.servers.map((server) => server.events.filter((event) => event.startsWith('didOpen')))).toEqual([
+      ['didOpen file:///workspace/src/a.ts v1'],
+      ['didOpen file:///workspace/src/a.ts v1'],
     ])
-    // Only the first (versioned) open closed; the poisoned v2 open never did.
-    expect(poisoned.events.filter((event) => event.startsWith('didClose'))).toEqual([
-      'didClose file:///workspace/src/a.ts',
-    ])
-    expect(poisoned.events).toContain('shutdown')
+    expect(h.servers[0]!.events).toContain('shutdown')
   })
 
   it('accepts a matching publication that races the didOpen write callback', async () => {
