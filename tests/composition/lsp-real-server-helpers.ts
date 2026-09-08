@@ -14,6 +14,11 @@ export type ProviderCase = {
   readonly oldText: string
   readonly newText: string
   readonly setup?: readonly { readonly path: string; readonly content: string }[]
+  readonly directBadPath: string
+  readonly directBad: string
+  readonly directCleanPath: string
+  readonly directClean: string
+  readonly directSetup?: readonly { readonly path: string; readonly content: string }[]
   readonly args: readonly string[]
 }
 
@@ -54,6 +59,10 @@ export const PROVIDER_CASES: Readonly<Record<RealProvider, ProviderCase>> = {
     bad: 'const answer: number = "bad";\n',
     oldText: '"bad"',
     newText: '42',
+    directBadPath: 'src/direct-bad.ts',
+    directBad: 'const directBad: number = "bad";\n',
+    directCleanPath: 'src/direct-clean.ts',
+    directClean: 'const directClean: number = 42;\n',
     args: ['--stdio'],
   },
   go: {
@@ -62,6 +71,14 @@ export const PROVIDER_CASES: Readonly<Record<RealProvider, ProviderCase>> = {
     oldText: '"bad"',
     newText: '42',
     setup: [{ path: 'go.mod', content: 'module real-lsp-test\n\ngo 1.22\n' }],
+    directBadPath: 'direct-bad/main.go',
+    directBad: 'package main\nvar answer int = "bad"\nfunc main() {}\n',
+    directCleanPath: 'direct-clean/main.go',
+    directClean: 'package main\nvar answer int = 42\nfunc main() {}\n',
+    directSetup: [
+      { path: 'direct-bad/go.mod', content: 'module direct-bad\n\ngo 1.22\n' },
+      { path: 'direct-clean/go.mod', content: 'module direct-clean\n\ngo 1.22\n' },
+    ],
     args: [],
   },
   clangd: {
@@ -69,6 +86,10 @@ export const PROVIDER_CASES: Readonly<Record<RealProvider, ProviderCase>> = {
     bad: 'int answer(void) { return "bad"; }\n',
     oldText: '"bad"',
     newText: '42',
+    directBadPath: 'src/direct-bad.c',
+    directBad: 'int direct_bad(void) { return "bad"; }\n',
+    directCleanPath: 'src/direct-clean.c',
+    directClean: 'int direct_clean(void) { return 42; }\n',
     args: [],
   },
   rust: {
@@ -80,6 +101,10 @@ export const PROVIDER_CASES: Readonly<Record<RealProvider, ProviderCase>> = {
       path: 'Cargo.toml',
       content: '[package]\nname = "real-lsp-test"\nversion = "0.1.0"\nedition = "2021"\n',
     }],
+    directBadPath: 'src/bin/direct_bad.rs',
+    directBad: 'fn main() { let _answer: i32 = "bad"; }\n',
+    directCleanPath: 'src/bin/direct_clean.rs',
+    directClean: 'fn main() { let _answer: i32 = 42; }\n',
     args: [],
   },
   python: {
@@ -87,6 +112,10 @@ export const PROVIDER_CASES: Readonly<Record<RealProvider, ProviderCase>> = {
     bad: 'answer: int = "bad"\n',
     oldText: '"bad"',
     newText: '42',
+    directBadPath: 'src/direct-bad.py',
+    directBad: 'direct_bad: int = "bad"\n',
+    directCleanPath: 'src/direct-clean.py',
+    directClean: 'direct_clean: int = 42\n',
     args: ['--stdio'],
   },
 }

@@ -112,40 +112,33 @@ describe('dsh-lsp-diagnostics explicit real-server lane', () => {
         cleanObserved = noticeText(repaired)?.includes('Status: clean') === true
         expect(cleanObserved, `${provider} must publish a clean result after repair`).toBe(true)
 
-        const directBadRoot = 'direct-bad'
-        const directCleanRoot = 'direct-clean'
-        const directBadPath = join(directBadRoot, providerCase.path)
-        const directCleanPath = join(directCleanRoot, providerCase.path)
-        const absoluteBadPath = join(booted.workspace, directBadPath)
-        const absoluteCleanPath = join(booted.workspace, directCleanPath)
-        for (const setup of providerCase.setup ?? []) {
-          for (const root of [directBadRoot, directCleanRoot]) {
-            const setupPath = join(booted.workspace, root, setup.path)
-            mkdirSync(dirname(setupPath), { recursive: true })
-            writeFileSync(setupPath, setup.content)
-          }
+        const absoluteBadPath = join(booted.workspace, providerCase.directBadPath)
+        const absoluteCleanPath = join(booted.workspace, providerCase.directCleanPath)
+        for (const setup of providerCase.directSetup ?? []) {
+          const setupPath = join(booted.workspace, setup.path)
+          mkdirSync(dirname(setupPath), { recursive: true })
+          writeFileSync(setupPath, setup.content)
         }
         mkdirSync(dirname(absoluteBadPath), { recursive: true })
         mkdirSync(dirname(absoluteCleanPath), { recursive: true })
-        const directRepairedBytes = providerCase.bad.replace(providerCase.oldText, providerCase.newText)
-        writeFileSync(absoluteBadPath, providerCase.bad)
-        writeFileSync(absoluteCleanPath, directRepairedBytes)
+        writeFileSync(absoluteBadPath, providerCase.directBad)
+        writeFileSync(absoluteCleanPath, providerCase.directClean)
 
-        const directBad = await executeTool(booted, 'lsp_diagnostics', { file_path: directBadPath })
+        const directBad = await executeTool(booted, 'lsp_diagnostics', { file_path: providerCase.directBadPath })
         const directBadValue = directToolValue(directBad)
         const directBadText = renderedToolText(directBad)
         directDiagnosticObserved = directBadValue.kind === 'diagnostics'
           && directBadText.includes('[LSP diagnostics]')
           && directBadText.includes(absoluteBadPath)
         expect(directDiagnosticObserved, `${provider} direct call must publish real diagnostics`).toBe(true)
-        expect(readFileSync(absoluteBadPath, 'utf8')).toBe(providerCase.bad)
+        expect(readFileSync(absoluteBadPath, 'utf8')).toBe(providerCase.directBad)
 
-        const directRepaired = await executeTool(booted, 'lsp_diagnostics', { file_path: directCleanPath })
+        const directRepaired = await executeTool(booted, 'lsp_diagnostics', { file_path: providerCase.directCleanPath })
         const directRepairedValue = directToolValue(directRepaired)
         directNoDiagnosticsObserved = directRepairedValue.kind === 'no_diagnostics'
           && renderedToolText(directRepaired).includes('No diagnostics reported for this file snapshot.')
         expect(directNoDiagnosticsObserved, `${provider} direct call must report no_diagnostics after repair`).toBe(true)
-        expect(readFileSync(absoluteCleanPath, 'utf8')).toBe(directRepairedBytes)
+        expect(readFileSync(absoluteCleanPath, 'utf8')).toBe(providerCase.directClean)
       } catch (error) {
         providerError = toError(error)
       } finally {
