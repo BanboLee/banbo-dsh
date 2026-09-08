@@ -4,6 +4,7 @@ import { DEFAULT_CONFIG } from './helpers.js'
 
 const WORKSPACE = { targetKey: 'workspace', displayPath: '/workspace' }
 const TARGET = { targetKey: 'target', displayPath: '/workspace/src/a.ts' }
+const OUTSIDE_TARGET = { targetKey: 'outside-target', displayPath: '/tmp/outside.ts' }
 const WORKSPACE_INFO = { version: 'workspace-v1', type: 'directory' }
 const TARGET_INFO = { version: 'target-v1', type: 'file', size: 12 }
 
@@ -42,15 +43,17 @@ function execution(signal = new AbortController().signal, cwd: string | null = '
 
 function makeFs(options: {
   workspaceInfo?: unknown
+  target?: typeof TARGET
   targetInfos?: unknown[]
   contained?: boolean
   uri?: string
 } = {}): FakeFs {
+  const target = options.target ?? TARGET
   const targetInfos = [...(options.targetInfos ?? [TARGET_INFO, TARGET_INFO])]
   return {
     resolve: vi.fn(async (path: string, opts?: { cwd?: string; signal?: AbortSignal }) => {
       if (path === '/workspace' && opts?.cwd === undefined) return WORKSPACE
-      return TARGET
+      return target
     }),
     stat: vi.fn(async (target: unknown) => {
       if (target === WORKSPACE) {
@@ -305,17 +308,26 @@ describe('lsp_diagnostics eligibility and freshness', () => {
     }
   })
 
-  it('rejects targets outside the canonical workspace before target metadata I/O', async () => {
-    const fs = makeFs({ contained: false })
-    const { tool, runtime } = makeTool({ fs })
+  it.each(['/tmp/outside.ts', '../outside.ts'])(
+    'diagnoses a readable external target for %s using the session workspace as LSP root',
+    async (filePath) => {
+      const fs = makeFs({ target: OUTSIDE_TARGET, contained: false, uri: 'file:///tmp/outside.ts' })
+      const { tool, runtime } = makeTool({ fs })
 
-    await expect(tool.execute({ file_path: '../outside.ts' }, execution())).rejects.toThrow(
-      'target is outside the session workspace',
-    )
-    expect(fs.stat).toHaveBeenCalledTimes(1)
-    expect(fs.stat).toHaveBeenCalledWith(WORKSPACE, expect.any(AbortSignal))
-    expect(runtime.diagnoseTarget).not.toHaveBeenCalled()
-  })
+      await expect(tool.execute({ file_path: filePath }, execution())).resolves.toMatchObject({
+        kind: 'diagnostics',
+        file_path: '/tmp/outside.ts',
+      })
+      expect(fs.contains).not.toHaveBeenCalled()
+      expect(runtime.diagnoseTarget).toHaveBeenCalledWith(
+        OUTSIDE_TARGET,
+        WORKSPACE,
+        'file:///tmp/outside.ts',
+        expect.any(AbortSignal),
+        'target-v1',
+      )
+    },
+  )
 
   it('rejects an extension with no configured provider route', async () => {
     const { tool, runtime } = makeTool({ fs: makeFs({ uri: 'file:///workspace/src/a.js' }) })

@@ -184,13 +184,16 @@ natural-close wait → conditional `handle.terminate()` (only while still alive)
 ## Model Experience
 
 `lsp_diagnostics(file_path)` is a model-callable, read-only tool for one
-existing file under the session workspace. It accepts a workspace-relative or
-absolute path and uses every configured provider and the closed extension route
-documented above. It never creates, edits, or deletes a file. Invalid requests
-fail explicitly with `file_path must be a non-empty string`, `session workspace
-cwd`, `session workspace is not an existing directory`, `target is outside the
-session workspace`, `target does not exist`, `target is not a regular file`,
-`no configured diagnostics provider`, or `target changed during diagnosis`.
+existing file that `ctx.fs` permits the session to read. It accepts a
+workspace-relative or absolute path and uses every configured provider and the
+closed extension route documented above. It has the same path authority as the
+official `read` tool: the session cwd is only the LSP project root, so an
+explicit direct call may diagnose a readable file outside that root. It never
+creates, edits, or deletes a file. Invalid requests fail explicitly with
+`file_path must be a non-empty string`, `session workspace cwd`, `session
+workspace is not an existing directory`, `target does not exist`, `target is
+not a regular file`, `no configured diagnostics provider`, or `target changed
+during diagnosis`.
 
 The direct tool has exactly three canonical outcomes: `diagnostics` with the
 normalized list sorted by the same comparator as automatic rendering and sliced
@@ -232,8 +235,9 @@ unavailable`.
   workspace root.
 - For automatic feedback, agentless tool execution, missing/empty or
   non-directory cwd, and outside-workspace targets are silently out of scope
-  and never produce a notice. Direct calls instead return the explicit
-  path/workspace errors documented above.
+  and never produce a notice. Direct calls use official `read`-equivalent path
+  authority instead: a readable file outside the session cwd is eligible, while
+  that cwd remains the LSP project root.
 - The plugin does not install or download `typescript-language-server`,
   `gopls`, `clangd`, `rust-analyzer`, or `pyright-langserver`; install requested
   executables yourself and configure their paths. A missing server fails open

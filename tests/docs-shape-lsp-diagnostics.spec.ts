@@ -182,7 +182,6 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
     'file_path must be a non-empty string',
     'session workspace cwd',
     'session workspace is not an existing directory',
-    'target is outside the session workspace',
     'target does not exist',
     'target is not a regular file',
     'no configured diagnostics provider',
@@ -190,6 +189,16 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
   ]
   for (const message of explicitErrors) {
     if (!f.includes(message)) failures.push(`missing direct-tool error contract: ${message}`)
+  }
+  if (f.includes('target is outside the session workspace')) {
+    failures.push('direct tool must not claim workspace containment')
+  }
+  const directAuthority = sentencesContaining(f, 'same path authority')
+  if (!directAuthority.some((s) => s.includes('official `read` tool') && s.includes('LSP project root') && s.includes('outside'))) {
+    failures.push('direct tool must document read-equivalent path authority with cwd only as LSP project root')
+  }
+  if (!f.includes('a readable file outside the session cwd is eligible')) {
+    failures.push('limitations must state that readable external files are eligible for direct calls')
   }
   if (!f.includes('`diagnostics`') || !f.includes('`no_diagnostics`') || !f.includes('`unavailable`')) {
     failures.push('direct tool must document diagnostics/no_diagnostics/unavailable as its three canonical outcomes')

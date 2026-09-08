@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { goBuildStatus } from '../helpers/go-tool'
@@ -352,22 +352,30 @@ describe('dsh-lsp-diagnostics real composition', () => {
     }
   }, 30_000)
 
-  it('returns explicit direct-tool errors for missing cwd, outside-workspace targets, and unsupported extensions', async () => {
+  it('diagnoses a readable external file while preserving the session workspace as the LSP root', async () => {
     const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'clean' })
     bootedProfiles.push(booted)
     mkdirSync(join(booted.workspace, 'src'), { recursive: true })
     writeFileSync(join(booted.workspace, 'src', 'unsupported.js'), 'const value = 1;\n')
     const outsidePath = join(booted.profile, 'outside.ts')
-    writeFileSync(outsidePath, 'const outside: number = 1;\n')
+    const outsideContents = 'const outside: number = 1;\n'
+    writeFileSync(outsidePath, outsideContents)
 
     const noCwd = await executeTool(booted, 'lsp_diagnostics', { file_path: 'src/unsupported.js' })
     expect(noCwd.isError).toBe(true)
     expect(noCwd.error?.message).toBe('lsp_diagnostics requires a session workspace cwd')
     expect(renderedToolText(noCwd)).toContain('Error: lsp_diagnostics requires a session workspace cwd')
 
-    const outside = await executeTool(booted, 'lsp_diagnostics', { file_path: outsidePath }, booted.workspace)
-    expect(outside.isError).toBe(true)
-    expect(outside.error?.message).toBe(`lsp_diagnostics: target is outside the session workspace: ${outsidePath}`)
+    for (const filePath of [outsidePath, relative(booted.workspace, outsidePath)]) {
+      const outside = await executeTool(booted, 'lsp_diagnostics', { file_path: filePath }, booted.workspace)
+      expect(outside.isError, filePath).toBe(false)
+      expect(outside.value, filePath).toEqual({ kind: 'no_diagnostics', file_path: outsidePath })
+      expect(renderedToolText(outside), filePath).toContain(`File: ${outsidePath}`)
+      expect(readFileSync(outsidePath, 'utf8'), filePath).toBe(outsideContents)
+    }
+    const protocol = readFileSync(booted.typescriptLog, 'utf8').trim().split('\n')
+    const outsideUri = pathToFileURL(outsidePath).href
+    expect(protocol.filter((entry) => entry === `didOpen ${outsideUri} v1`)).toHaveLength(2)
 
     const unsupported = await executeTool(booted, 'lsp_diagnostics', { file_path: 'src/unsupported.js' }, booted.workspace)
     expect(unsupported.isError).toBe(true)

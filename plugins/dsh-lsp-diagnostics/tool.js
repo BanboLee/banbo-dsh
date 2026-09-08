@@ -105,7 +105,6 @@ const OUTPUT_SCHEMA = /** @type {const} */ ({
  * @typedef {object} FsSeam
  * @property {(path: string, opts?: { cwd?: string, signal?: AbortSignal }) => Promise<import('@deepseek-ai/dsh-fs').FsTarget>} resolve
  * @property {(target: import('@deepseek-ai/dsh-fs').FsTarget, signal?: AbortSignal) => Promise<import('@deepseek-ai/dsh-fs').FsInfo | undefined>} stat
- * @property {(parent: import('@deepseek-ai/dsh-fs').FsTarget, child: import('@deepseek-ai/dsh-fs').FsTarget) => boolean} contains
  * @property {(target: import('@deepseek-ai/dsh-fs').FsTarget) => string} fileUrl
  */
 
@@ -366,9 +365,6 @@ export function createDiagnosticsTool({ fs, runtime, config, now = () => perform
       operation.filePath = sanitizeDisplayPath(target.displayPath)
       early = abortOutcome(operation)
       if (early !== undefined) return early
-      if (fs.contains(workspace, target) !== true) {
-        throw new Error(`lsp_diagnostics: target is outside the session workspace: ${filePath}`)
-      }
       const targetKey = String(target.targetKey ?? '')
       const mutationEpoch = mutationEpochs.get(targetKey)
       const before = await fs.stat(target, signal)
