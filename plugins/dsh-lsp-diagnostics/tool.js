@@ -2,34 +2,34 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { sanitizeDisplayPath } from './render.js'
 
 /** Closed runtime reasons exposed by the canonical tool output. */
-const UNAVAILABLE_REASONS = [
+const UNAVAILABLE_REASONS = /** @type {const} */ ([
   'server not found',
   'server crashed',
   'timeout',
   'malformed response',
   'document too large',
   'diagnostics unavailable',
-]
+])
 
-const POSITION_SCHEMA = {
+const POSITION_SCHEMA = /** @type {const} */ ({
   type: 'object',
   additionalProperties: false,
   properties: {
     line: { type: 'integer', required: true },
     character: { type: 'integer', required: true },
   },
-}
+})
 
-const RANGE_SCHEMA = {
+const RANGE_SCHEMA = /** @type {const} */ ({
   type: 'object',
   additionalProperties: false,
   properties: {
     start: { ...POSITION_SCHEMA, required: true },
     end: { ...POSITION_SCHEMA, required: true },
   },
-}
+})
 
-const DIAGNOSTIC_SCHEMA = {
+const DIAGNOSTIC_SCHEMA = /** @type {const} */ ({
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -43,9 +43,10 @@ const DIAGNOSTIC_SCHEMA = {
     source: { type: 'string', required: true },
     message: { type: 'string', required: true },
   },
-}
+})
 
-const OUTPUT_SCHEMA = {
+/** @satisfies {import('@deepseek-ai/dsh-tools').ValueSchemaSpec} */
+const OUTPUT_SCHEMA = /** @type {const} */ ({
   oneOf: [
     {
       type: 'object',
@@ -82,19 +83,34 @@ const OUTPUT_SCHEMA = {
       },
     },
   ],
-}
+})
+
+/**
+ * @typedef {object} CanonicalDiagnostic
+ * @property {import('./runtime.js').NormalizedRange} range
+ * @property {import('./runtime.js').SeverityToken} severity
+ * @property {string} code
+ * @property {string} source
+ * @property {string} message
+ */
+
+/**
+ * @typedef {{ kind: 'diagnostics', file_path: string, diagnostics: CanonicalDiagnostic[] } |
+ *           { kind: 'no_diagnostics', file_path: string } |
+ *           { kind: 'unavailable', file_path: string, reason: import('./runtime.js').UnavailableReason }} CanonicalResult
+ */
 
 /**
  * @typedef {object} FsSeam
- * @property {(path: string, opts?: { cwd?: string, signal?: AbortSignal }) => Promise<any>} resolve
- * @property {(target: any, signal?: AbortSignal) => Promise<{ version: string, type: string, size?: number } | undefined>} stat
- * @property {(parent: any, child: any) => boolean} contains
- * @property {(target: any) => string} fileUrl
+ * @property {(path: string, opts?: { cwd?: string, signal?: AbortSignal }) => Promise<import('@deepseek-ai/dsh-fs').FsTarget>} resolve
+ * @property {(target: import('@deepseek-ai/dsh-fs').FsTarget, signal?: AbortSignal) => Promise<import('@deepseek-ai/dsh-fs').FsInfo | undefined>} stat
+ * @property {(parent: import('@deepseek-ai/dsh-fs').FsTarget, child: import('@deepseek-ai/dsh-fs').FsTarget) => boolean} contains
+ * @property {(target: import('@deepseek-ai/dsh-fs').FsTarget) => string} fileUrl
  */
 
 /**
  * @typedef {object} RuntimeSeam
- * @property {(target: any, canonicalWorkspace: any, canonicalUri: string, signal?: AbortSignal, expectedVersion?: string) => Promise<import('./runtime.js').DiagnosisOutcome>} diagnoseTarget
+ * @property {(target: import('@deepseek-ai/dsh-fs').FsTarget, canonicalWorkspace: import('@deepseek-ai/dsh-fs').FsTarget, canonicalUri: string, signal?: AbortSignal, expectedVersion?: string) => Promise<import('./runtime.js').DiagnosisOutcome>} diagnoseTarget
  */
 
 /**
@@ -113,12 +129,16 @@ const OUTPUT_SCHEMA = {
  * @property {boolean} cleanupAborted
  * @property {boolean} deadlineFired
  * @property {string} filePath
- * @property {ReturnType<typeof setTimeout>} timer
+ * @property {ReturnType<typeof setTimeout> | undefined} [timer]
  * @property {() => void} onCallerAbort
  * @property {Promise<unknown>} promise
  */
 
-/** Return the lowercase final suffix of a canonical file URI. */
+/**
+ * Return the lowercase final suffix of a canonical file URI.
+ * @param {string} uri
+ * @returns {string}
+ */
 function extensionOf(uri) {
   try {
     const pathname = new URL(uri).pathname
@@ -131,7 +151,11 @@ function extensionOf(uri) {
   }
 }
 
-/** Build a consistent cancellation error after owned work reaches quiescence. */
+/**
+ * Build a consistent cancellation error after owned work reaches quiescence.
+ * @param {AbortSignal} signal
+ * @returns {Error}
+ */
 function abortError(signal) {
   const error = new Error('lsp_diagnostics operation aborted')
   error.name = 'AbortError'
@@ -145,12 +169,21 @@ function abortError(signal) {
   return error
 }
 
-/** Sanitize one model-rendered field without adding lines. */
+/**
+ * Sanitize one model-rendered field without adding lines.
+ * @param {string} value
+ * @returns {string}
+ */
 function singleLine(value) {
   return value.replace(/[\r\n\u2028\u2029]+/gu, ' ')
 }
 
-/** Keep a complete result inside the configured Unicode code-point cap. */
+/**
+ * Keep a complete result inside the configured Unicode code-point cap.
+ * @param {string} text
+ * @param {number} maxResultChars
+ * @returns {string}
+ */
 function capResult(text, maxResultChars) {
   const points = Array.from(text)
   if (points.length <= maxResultChars) return text
@@ -159,7 +192,12 @@ function capResult(text, maxResultChars) {
   return points.slice(0, maxResultChars - marker.length).join('') + marker.join('')
 }
 
-/** Pure model rendering of one canonical diagnostics result. */
+/**
+ * Pure model rendering of one canonical diagnostics result.
+ * @param {CanonicalResult} value
+ * @param {ToolConfig} config
+ * @returns {string}
+ */
 function renderResult(value, config) {
   const lines = ['[LSP diagnostics]', `File: ${singleLine(value.file_path)}`]
   if (value.kind === 'no_diagnostics') {
@@ -183,7 +221,11 @@ function renderResult(value, config) {
   return capResult(lines.join('\n'), config.maxResultChars)
 }
 
-/** Project a runtime diagnostic onto the strict canonical tool shape. */
+/**
+ * Project a runtime diagnostic onto the strict canonical tool shape.
+ * @param {import('./runtime.js').NormalizedDiagnostic} diagnostic
+ * @returns {CanonicalDiagnostic}
+ */
 function projectDiagnostic(diagnostic) {
   return {
     range: {
@@ -228,7 +270,12 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
   const mutationEpochs = new Map()
   let admissionOpen = true
 
-  /** Start and track one operation before its first filesystem microtask. */
+  /**
+   * Start and track one operation before its first filesystem microtask.
+   * @param {AbortSignal} callerSignal
+   * @param {(operation: ActiveOperation) => Promise<CanonicalResult>} run
+   * @returns {Promise<CanonicalResult>}
+   */
   function beginOperation(callerSignal, run) {
     const controller = new AbortController()
     /** @type {ActiveOperation} */
@@ -239,7 +286,6 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
       cleanupAborted: false,
       deadlineFired: false,
       filePath: '',
-      timer: /** @type {ReturnType<typeof setTimeout>} */ (undefined),
       onCallerAbort: () => {},
       promise: Promise.resolve(),
     }
@@ -265,7 +311,11 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
     return promise
   }
 
-  /** Throw external cancellation; report an owned deadline as canonical unavailable. */
+  /**
+   * Throw external cancellation; report an owned deadline as canonical unavailable.
+   * @param {ActiveOperation} operation
+   * @returns {Extract<CanonicalResult, { kind: 'unavailable' }> | undefined}
+   */
   function abortOutcome(operation) {
     if (operation.callerAborted || operation.cleanupAborted) throw abortError(operation.callerSignal)
     if (operation.deadlineFired) {
@@ -274,7 +324,13 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
     return undefined
   }
 
-  /** Resolve, validate, diagnose, and freshness-check one target. */
+  /**
+   * Resolve, validate, diagnose, and freshness-check one target.
+   * @param {string} filePath
+   * @param {string} workspaceRoot
+   * @param {ActiveOperation} operation
+   * @returns {Promise<CanonicalResult>}
+   */
   async function executeCall(filePath, workspaceRoot, operation) {
     operation.filePath = sanitizeDisplayPath(filePath)
     try {
@@ -415,6 +471,7 @@ export function createDiagnosticsTool({ fs, runtime, config }) {
    * Advance the ABA guard after an accepted mutating fs/observed event. The
    * registration layer must apply the same mutating-actor filter as the
    * collector; reads and absent observations must never call this hook.
+   * @param {import('@deepseek-ai/dsh-fs').FsTarget} target
    */
   function observeMutation(target) {
     const targetKey = String(target?.targetKey ?? '')

@@ -519,7 +519,7 @@ export function apply(ctx, config) {
   const services = /** @type {{ fs: unknown, subprocess: unknown, tools: { register(definition: unknown): () => unknown } }} */ (/** @type {unknown} */ (ctx))
   const fs = /** @type {import('./tool.js').FsSeam} */ (services.fs)
   const runtime = new DiagnosticsRuntime({
-    fs: /** @type {import('./runtime.js').FsSeam} */ (fs),
+    fs: /** @type {import('./runtime.js').FsSeam} */ (/** @type {unknown} */ (fs)),
     subprocess: /** @type {import('./runtime.js').SubprocessSeam} */ (services.subprocess),
     config,
   })

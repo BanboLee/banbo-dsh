@@ -103,7 +103,7 @@ function mutableServers(): {
   }
 }
 
-function fakeTools(register = vi.fn(() => vi.fn(() => true))): { register: typeof register } {
+function fakeTools(register = vi.fn((_definition: unknown) => vi.fn(() => true))): { register: typeof register } {
   return { register }
 }
 
