@@ -6,7 +6,7 @@ function parentPid(pid) {
     const match = /^PPid:\s+(\d+)$/m.exec(status)
     return match === null ? undefined : Number(match[1])
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined
+    if (error instanceof Error && 'code' in error && (error.code === 'ENOENT' || error.code === 'ESRCH')) return undefined
     throw error
   }
 }
