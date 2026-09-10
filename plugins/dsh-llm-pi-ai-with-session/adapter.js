@@ -10,16 +10,11 @@
  * @module dsh-llm-pi-ai-with-session/adapter
  */
 
-import { attributionHeaders, contentHasImage, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
+import { contentHasImage, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import { streamSimple } from '@earendil-works/pi-ai/compat'
-import { toContext } from './context.js'
+import { assertSupportedImageRoles, toContext } from './context.js'
+import { buildModel, imageContext, requestHeaders, resolveModelInput } from './model.js'
 import { toStreamChunks } from './stream.js'
-
-/** Zero-cost model descriptor (pricing is not a concern of this plugin). */
-const NO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
-
-const DEFAULT_CONTEXT_WINDOW = 1_000_000
-const DEFAULT_MAX_TOKENS = 32_768
 
 /** Reasoning efforts this adapter advertises by default, aligned with pi-ai ThinkingLevel. */
 const DEFAULT_REASONING_EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -73,52 +68,6 @@ function thinkingLevelMapFromSource(entry) {
     }
   }
   return map
-}
-
-/**
- * Build the pi-ai Model descriptor for one request model id under one source
- * provider. The descriptor carries the source provider's gateway and the
- * openai-completions wire protocol, so pi-ai's `streamSimple` dispatches to
- * the OpenAI-compatible implementation without any provider registration of
- * its own. Model metadata (name/context/maxTokens) comes from the source
- * provider's `models` entry; unrecognized model ids still pass through.
- * @param config - plugin configuration.
- * @param source - the mirrored source provider name.
- * @param modelId - the request's model id (passthrough when not configured).
- * @returns a pi-ai Model descriptor.
- */
-function buildModel(config, source, modelId) {
-  const provider = config.providers?.[source] ?? {}
-  const entry = provider.models?.find(model => model.id === modelId)
-  const thinkingLevelMap = thinkingLevelMapFromSource(entry)
-  return {
-    id: modelId,
-    name: entry?.name ?? modelId,
-    api: 'openai-completions',
-    provider: source,
-    baseUrl: provider.baseURL,
-    reasoning: thinkingLevelMap === undefined ? false : true,
-    input: ['text'],
-    ...thinkingLevelMap === undefined ? {} : { thinkingLevelMap },
-    cost: NO_COST,
-    contextWindow: entry?.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
-    maxTokens: entry?.maxTokens ?? DEFAULT_MAX_TOKENS,
-  }
-}
-
-/**
- * The adapter's fixed header set plus the live session header.
- * @param provider - source provider profile.
- * @param sessionHeader - configured header name for the live session id.
- * @param sessionId - the request's session id.
- * @returns the request headers.
- */
-function requestHeaders(provider, sessionHeader, sessionId) {
-  return {
-    ...(provider.headers ?? {}),
-    [sessionHeader]: String(sessionId),
-    ...attributionHeaders(),
-  }
 }
 
 /**
@@ -199,6 +148,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
       name: entry?.name ?? model,
       ...entry?.contextWindow === undefined ? {} : { context: { contextWindow: entry.contextWindow } },
       ...entry?.maxTokens === undefined ? {} : { defaultMaxTokens: entry.maxTokens },
+      inputModalities: resolveModelInput(this.config.providers?.[source] ?? {}, source, model),
       ...this.reasoningMetadata(source, entry) === undefined ? {} : { reasoning: this.reasoningMetadata(source, entry) },
     }
   }
@@ -231,7 +181,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
       provider,
       id: entry.id,
       name: entry.name ?? entry.id,
-      inputModalities: ['text'],
+      inputModalities: resolveModelInput(this.config.providers?.[source] ?? {}, source, entry.id),
     }))
   }
 
@@ -253,14 +203,24 @@ export class SessionHeaderAdapter extends LlmAdapter {
         'MISSING_CREDENTIAL',
       )
     }
-    const model = buildModel(this.config, source, options.model)
-    // This route only accepts text, so image content is rejected up front with
-    // a loud UNSUPPORTED_CONTENT instead of being silently dropped or rounded
-    // into an opaque error.
-    if (options.messages.some(message => contentHasImage(message.content)) && !model.input.includes('image')) {
+    const entry = provider.models?.find(candidate => candidate.id === options.model)
+    const model = buildModel(this.config, source, options.model, thinkingLevelMapFromSource(entry))
+    const containsImage = options.messages.some(message => contentHasImage(message.content))
+    if (containsImage) assertSupportedImageRoles(options.messages)
+    if (containsImage && !model.input.includes('image')) {
       throw new LlmError(`dsh-llm-pi-ai-with-session: model "${model.id}" does not accept image input`, 'UNSUPPORTED_CONTENT')
     }
-    const context = toContext(options)
+    const attachments = containsImage ? this.ctx?.get?.('attachments') : undefined
+    if (containsImage && attachments === undefined) {
+      throw new LlmError(
+        'dsh-llm-pi-ai-with-session: image input requires the durable attachment service',
+        'UNSUPPORTED_CONTENT',
+      )
+    }
+    const context = await toContext(
+      options,
+      attachments === undefined ? undefined : imageContext(provider, attachments, this.ctx?.get?.('fs')),
+    )
     const events = streamSimple(model, context, {
       apiKey,
       sessionId: String(options.sessionId),

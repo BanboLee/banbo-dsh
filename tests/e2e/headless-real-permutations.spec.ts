@@ -60,7 +60,7 @@ realDescribe('all real local plugin layer permutations', () => {
     expect(booted.toolNames()).toContain('fish')
     expect(booted.toolNames()).not.toContain('bash')
     expect(shell.exitCode).toBe(0)
-    expect(shell.stderr.text).toContain('rtk rewrite exit 3 (ask)')
+    expect(shell.stderr.text).not.toContain('rtk rewrite exit 3 (ask)')
     expect(readTextToolResult(graph)).toContain(harness.defaultIndexedSymbol)
   }, 120_000)
 })

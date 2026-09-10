@@ -1,9 +1,8 @@
 /**
- * Process/result note wrappers for the RTK shell executor: the fail-closed
- * background handle for an RTK deny, the live-getter wrapper that prefixes an
- * exit-3 approval note to the first background read, and the foreground
- * stderr-note appender. Pure functions over structural process/result shapes;
- * no delegate or oracle logic lives here.
+ * Process-result wrappers for the RTK shell executor: the fail-closed
+ * background handle for an RTK deny and deprecated compatibility helpers for
+ * legacy consumers. The mounted plugin never calls the compatibility helpers,
+ * so exit-3 (`ask`) execution remains silent.
  *
  * @module dsh-rtk/process-result
  */
@@ -34,9 +33,8 @@ export function deniedProcess(reason) {
 }
 
 /**
- * Wrap a live delegated process so the exit-3 approval note is prefixed to
- * the first read; every lifecycle fact is delegated live through getters so
- * it stays in sync as the underlying process settles.
+ * Legacy compatibility helper for consumers of the prior public API. The
+ * mounted plugin does not call this helper; ask rewrites are silent at runtime.
  * @param {{ status: string; exitCode: number | null; signal: string | null; sandbox?: object; done: Promise<void>; readOutput: () => { delta: string; lossy: boolean }; kill: () => boolean }} inner
  * @param {string} note
  * @returns {{ readonly status: string; readonly exitCode: number | null; readonly signal: string | null; readonly sandbox?: object; readonly done: Promise<void>; readOutput: () => { delta: string; lossy: boolean }; kill: () => boolean }}
@@ -73,8 +71,8 @@ export function withNoteProcess(inner, note) {
 }
 
 /**
- * Append a deterministic note to a settled result's stderr, preserving the
- * delegate's own stderr text and every other result fact.
+ * Legacy compatibility helper for consumers of the prior public API. The
+ * mounted plugin does not call this helper; ask rewrites are silent at runtime.
  * @param {{ stderr: { text: string }; [key: string]: unknown }} result
  * @param {string} note
  * @returns {{ stderr: { text: string }; [key: string]: unknown }}

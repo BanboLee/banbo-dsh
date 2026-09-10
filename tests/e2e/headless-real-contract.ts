@@ -3,6 +3,7 @@
 import type {
   BootContext,
   RealProfileProof,
+  ShellProcessLike,
   ShellRunResultLike,
 } from '../composition/profile-loader'
 import type { RealBootOptions } from './headless-real-runtime'
@@ -38,6 +39,7 @@ export type RealBoot = {
   readonly localPluginOrder: () => string[]
   readonly toolNames: () => string[]
   readonly runShell: (request: ShellRequest | string) => Promise<ShellRunResultLike>
+  readonly startShell: (request: ShellRequest | string) => ShellProcessLike
   readonly executeTool: (
     name: string,
     args: Readonly<Record<string, unknown>>,

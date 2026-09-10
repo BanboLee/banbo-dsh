@@ -43,10 +43,11 @@ const execFileWithInputAsync = promisify(execFileWithInput)
  * Pipe text through `rtk pipe -f grep`. Any process failure fails open to the
  * original text and never escapes to the caller.
  * @param {string} text
- * @param {{ rtkBinary?: string; timeoutMs?: number }} [options]
+ * @param {{ rtkBinary?: string | null; timeoutMs?: number }} [options]
  * @returns {Promise<string>}
  */
 export async function rtkPipeCompress(text, { rtkBinary = 'rtk', timeoutMs = RTK_PIPE_TIMEOUT_MS } = {}) {
+  if (rtkBinary === null) return text
   try {
     const result = await execFileWithInputAsync(
       rtkBinary,
@@ -65,7 +66,7 @@ export async function rtkPipeCompress(text, { rtkBinary = 'rtk', timeoutMs = RTK
  * spill-recovery listener and every other downstream listener still run, then
  * compresses the effective text content while carrying downstream decision
  * fields forward.
- * @param {{ rtkBinary?: string; timeoutMs?: number }} [options]
+ * @param {{ rtkBinary?: string | null; timeoutMs?: number }} [options]
  * @returns {(exec: { name: string }, result: { content: import('@deepseek-ai/cordis').ContentBlock[] }, next: () => Promise<object>) => Promise<object>}
  */
 export function createGrepPostExecuteListener(options = {}) {

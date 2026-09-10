@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
@@ -11,6 +11,9 @@ import {
 
 const REAL_E2E_ENABLED = process.env.RUN_REAL_HEADLESS_E2E === '1'
 const realDescribe = REAL_E2E_ENABLED ? describe : describe.skip
+// This scenario proves rewrite execution with a POSIX `rtk` PATH shim; native
+// Windows is intentionally out of scope until it has a platform-specific shim.
+const posixShimIt = process.platform === 'win32' ? it.skip : it
 let harness: RealHeadlessHarness
 let booted: RealBoot
 
@@ -66,7 +69,7 @@ realDescribe('real RTK decoration in the headless profile', () => {
     // Then the rewritten git command executes and the untouched segment survives
     expect(result.exitCode).toBe(0)
     expect(result.stdout.text.endsWith(`${harness.gitProject}\nquoted value\npreserved\n`)).toBe(true)
-    expect(result.stderr.text).toContain('rtk rewrite exit 3 (ask)')
+    expect(result.stderr.text).not.toContain('rtk rewrite exit 3 (ask)')
   })
 
   it('passes supported commands with substitution and file redirects through unchanged', async () => {
@@ -160,14 +163,68 @@ realDescribe('real RTK decoration in the headless profile', () => {
       workdir: harness.gitProject,
       sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: harness.gitProject },
     })
-    // Then allow is silent, ask is noted, and deny is a typed machine failure
+    // Then allow and ask are silent, and deny is a typed machine failure
     expect(allowed.stderr.text).not.toContain('rtk rewrite exit 3')
-    expect(asked.stderr.text).toContain('rtk rewrite exit 3 (ask)')
+    expect(asked.stderr.text).not.toContain('rtk rewrite exit 3')
     await expect(booted.runShell({
       command: denyCommand,
       workdir: harness.gitProject,
       sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: harness.gitProject },
     })).rejects.toMatchObject({ name: 'RtkDenyError', code: 'RTK_DENY' })
+  })
+
+  posixShimIt('keeps background ask output silent and preserves background deny feedback', async () => {
+    // Given a command proven to receive the project-local RTK ask verdict
+    const askCommand = 'git log -1 --oneline'
+    const rewrite = spawnSync(RTK_BIN, ['rewrite', askCommand], {
+      cwd: harness.gitProject,
+      encoding: 'utf8',
+      timeout: 5_000,
+    })
+    expect(rewrite.status, rewrite.stderr).toBe(3)
+    expect(rewrite.stdout.trim()).not.toBe('')
+    expect(rewrite.stdout.trim()).not.toBe(askCommand)
+
+    // Given a request-local rtk shim that only a rewritten command can invoke
+    const shimDir = join(harness.profile, 'background-rtk-shim')
+    const shimMarker = join(shimDir, 'invoked')
+    mkdirSync(shimDir, { recursive: true })
+    writeFileSync(join(shimDir, 'rtk'), [
+      '#!/usr/bin/env sh',
+      'printf "invoked\\n" > "$RTK_SHIM_MARKER"',
+      'exec "$RTK_PINNED_BINARY" "$@"',
+      '',
+    ].join('\n'), { mode: 0o755 })
+
+    // When the real fish provider starts the ask and deny commands
+    const asked = booted.startShell({
+      command: askCommand,
+      workdir: harness.gitProject,
+      env: {
+        PATH: `${shimDir}${delimiter}${process.env.PATH ?? ''}`,
+        RTK_SHIM_MARKER: shimMarker,
+        RTK_PINNED_BINARY: RTK_BIN,
+      },
+      sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: harness.gitProject },
+    })
+    const denied = booted.startShell({
+      command: 'git branch --show-current',
+      workdir: harness.gitProject,
+      sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: harness.gitProject },
+    })
+
+    // When the background handles settle and are read
+    await Promise.all([asked.done, denied.done])
+    const askedOutput = asked.readOutput()
+    const deniedOutput = denied.readOutput()
+
+    // Then ask exposes only delegated command output, while deny remains visible
+    expect(asked.exitCode).toBe(0)
+    expect(readFileSync(shimMarker, 'utf8')).toBe('invoked\n')
+    expect(askedOutput).toEqual({ delta: expect.stringMatching(/^[0-9a-f]+ fixture\n$/), lossy: false })
+    expect(askedOutput.delta).not.toContain('[rtk]')
+    expect(denied.status).toBe('killed')
+    expect(deniedOutput.delta).toContain('[rtk] rtk rewrite denied the command:')
   })
 
   it('compresses real grep output once through the mounted DSH post-execute pipeline', async () => {

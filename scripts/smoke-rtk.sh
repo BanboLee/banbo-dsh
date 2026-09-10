@@ -10,7 +10,7 @@ set -euo pipefail
 # safe to run in any environment and is never a required acceptance gate.
 #
 # Real `rtk rewrite` exits 0 (rewrite), 1 (passthrough), 2 (deny), or
-# 3 (ask, which the plugin maps to rewrite-with-note). The smoke runs one
+# 3 (ask, which the plugin maps to a silent rewrite). The smoke runs one
 # rewrite and verifies the observed exit code is one of those four contract
 # values.
 
@@ -48,7 +48,7 @@ case "$CODE" in
 0) echo "smoke-rtk: rtk rewrite exit 0 (rewrite) -> $OUTPUT" ;;
 1) echo "smoke-rtk: rtk rewrite exit 1 (passthrough) -> $OUTPUT" ;;
 2) echo "smoke-rtk: rtk rewrite exit 2 (deny) -> $OUTPUT" ;;
-3) echo "smoke-rtk: rtk rewrite exit 3 (ask, rewrite-with-note) -> $OUTPUT" ;;
+3) echo "smoke-rtk: rtk rewrite exit 3 (ask, silent rewrite) -> $OUTPUT" ;;
 *)
 	echo "smoke-rtk: unexpected rtk rewrite exit $CODE (expected 0/1/2/3): $OUTPUT" >&2
 	exit 1

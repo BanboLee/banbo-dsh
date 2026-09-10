@@ -48,6 +48,7 @@ llm-pi-ai:
           name: gpt-5.5
           contextWindow: 1000000
           maxTokens: 128000
+          input: [text, image]
 
 # 插件段：只声明 session route；baseURL/apiKeyEnv/models/reasoning 一律不写
 llm-pi-ai-with-session:
@@ -69,7 +70,7 @@ llm-pi-ai-with-session:
 | `routes[].source` | 必填 | 继承配置的 `llm-pi-ai.providers.<source>`。 |
 | `routes[].displayName` | `route` | 模型选择器显示名，建议加上 `(session)` 与原 provider 区分。 |
 
-插件没有 `suffix`、`reasoning`、`reasoningEfforts` 配置——**路由名只来自 `routes[].route`，推理能力从 source provider 继承**：默认档位取 source provider 的 `reasoning`，可选档位取 source 模型声明的 `reasoningEfforts` dict（未声明时用默认列表 `[off, low, medium, high, xhigh, max]`，`false` 表示禁用推理）。`baseURL`、`apiKeyEnv`、`headers`、`models` 同样从 `ctx.settings.get('llm-pi-ai')` 的对应 provider 逐条继承，模型元数据（name/contextWindow/maxTokens）取自 source provider 的 models 表。若 settings namespace 未注册、providers 为空或 routes 为空，插件以零路由 dormant 启动，不报错。
+插件没有 `suffix`、`reasoning`、`reasoningEfforts` 配置——**路由名只来自 `routes[].route`，推理与输入模态从 source provider 继承**：默认档位取 source provider 的 `reasoning`，可选档位取 source 模型声明的 `reasoningEfforts` dict（未声明时用默认列表 `[off, low, medium, high, xhigh, max]`，`false` 表示禁用推理）。输入模态按 source 模型的非空 `input`、pi-ai 内置 catalog、provider `defaultInput`、`[text]` 的顺序解析。图片模型使用 Harness 的持久附件服务生成受像素和字节预算约束的请求图片；超出请求预算的历史图片会保留可用的只读附件路径。文本模型由 Harness 把各角色中的图片投影为稳定文本占位符。`baseURL`、`apiKeyEnv`、`headers`、`models` 同样从 `ctx.settings.get('llm-pi-ai')` 的对应 provider 逐条继承。若 settings namespace 未注册、providers 为空或 routes 为空，插件以零路由 dormant 启动，不报错。
 
 ### 请求头
 
@@ -98,7 +99,7 @@ agent-default-model:
 ## 行为细节
 
 - **显式路由**：插件在 apply 时读取 `ctx.settings.get('llm-pi-ai')` 的 providers，只注册 `routes` 中声明的路由；网关（baseURL）、凭据（apiKeyEnv）、静态 headers、模型表、推理能力全部继承自 source provider。声明的 source 不存在时插件加载失败；未声明的路由由 Harness 以 `NO_ADAPTER` 拒绝。
-- **消息转换**：`GenerateOptions.messages` → pi-ai Context（文本、工具、工具结果、assistant 重放）。系统提示走 `options.system` → pi-ai 的 `systemPrompt` 槽；历史中的 system 消息折叠为 user 消息以保持顺序。图片内容在发请求前被显式拒绝（`UNSUPPORTED_CONTENT`），不会静默丢弃（assistant 图片同样拒绝，作为纵深防御）。
+- **消息转换**：`GenerateOptions.messages` → pi-ai Context（文本、用户图片、工具、工具结果、assistant 重放）。系统提示走 `options.system` → pi-ai 的 `systemPrompt` 槽；历史中的 system 消息折叠为 user 消息以保持顺序。图片模型通过持久附件服务读取确定性的请求版本，并在图片前加入附件标识、实际请求尺寸和可用的只读路径；pi-ai 不能重放的 system 或 assistant 图片以 `UNSUPPORTED_CONTENT` 拒绝。文本模型则由 Harness 在 adapter dispatch 前把所有角色中的图片投影为稳定文本占位符。
 - **事件转换**：pi-ai 的 `AssistantMessageEventStream` → harness `StreamChunk`（text / reasoning / tool-call 增量、usage、finish）。工具参数从 pi-ai 的已解析对象序列化回 raw JSON 字符串。
 - **错误映射**：把 pi-ai 的错误文案归类为 harness 的 `LlmError` code——上下文超限归 `CONTEXT_WINDOW_EXCEEDED`（触发 harness 自动压缩）、配额/余额耗尽归 `QUOTA`、`429`/限流归 `RATE_LIMIT`，其余按 `AUTH` / `INVALID_REQUEST` / `SERVER` / `TIMEOUT` / `TRANSPORT` 归类。
 - **推理档位**：完全继承源 provider——默认档位取 provider 级 `reasoning`，可选档位取模型级 `reasoningEfforts` dict（其 wire spelling 原样透传给 pi-ai，所以 `xhigh` / `max` 会真实发送，不会被钳到 `high`）；模型未声明时用默认列表，`false` 禁用推理。
@@ -121,11 +122,12 @@ env -u NODE_ENV npx vitest run plugins/dsh-llm-pi-ai-with-session
 - 按 provider 分发：各路由请求打到各自的网关、用各自的 api key
 - 缺 API key 时以 `MISSING_CREDENTIAL` 失败；未镜像路由以 `NO_ADAPTER` 失败
 - 推理能力继承：默认档位取源 provider 的 `reasoning`，可选档位取源模型的 `reasoningEfforts` dict
+- 图片能力继承：源模型声明 `input: [text, image]` 后，请求体包含图片且保留动态 session header
 - settings 集成路径：stub `llm-pi-ai` namespace + 内存 settings provider，验证从 settings 镜像
 
 ## 限制
 
-- 仅支持文本 + 工具调用；图片上送未实现，图片输入会以 `UNSUPPORTED_CONTENT` 显式拒绝。
+- 图片模型仅直接上送 user 消息及其中工具结果的图片；system 和 assistant 图片不能由 pi-ai 重放，会以 `UNSUPPORTED_CONTENT` 拒绝。文本模型的所有历史图片由 Harness 预先投影为文本占位符。
 - 只复用 pi-ai 的 openai-completions 实现，不支持其它线上协议。
 - 只注册配置中声明的 route，不能与其它已注册路由冲突。
 - 依赖 `llm-pi-ai` 的 settings namespace 已注册（含 providers）；未注册或为空时插件 dormant，不提供任何路由。

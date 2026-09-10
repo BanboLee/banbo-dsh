@@ -39,6 +39,10 @@ export interface ProviderProfile {
   reasoning?: string
   displayName?: string
   headers?: Record<string, string | null>
+  defaultInput?: string[]
+  maxRequestImageBytes?: number
+  requestImagePixelBudget?: number
+  requestImageMaxBytes?: number
   models?: Array<{
     id: string
     name?: string
@@ -219,11 +223,16 @@ export const llmPiAiSchema = z.object({
     reasoning: z.string(),
     displayName: z.string(),
     headers: z.dict(z.union([z.string(), z.const(null)])),
+    defaultInput: z.array(z.union(['text', 'image'])).default(['text']),
+    maxRequestImageBytes: z.number(),
+    requestImagePixelBudget: z.number(),
+    requestImageMaxBytes: z.number(),
     models: z.array(z.object({
       id: z.string().required(),
       name: z.string(),
       contextWindow: z.number(),
       maxTokens: z.number(),
+      input: z.array(z.union(['text', 'image'])),
     })),
   })).default({}),
 })

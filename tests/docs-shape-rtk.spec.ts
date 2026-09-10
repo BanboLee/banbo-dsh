@@ -93,8 +93,8 @@ function exitMappingChecks(readme: string): string[] {
     ) {
       failures.push('exit 2 row must bind deny to fail-closed RtkDenyError with zero delegate invocations')
     }
-    if (code === 3 && !(row.includes('rewrite-with-note') && /(?:never|no|not) interactive approval/.test(row))) {
-      failures.push('exit 3 row must bind ask to rewrite-with-note with no interactive approval')
+    if (code === 3 && !(row.includes('rewritten command') && row.includes('silently') && /(?:never|no|not) interactive approval/.test(row))) {
+      failures.push('exit 3 row must bind ask to a silent rewritten command with no interactive approval')
     }
   }
   return failures

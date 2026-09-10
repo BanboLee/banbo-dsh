@@ -4,7 +4,13 @@
  * @module dsh-llm-pi-ai-with-session/context
  */
 
-import { LlmError } from '@deepseek-ai/dsh-llm'
+import {
+  contentHasImage,
+  LlmError,
+  offloadedImageText,
+  offloadRequestImagesWithPolicy,
+  requestImageHandleText,
+} from '@deepseek-ai/dsh-llm'
 
 /**
  * Join the text blocks of one harness message.
@@ -16,6 +22,66 @@ function flattenText(content) {
     .filter(block => block.type === 'text')
     .map(block => block.text)
     .join('')
+}
+
+export function assertSupportedImageRoles(messages) {
+  for (const message of messages) {
+    if (message.role !== 'user' && contentHasImage(message.content)) {
+      throw new LlmError(
+        `dsh-llm-pi-ai-with-session: image input is not supported in ${message.role} history`,
+        'UNSUPPORTED_CONTENT',
+      )
+    }
+  }
+}
+
+function collectImageRefs(content, refs) {
+  for (const block of content) {
+    if (block.type === 'image') refs.set(block.attachment.attachmentId, block.attachment)
+    if (block.type === 'tool-result') collectImageRefs(block.content, refs)
+  }
+}
+
+async function prepareRequestImages(messages, images, signal) {
+  const refs = new Map()
+  for (const message of messages) collectImageRefs(message.content, refs)
+  const requestImages = new Map()
+  await Promise.all([...refs.values()].map(async (ref) => {
+    requestImages.set(
+      ref.attachmentId,
+      await images.attachments.readImageRequest(ref, images.requestImagePolicy, signal),
+    )
+  }))
+  return requestImages
+}
+
+async function toPiUserContent(content, requestImages, resolveImageAccess) {
+  const converted = []
+  for (const block of content) {
+    if (block.type === 'text') {
+      if (block.text.length > 0) converted.push({ type: 'text', text: block.text })
+      continue
+    }
+    if (block.type === 'image') {
+      const image = requestImages.get(block.attachment.attachmentId)
+      converted.push({
+        type: 'text',
+        text: requestImageHandleText(block.attachment, image, resolveImageAccess?.(block.attachment)),
+      })
+      converted.push({ type: 'image', data: Buffer.from(image.data).toString('base64'), mimeType: image.mediaType })
+      continue
+    }
+    if (block.type === 'tool-result') {
+      const nested = await toPiUserContent(block.content, requestImages, resolveImageAccess)
+      if (typeof nested === 'string') {
+        if (nested.length > 0) converted.push({ type: 'text', text: nested })
+      } else {
+        converted.push(...nested)
+      }
+    }
+  }
+  if (converted.every(block => block.type === 'text')) return converted.map(block => block.text).join('')
+  return converted
 }
 
 /**
@@ -83,21 +149,23 @@ function toPiAssistant(message) {
  * @param toolNames - tool-call id → name map recovered from assistant turns.
  * @returns the pi-ai messages.
  */
-function toPiUserMessages(message, toolNames) {
+async function toPiUserMessages(message, toolNames, requestImages, resolveImageAccess) {
   const results = message.content.filter(block => block.type === 'tool-result')
   const regular = message.content.filter(block => block.type !== 'tool-result')
   const messages = []
-  const text = flattenText(regular)
-  if (text.length > 0 || results.length === 0) {
-    messages.push({ role: 'user', content: text, timestamp: 0 })
+  const content = await toPiUserContent(regular, requestImages, resolveImageAccess)
+  if (content.length > 0 || results.length === 0) {
+    messages.push({ role: 'user', content, timestamp: 0 })
   }
   for (const result of results) {
-    const nested = flattenText(result.content)
+    const nested = await toPiUserContent(result.content, requestImages, resolveImageAccess)
     messages.push({
       role: 'toolResult',
       toolCallId: result.toolCallId,
       toolName: toolNames.get(result.toolCallId) ?? 'unknown',
-      content: [{ type: 'text', text: nested || '(no output)' }],
+      content: typeof nested === 'string'
+        ? [{ type: 'text', text: nested || '(no output)' }]
+        : nested,
       isError: result.isError ?? false,
       timestamp: 0,
     })
@@ -114,12 +182,35 @@ function toPiUserMessages(message, toolNames) {
  * preserve order — the harness sends the system prompt via `options.system`.
  *
  * @param options - the harness request.
+ * @param images - durable attachment service and request-image policy.
  * @returns the pi-ai context (`tools` omitted when the request declares none).
  */
-export function toContext(options) {
+export async function toContext(options, images) {
+  assertSupportedImageRoles(options.messages)
+  const requestMessages = images === undefined
+    ? options.messages
+    : offloadRequestImagesWithPolicy(options.messages, {
+        representation: 'base64',
+        ...images.maxRequestImageBytes === undefined ? {} : { maxBytes: images.maxRequestImageBytes },
+        byteQuantum: 1,
+        byteLength: ref => Math.min(ref.bytes, images.requestImagePolicy.maxBytes),
+        placeholder: ref => offloadedImageText(ref, images.resolveImageAccess?.(ref)),
+      })
+  const requestImages = images === undefined
+    ? new Map()
+    : await prepareRequestImages(requestMessages, images, options.signal)
+  const exactMessages = images === undefined
+    ? requestMessages
+    : offloadRequestImagesWithPolicy(requestMessages, {
+        representation: 'base64',
+        ...images.maxRequestImageBytes === undefined ? {} : { maxBytes: images.maxRequestImageBytes },
+        byteQuantum: 1,
+        byteLength: ref => requestImages.get(ref.attachmentId).bytes,
+        placeholder: ref => offloadedImageText(ref, images.resolveImageAccess?.(ref)),
+      })
   const toolNames = new Map()
   const messages = []
-  for (const message of options.messages) {
+  for (const message of exactMessages) {
     if (message.role === 'system') {
       messages.push({ role: 'user', content: flattenText(message.content), timestamp: 0 })
       continue
@@ -132,7 +223,7 @@ export function toContext(options) {
       messages.push(assistant)
       continue
     }
-    messages.push(...toPiUserMessages(message, toolNames))
+    messages.push(...await toPiUserMessages(message, toolNames, requestImages, images?.resolveImageAccess))
   }
   const context = {
     ...options.system === undefined ? {} : { systemPrompt: options.system },

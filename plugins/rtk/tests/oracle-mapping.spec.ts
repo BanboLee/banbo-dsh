@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { RTK_ASK_NOTE, RtkDenyError, rtkRewriteDecision } from '../index.js'
+import {
+  Config,
+  RTK_ASK_NOTE,
+  RtkDenyError,
+  rtkRewriteDecision,
+  rtkRewriteDecisionSync,
+  withNote,
+  withNoteProcess,
+} from '../index.js'
 import { createRtkShellHarness, installFakeRtkPathHooks, READ_ONLY_SANDBOX } from './helpers.js'
 
 installFakeRtkPathHooks()
@@ -26,6 +34,15 @@ describe('graceful degradation', () => {
   })
 })
 
+describe('deprecated ask-note compatibility API', () => {
+  it('retains the legacy configuration field and public helper exports', () => {
+    expect(Config['~standard'].validate({ askNote: 'legacy note' }).value.askNote).toBe('legacy note')
+    expect(RTK_ASK_NOTE).toContain('rtk rewrite exit 3')
+    expect(typeof withNote).toBe('function')
+    expect(typeof withNoteProcess).toBe('function')
+  })
+})
+
 describe('the decision oracle', () => {
   it('maps exit 0/1/2/3 to the RtkRewriteDecision union', async () => {
     process.env.FAKE_RTK_MODE = 'rewrite'
@@ -44,10 +61,23 @@ describe('the decision oracle', () => {
     })
 
     process.env.FAKE_RTK_MODE = 'ask'
-    await expect(rtkRewriteDecision('git status', { timeoutMs: 2000 })).resolves.toMatchObject({
+    await expect(rtkRewriteDecision('git status', { timeoutMs: 2000 })).resolves.toEqual({
       kind: 'rewrite',
       command: 'rtk git status',
       note: RTK_ASK_NOTE,
+    })
+  })
+
+  it('passes leading-dash commands after the RTK option terminator', async () => {
+    process.env.FAKE_RTK_MODE = 'deny'
+
+    await expect(rtkRewriteDecision('--help', { timeoutMs: 2000 })).resolves.toMatchObject({
+      kind: 'deny',
+      reason: expect.stringContaining('--help'),
+    })
+    expect(rtkRewriteDecisionSync('--ultra-compact', { timeoutMs: 2000 })).toMatchObject({
+      kind: 'deny',
+      reason: expect.stringContaining('--ultra-compact'),
     })
   })
 

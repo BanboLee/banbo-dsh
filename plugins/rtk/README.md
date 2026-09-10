@@ -39,20 +39,26 @@ duplicate service registration.
 
 ## Config
 
-The plugin accepts four optional knobs:
+The plugin accepts three active optional knobs and one deprecated compatibility field:
 
 - `rtkBinary`: the `rtk` executable to invoke for `rtk rewrite` and
-  `rtk pipe` (default `rtk`, resolved from PATH).
+  `rtk pipe` (default `rtk`). Bare names are resolved once from the Harness
+  startup PATH; relative paths are resolved once from the Harness startup
+  directory. Requests cannot replace the pinned executable through `PATH` or
+  reinterpret a relative path through their workdir. On Windows the resolved
+  target must be directly executable (`.exe` or `.com`); batch shims are not
+  launched through a command shell.
 - `rewriteTimeoutMs`: the bound on one `rtk rewrite` oracle call before it
   fails open to passthrough (default `5000`).
-- `askNote`: the deterministic note stamped on the result for exit 3 (`ask`)
-  rewrites (default `rtk rewrite exit 3 (ask) ran the rewritten command
-  without interactive approval`).
 - `grepCompress`: when enabled, `grep` tool output is piped through
   `rtk pipe -f grep` after the tool runs (default `true`).
+- `askNote`: deprecated and ignored. It remains accepted for profile
+  compatibility, but exit-3 (`ask`) rewrites are always silent.
 
-These knobs ride through the plugin's `Config` schema untouched, so profiles
-can override them without changing package code.
+The three active knobs ride through the plugin's `Config` schema untouched, so
+profiles can override their runtime behavior without changing package code.
+`askNote` is retained only for profile parsing compatibility and has no runtime
+effect.
 
 ## Behavior
 
@@ -67,9 +73,9 @@ executor runs it. The exit-code contract matches `rtk rewrite`:
   (name `RtkDenyError`, code `RTK_DENY`) with zero delegate invocations;
   background starts settle as killed processes with the deny reason surfaced
   once through the read path.
-- Exit 3, ask: implemented as rewrite-with-note, never interactive approval.
-  The command runs rewritten and a deterministic approval note is appended to
-  the result stderr (foreground) or prefixed to the first background read.
+- Exit 3, ask: no interactive approval is requested. The rewritten command
+  runs silently; the plugin adds no RTK-specific text to foreground stderr or
+  background output.
 - Missing, hung, or signal-killed `rtk`: fails open to passthrough so command
   execution is never blocked.
 
@@ -93,9 +99,8 @@ differences are limited to what the tests prove:
 
 - A rewritten command runs as `rtk <command>` and its output is the delegate's
   genuine output.
-- An exit 3 (`ask`) rewrite surfaces a deterministic note on the result
-  stderr alongside the delegate's own stderr, so the model sees that the
-  command was rewritten without interactive approval.
+- An exit 3 (`ask`) rewrite runs the rewritten command without adding an
+  RTK-specific message to the model-facing result.
 - A deny surfaces as `RtkDenyError` and the command never runs.
 - A `grep` result may be returned compressed; when the pipe fails open the
   original text is returned unchanged.
@@ -105,14 +110,14 @@ reduction depends on the real binary, its rules, and the commands being run.
 
 ## Known Limitations and Deferred Work
 
-- Exit 3 (`ask`) is rewrite-with-note, not interactive approval. A human is
-  never prompted, and no interactive approval flow is planned.
+- Exit 3 (`ask`) runs the rewritten command silently, not through interactive
+  approval. A human is never prompted, and no interactive approval flow is planned.
 - Deterministic fake-RTK tests are the authoritative acceptance for this
   plugin. They use a fake `rtk` fixture on a temporary PATH and never touch a
   user-global `rtk`, user-global DSH profiles, or the network.
 - Real `rtk` remains optional. A real binary is never required to install,
   test, or run the plugin; when present, `rtk rewrite` on this machine exits 3
-  (`ask`), which maps to rewrite-with-note.
+  (`ask`), which maps to a silent rewrite.
 - `start()` (background processes) consults the oracle synchronously so
   delegate startup errors propagate from the call itself. This briefly blocks
   the event loop for up to `rewriteTimeoutMs` while the oracle runs, and fails

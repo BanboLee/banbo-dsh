@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { cpSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -15,6 +17,20 @@ export interface RealProfileProof {
   readonly installedBundles: string[]
   readonly bundlePackageDirs: string[]
   readonly bundlePatchFiles: string[]
+}
+
+export interface ShellProcessLike {
+  readonly status: string
+  readonly exitCode: number | null
+  readonly signal: string | null
+  readonly done: Promise<void>
+  readonly sandbox?: {
+    readonly mode: string
+    readonly denied: boolean
+    readonly enforcement?: string
+  }
+  readOutput(): { readonly delta: string; readonly lossy: boolean }
+  kill(): boolean
 }
 
 export interface ShellRunResultLike {
@@ -53,6 +69,7 @@ interface ShellLike {
     }
   }): unknown
   run(spec: unknown): Promise<ShellRunResultLike>
+  start(spec: unknown): ShellProcessLike
 }
 
 interface ToolRuntimeLike {

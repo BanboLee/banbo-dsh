@@ -10,9 +10,10 @@
 //     rewrite      print "rtk <command>" on stdout, exit 0   (rewrite and allow)
 //     passthrough  print the original command on stdout, exit 1 (no RTK equivalent)
 //     deny         print a denial reason on stderr, exit 2    (deny rule hit)
-//     ask          print "rtk <command>" on stdout, exit 3    (rewrite-with-note)
+//     ask          print "rtk <command>" on stdout, exit 3    (silent rewrite)
 //     timeout      hang forever (simulates a hung rtk invocation)
 //     malformed    print garbage that is not a usable command, exit 0
+//     context      rewrite to output oracle cwd, RTK_CONTEXT, and DSH_RTK_CONTEXT, exit 0
 //   FAKE_RTK_PIPE_MODE  (pipe subcommand) one of:
 //     compress     print "[fake-rtk pipe -f <filter>] compressed <N> lines" on
 //                  stdout, where <N> is the number of non-empty stdin lines, exit 0
@@ -23,7 +24,7 @@
 // Exit codes follow the real `rtk` contract (0/1/2/3) so later plugin tasks
 // can assert on the same protocol.
 
-const MODES = new Set(['rewrite', 'passthrough', 'deny', 'ask', 'timeout', 'malformed'])
+const MODES = new Set(['rewrite', 'passthrough', 'deny', 'ask', 'timeout', 'malformed', 'context'])
 const PIPE_MODES = new Set(['compress', 'passthrough', 'deny', 'timeout'])
 
 // Read ALL of stdin, then invoke the callback with the raw bytes.
@@ -98,7 +99,9 @@ function main() {
     process.exit(1)
   }
 
-  const command = process.argv.slice(3).join(' ')
+  const args = process.argv.slice(3)
+  if (args[0] === '--') args.shift()
+  const command = args.join(' ')
 
   switch (mode) {
     case 'rewrite':
@@ -123,6 +126,10 @@ function main() {
       break
     case 'malformed':
       process.stdout.write(`not-a-command {{{ ${command}\n`)
+      process.exit(0)
+      break
+    case 'context':
+      process.stdout.write(`printf '%s\\n' '${process.cwd()}:${process.env.RTK_CONTEXT ?? ''}:${process.env.DSH_RTK_CONTEXT ?? ''}'\n`)
       process.exit(0)
       break
     // No default: MODES validation above guarantees exhaustiveness.

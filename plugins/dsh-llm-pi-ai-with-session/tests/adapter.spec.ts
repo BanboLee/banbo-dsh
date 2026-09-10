@@ -432,7 +432,230 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
     expect(resolved.context).toEqual({ contextWindow: 1_000_000 })
   })
 
-  it('fails loudly with UNSUPPORTED_CONTENT when a user message carries an image', async () => {
+  it('inherits image input from an installed source catalog model', async () => {
+    const { ctx } = await createHarness({
+      providers: {
+        openai: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: 'http://gateway.test',
+          models: [{ id: 'gpt-4o' }],
+        },
+      },
+      routes: [{ route: 'openai-affinity', source: 'openai' }],
+    })
+
+    expect((await ctx.llm.resolveModelInfo('openai-affinity', 'gpt-4o')).inputModalities)
+      .toEqual(['text', 'image'])
+  })
+
+  it('sends user images with the live session header when the source model declares image input', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const attachment = {
+      attachmentId: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+    }
+    const readImageRequest = vi.fn(async () => ({
+      variantId: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      attachment,
+      data: Uint8Array.of(1),
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+      depth: 'uchar',
+      space: 'srgb',
+      hasAlpha: true,
+    }))
+    const { ctx, stream } = await createHarness({
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: gateway.url,
+          models: [{ id: 'demo-model', input: ['text', 'image'] }],
+        },
+      },
+      routes: DEMO_ROUTE,
+    })
+    ctx.provide('attachments', { readImageRequest })
+
+    expect((await ctx.llm.resolveModelInfo('demo-affinity', 'demo-model')).inputModalities)
+      .toEqual(['text', 'image'])
+
+    await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'look at this' },
+          { type: 'image', attachment },
+        ],
+        id: 'm-img',
+        source: { kind: 'user' },
+      }],
+      sessionId: 'session-image',
+    })
+
+    expect(readImageRequest).toHaveBeenCalledWith(attachment, {
+      maxPixels: 2048 * 2048,
+      maxBytes: 1024 * 1024,
+    }, undefined)
+    expect(gateway.headers[0]?.['x-session-id']).toBe('session-image')
+    expect(JSON.stringify(gateway.requests[0])).toContain('data:image/png;base64,AQ==')
+  })
+
+  it('inherits provider default image input when settings materialize an empty model input', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const attachment = {
+      attachmentId: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+    }
+    const readImageRequest = vi.fn(async () => ({
+      variantId: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      attachment,
+      data: Uint8Array.of(2),
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+      depth: 'uchar',
+      space: 'srgb',
+      hasAlpha: true,
+    }))
+    const { ctx, stream } = await createSettingsHarness({
+      demo: {
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        baseURL: gateway.url,
+        defaultInput: ['text', 'image'],
+        models: [{ id: 'demo-model' }],
+      },
+    }, { routes: DEMO_ROUTE })
+    ctx.provide('attachments', { readImageRequest })
+
+    await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: [{
+        role: 'user',
+        content: [{ type: 'image', attachment }],
+        id: 'm-default-input',
+        source: { kind: 'user' },
+      }],
+      sessionId: 'session-default-input',
+    })
+
+    expect((await ctx.llm.resolveModelInfo('demo-affinity', 'demo-model')).inputModalities)
+      .toEqual(['text', 'image'])
+    expect(readImageRequest).toHaveBeenCalledOnce()
+    expect(JSON.stringify(gateway.requests[0])).toContain('data:image/png;base64,Ag==')
+  })
+
+  it('keeps a mapped attachment path when an image is offloaded by the request budget', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const attachment = {
+      attachmentId: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      mediaType: 'image/png',
+      bytes: 9,
+      width: 1,
+      height: 1,
+    }
+    const readImageRequest = vi.fn(async () => {
+      throw new Error('offloaded images must not be read')
+    })
+    const { ctx, stream } = await createHarness({
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: gateway.url,
+          maxRequestImageBytes: 4,
+          models: [{ id: 'demo-model', input: ['text', 'image'] }],
+        },
+      },
+      routes: DEMO_ROUTE,
+    })
+    ctx.provide('attachments', { imageHostPath: () => '/host/image.png', readImageRequest })
+    ctx.provide('fs', { processPathFromHostPath: () => '/sandbox/image.png' })
+
+    await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: [{
+        role: 'user',
+        content: [{ type: 'image', attachment }],
+        id: 'm-offloaded-image',
+        source: { kind: 'user' },
+      }],
+      sessionId: 'session-offloaded-image',
+    })
+
+    expect(readImageRequest).not.toHaveBeenCalled()
+    expect(JSON.stringify(gateway.requests[0])).toContain('/sandbox/image.png')
+    expect(JSON.stringify(gateway.requests[0])).not.toContain('No local normalized image path is available')
+  })
+
+  it('keeps a mapped path when exact encoded bytes exceed the request budget', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const attachment = {
+      attachmentId: 'sha256:abababababababababababababababababababababababababababababababab',
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+    }
+    const readImageRequest = vi.fn(async () => ({
+      variantId: 'sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc',
+      attachment,
+      data: Uint8Array.of(1, 2, 3, 4, 5),
+      mediaType: 'image/png',
+      bytes: 5,
+      width: 1,
+      height: 1,
+      depth: 'uchar',
+      space: 'srgb',
+      hasAlpha: true,
+    }))
+    const { ctx, stream } = await createHarness({
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: gateway.url,
+          maxRequestImageBytes: 4,
+          models: [{ id: 'demo-model', input: ['text', 'image'] }],
+        },
+      },
+      routes: DEMO_ROUTE,
+    })
+    ctx.provide('attachments', { imageHostPath: () => '/host/image.png', readImageRequest })
+    ctx.provide('fs', { processPathFromHostPath: () => '/sandbox/image.png' })
+
+    await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: [{
+        role: 'user',
+        content: [{ type: 'image', attachment }],
+        id: 'm-exact-offload',
+        source: { kind: 'user' },
+      }],
+      sessionId: 'session-exact-offload',
+    })
+
+    expect(readImageRequest).toHaveBeenCalledOnce()
+    expect(JSON.stringify(gateway.requests[0])).toContain('/sandbox/image.png')
+    expect(JSON.stringify(gateway.requests[0])).not.toContain('data:image/png')
+  })
+
+  it('projects user images to text when the mirrored model is text-only', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
     const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
@@ -452,37 +675,81 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
       sessionId: 'session-1',
     })
 
-    // The image must never reach the gateway: the adapter rejects it up front.
-    expect(gateway.headers).toHaveLength(0)
+    expect(gateway.headers).toHaveLength(1)
+    expect(JSON.stringify(gateway.requests[0])).toContain('image omitted because this model accepts text only')
     const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
-    const reason = (finish as { reason?: { kind?: string; failure?: { code?: string } } } | undefined)?.reason
-    expect(reason?.kind).toBe('error')
-    expect(reason?.failure?.code).toBe('UNSUPPORTED_CONTENT')
+    expect((finish as { reason?: { kind?: string } } | undefined)?.reason?.kind).toBe('stop')
   })
 
-  it('fails loudly with UNSUPPORTED_CONTENT when an assistant message carries an image', async () => {
-    const gateway = await mockGateway([{ events: textEvents }])
-    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
+  for (const role of ['assistant', 'system'] as const) {
+    it(`projects ${role} images to text for a text-only model`, async () => {
+      const gateway = await mockGateway([{ events: textEvents }])
+      stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+      const { stream } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
-    const chunks = await stream({
-      provider: 'demo-affinity',
-      model: 'demo-model',
-      messages: [{
-        role: 'assistant',
-        content: [{ type: 'image', attachment: { attachmentId: 'a', bytes: 1, mimeType: 'image/png' } }],
-        id: 'm-img-assistant',
-        source: { kind: 'model', provider: 'demo-session', model: 'demo-model' },
-      }],
-      sessionId: 'session-1',
+      const chunks = await stream({
+        provider: 'demo-affinity',
+        model: 'demo-model',
+        messages: [{
+          role,
+          content: [{
+            type: 'image',
+            attachment: {
+              attachmentId: 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+              bytes: 1,
+              mimeType: 'image/png',
+            },
+          }],
+          id: `m-img-${role}`,
+          source: role === 'assistant'
+            ? { kind: 'model', provider: 'demo-affinity', model: 'demo-model' }
+            : { kind: 'system' },
+        }],
+        sessionId: `session-${role}-projection`,
+      })
+
+      expect(JSON.stringify(gateway.requests[0])).toContain('image omitted because this model accepts text only')
+      const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
+      expect((finish as { reason?: { kind?: string } } | undefined)?.reason?.kind).toBe('stop')
     })
+  }
 
-    expect(gateway.headers).toHaveLength(0)
-    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
-    const reason = (finish as { reason?: { kind?: string; failure?: { code?: string } } } | undefined)?.reason
-    expect(reason?.kind).toBe('error')
-    expect(reason?.failure?.code).toBe('UNSUPPORTED_CONTENT')
-  })
+  for (const role of ['assistant', 'system'] as const) {
+    it(`rejects ${role} images on an image-capable route before requiring attachments`, async () => {
+      const gateway = await mockGateway([{ events: textEvents }])
+      stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+      const { stream } = await createHarness({
+        providers: {
+          demo: {
+            apiKeyEnv: 'DEEPSEEK_API_KEY',
+            baseURL: gateway.url,
+            models: [{ id: 'demo-model', input: ['text', 'image'] }],
+          },
+        },
+        routes: DEMO_ROUTE,
+      })
+
+      const chunks = await stream({
+        provider: 'demo-affinity',
+        model: 'demo-model',
+        messages: [{
+          role,
+          content: [{ type: 'image', attachment: { attachmentId: 'a', bytes: 1, mimeType: 'image/png' } }],
+          id: `m-img-unsupported-${role}`,
+          source: role === 'assistant'
+            ? { kind: 'model', provider: 'demo-session', model: 'demo-model' }
+            : { kind: 'system' },
+        }],
+        sessionId: `session-unsupported-${role}`,
+      })
+
+      expect(gateway.headers).toHaveLength(0)
+      const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
+      const reason = (finish as { reason?: { kind?: string; failure?: { code?: string } } } | undefined)?.reason
+      expect(reason?.kind).toBe('error')
+      expect(reason?.failure?.code).toBe('UNSUPPORTED_CONTENT')
+    })
+  }
 
   it('stays dormant (zero routes) when the providers table is empty', async () => {
     const { ctx } = await createHarness({ providers: demoProviders('http://gateway.test'), routes: [] })
@@ -569,12 +836,18 @@ describe('dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
     stubApiKey('LIGHT_API_KEY', 'light-key')
     const { ctx, stream } = await createSettingsHarness({
       deepseek: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: deepseek.url, models: [{ id: 'deepseek-v4-pro' }] },
-      light: { apiKeyEnv: 'LIGHT_API_KEY', baseURL: light.url, models: [{ id: 'gpt-5.5' }] },
+      light: {
+        apiKeyEnv: 'LIGHT_API_KEY',
+        baseURL: light.url,
+        models: [{ id: 'gpt-5.5', input: ['text', 'image'] }],
+      },
     }, { routes: [{ route: 'light-affinity', source: 'light', displayName: 'Light Affinity' }] })
 
     const providers = await ctx.llm.listProviders()
     const ids = providers.map(entry => entry.id)
     expect(ids).toEqual(['light-affinity'])
+    expect((await ctx.llm.resolveModelInfo('light-affinity', 'gpt-5.5')).inputModalities)
+      .toEqual(['text', 'image'])
 
     await stream({
       provider: 'light-affinity',

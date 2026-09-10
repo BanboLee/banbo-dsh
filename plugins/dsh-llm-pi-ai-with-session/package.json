@@ -12,6 +12,7 @@
     "index.js",
     "adapter.js",
     "context.js",
+    "model.js",
     "stream.js",
     "cordis.patch.yml",
     "README.md"

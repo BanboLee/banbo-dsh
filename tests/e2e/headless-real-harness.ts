@@ -142,6 +142,12 @@ export async function createRealHeadlessHarness(): Promise<RealHeadlessHarness> 
             : { timeoutMs: 60_000, ...request }
           return ctx.shell.run(ctx.shell.resolve(input))
         },
+        startShell: (request) => {
+          const input = typeof request === 'string'
+            ? { command: request, timeoutMs: 60_000 }
+            : { timeoutMs: 60_000, ...request }
+          return ctx.shell.start(ctx.shell.resolve(input))
+        },
         executeTool: async (name, args) => {
           const result = await ctx.get('tools')?.execute({
             callId: `real-e2e-${name}`,

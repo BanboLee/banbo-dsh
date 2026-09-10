@@ -40,7 +40,9 @@ export type ConfineDelegate = (argv: readonly string[], policy: SandboxPolicy) =
 export interface RtkShellHarnessConfig {
   readonly mode?: SandboxMode
   readonly mounts?: number
+  readonly rtkBinary?: string
   readonly rewriteTimeoutMs?: number
+  readonly askNote?: string
   readonly workspaceRoot?: string
   readonly grepCompress?: boolean
 }

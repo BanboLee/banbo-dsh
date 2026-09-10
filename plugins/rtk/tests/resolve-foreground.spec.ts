@@ -1,6 +1,7 @@
-import { resolve } from 'node:path'
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { delimiter, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { RTK_ASK_NOTE } from '../index.js'
 import { createRtkShellHarness, installFakeRtkPathHooks, READ_ONLY_SANDBOX } from './helpers.js'
 
 installFakeRtkPathHooks()
@@ -65,6 +66,70 @@ describe('exit 0 — rewrite', () => {
   })
 })
 
+describe('oracle execution context', () => {
+  it('uses the resolved workdir and effective dsh environment for foreground rewrites', async () => {
+    process.env.FAKE_RTK_MODE = 'context'
+    const workdir = mkdtempSync(join(tmpdir(), 'dsh-rtk-context-'))
+    try {
+      const { shell } = await createRtkShellHarness()
+      const result = await shell.run(shell.resolve({
+        command: 'context',
+        workdir,
+        env: { RTK_CONTEXT: 'request-env' },
+        dshEnv: { DSH_RTK_CONTEXT: 'dsh-env' },
+      }))
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.text).toBe(`${workdir}:request-env:dsh-env\n`)
+    } finally {
+      rmSync(workdir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not let request PATH replace the pinned rewrite oracle', async () => {
+    process.env.FAKE_RTK_MODE = 'deny'
+    const shadowDir = mkdtempSync(join(tmpdir(), 'dsh-rtk-shadow-'))
+    const marker = join(shadowDir, 'invoked')
+    const shadow = join(shadowDir, 'rtk')
+    writeFileSync(shadow, [
+      '#!/usr/bin/env bash',
+      'printf shadow > "$RTK_SHADOW_MARKER"',
+      'exit 1',
+      '',
+    ].join('\n'))
+    chmodSync(shadow, 0o755)
+    try {
+      const { shell, calls } = await createRtkShellHarness()
+
+      await expect(shell.run(shell.resolve({
+        command: 'git status',
+        env: {
+          PATH: `${shadowDir}${delimiter}${process.env.PATH ?? ''}`,
+          RTK_SHADOW_MARKER: marker,
+        },
+      }))).rejects.toMatchObject({ code: 'RTK_DENY' })
+      expect(existsSync(marker)).toBe(false)
+      expect(calls).toHaveLength(0)
+    } finally {
+      rmSync(shadowDir, { recursive: true, force: true })
+    }
+  })
+
+  it('resolves a relative rtkBinary independently of each command workdir', async () => {
+    process.env.FAKE_RTK_MODE = 'deny'
+    const workdir = mkdtempSync(join(tmpdir(), 'dsh-rtk-relative-'))
+    try {
+      const { shell, calls } = await createRtkShellHarness({ rtkBinary: './tests/fixtures/bin/rtk' })
+
+      await expect(shell.run(shell.resolve({ command: 'git status', workdir })))
+        .rejects.toMatchObject({ code: 'RTK_DENY' })
+      expect(calls).toHaveLength(0)
+    } finally {
+      rmSync(workdir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('exit 1 — passthrough', () => {
   it('delegates the original command unchanged and preserves every result fact', async () => {
     process.env.FAKE_RTK_MODE = 'passthrough'
@@ -96,15 +161,14 @@ describe('exit 2 — deny', () => {
   })
 })
 
-describe('exit 3 — ask (rewrite-with-note)', () => {
-  it('rewrites the command and records a deterministic approval note in stderr', async () => {
+describe('exit 3 — ask (silent rewrite)', () => {
+  it('rewrites the command without adding RTK text to stderr', async () => {
     process.env.FAKE_RTK_MODE = 'ask'
-    const { shell, calls } = await createRtkShellHarness()
+    const { shell, calls } = await createRtkShellHarness({ askNote: 'legacy profile note' })
     const result = await shell.run(shell.resolve({ command: 'git status' }))
 
     expect(calls[0]?.argv).toEqual(['bash', '-c', 'rtk git status'])
-    expect(result.stderr.text).toContain(RTK_ASK_NOTE)
-    expect(result.stderr.text).toContain('unsupported subcommand')
+    expect(result.stderr.text).toBe('fake-rtk: unsupported subcommand "git" (only "rewrite" and "pipe")\n')
     expect(result.exitCode).toBe(1)
     expect(result.sandbox).toEqual(READ_ONLY_SANDBOX)
   })

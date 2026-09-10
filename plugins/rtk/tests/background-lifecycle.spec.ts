@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createRtkShellHarness, installFakeRtkPathHooks, READ_ONLY_SANDBOX } from './helpers.js'
 
@@ -15,11 +18,12 @@ function expectSandboxBoom(error: unknown): void {
 describe('foreground lifecycle', () => {
   it('preserves aborted runs through the abort signal', async () => {
     process.env.FAKE_RTK_MODE = 'passthrough'
-    const { shell } = await createRtkShellHarness()
+    const { shell, calls } = await createRtkShellHarness()
     const controller = new AbortController()
     const spec = shell.resolve({ command: 'sleep 30', signal: controller.signal })
     const promise = shell.run(spec)
-    setTimeout(() => controller.abort(), 100)
+    await expect.poll(() => calls.length, { timeout: 2_000 }).toBe(1)
+    controller.abort()
     const result = await promise
 
     expect(result.aborted).toBe(true)
@@ -41,6 +45,47 @@ describe('background lifecycle (start)', () => {
     expect(read.delta).toBe('rtk printf done\n')
     expect(read.lossy).toBe(false)
     expect(proc.sandbox).toEqual(READ_ONLY_SANDBOX)
+  })
+
+  it('starts an ask rewrite without prefixing RTK text to its first read', async () => {
+    process.env.FAKE_RTK_MODE = 'ask'
+    const { shell } = await createRtkShellHarness()
+    const proc = shell.start(shell.resolve({ command: 'rewrite printf done' }))
+
+    await proc.done
+    expect(proc.exitCode).toBe(3)
+    expect(proc.readOutput()).toEqual({ delta: 'rtk printf done\n', lossy: false })
+  })
+
+  it('uses the resolved workdir and effective environment for background rewrites', async () => {
+    process.env.FAKE_RTK_MODE = 'context'
+    const workdir = mkdtempSync(join(tmpdir(), 'dsh-rtk-background-context-'))
+    try {
+      const { shell } = await createRtkShellHarness()
+      const proc = shell.start(shell.resolve({
+        command: 'context',
+        workdir,
+        env: { RTK_CONTEXT: 'request-env' },
+        dshEnv: { DSH_RTK_CONTEXT: 'dsh-env' },
+      }))
+
+      await proc.done
+      expect(proc.exitCode).toBe(0)
+      expect(proc.readOutput()).toEqual({ delta: `${workdir}:request-env:dsh-env\n`, lossy: false })
+    } finally {
+      rmSync(workdir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the pinned oracle when a background request replaces PATH', async () => {
+    process.env.FAKE_RTK_MODE = 'deny'
+    const { shell, calls } = await createRtkShellHarness()
+    const proc = shell.start(shell.resolve({ command: 'git status', env: { PATH: '/usr/bin:/bin' } }))
+
+    await proc.done
+    expect(proc.status).toBe('killed')
+    expect(calls).toHaveLength(0)
+    expect(proc.readOutput().delta).toContain('denied by rule')
   })
 
   it('fails closed in start() on deny, settling as killed with a note and zero delegate calls', async () => {

@@ -35,7 +35,8 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'grep-compress.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
-    },
+      '@deepseek-ai/dsh-subprocess': '^0.1.2-rc.1',
+    }
   },
   {
     directory: 'plugins/codegraph-mcp',
@@ -49,7 +50,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
   {
     directory: 'plugins/dsh-llm-pi-ai-with-session',
     packageName: 'dsh-llm-pi-ai-with-session',
-    files: ['index.js', 'adapter.js', 'context.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
+    files: ['index.js', 'adapter.js', 'context.js', 'model.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
       '@deepseek-ai/dsh-llm': '^0.1.2-rc.1',

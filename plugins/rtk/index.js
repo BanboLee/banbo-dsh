@@ -14,9 +14,9 @@
  * @module dsh-rtk
  */
 
-import { deniedProcess, withNote, withNoteProcess } from './process-result.js'
+import { deniedProcess } from './process-result.js'
 import { createGrepPostExecuteListener } from './grep-compress.js'
-import { RTK_ASK_NOTE, RTK_REWRITE_TIMEOUT_MS, RtkDenyError, rtkRewriteDecision, rtkRewriteDecisionSync } from './rewrite-decision.js'
+import { RTK_ASK_NOTE, RTK_REWRITE_TIMEOUT_MS, RtkDenyError, resolveRtkBinary, rtkRewriteDecision, rtkRewriteDecisionSync } from './rewrite-decision.js'
 
 /** Cordis trace proxies expose their stable service target through this symbol. */
 const CORDIS_ORIGINAL = Symbol.for('cordis.original')
@@ -28,7 +28,7 @@ const CORDIS_ORIGINAL = Symbol.for('cordis.original')
  *   refs: number;
  *   originalRun: Function;
  *   originalStart: Function;
- *   opts: { rtkBinary: string; timeoutMs: number; askNote: string };
+ *   opts: { rtkBinary: string | null; timeoutMs: number };
  *   grepCompress: boolean;
  * }>}
  */
@@ -41,7 +41,8 @@ export const name = 'rtk'
 export const inject = ['shell', 'tools']
 
 /**
- * Plugin configuration schema: four rtk integration knobs. A plain object
+ * Plugin configuration schema: three active rtk integration knobs plus a
+ * deprecated ignored `askNote` compatibility field. A plain object
  * implementing the standard-schema interface (no external validator): unknown
  * keys are ignored; rewrite settings plus grep post-execute compression are
  * normalized with their defaults.
@@ -56,6 +57,7 @@ export const Config = {
         value: {
           rtkBinary: input.rtkBinary ?? 'rtk',
           rewriteTimeoutMs: input.rewriteTimeoutMs ?? RTK_REWRITE_TIMEOUT_MS,
+          // Retained for profile compatibility. Ask rewrites are always silent.
           askNote: input.askNote ?? RTK_ASK_NOTE,
           grepCompress: input.grepCompress ?? true,
         },
@@ -71,8 +73,8 @@ export const Config = {
  * (async for the foreground path, synchronous for the background path so a
  * delegate startup failure propagates from the `start()` call frame exactly
  * like the baseline). Deny fails closed with a deterministic `RtkDenyError`
- * (foreground) or a killed, noted process (background) and zero delegate
- * calls; exit-3 `ask` is implemented as rewrite-with-note. The originals are
+ * (foreground) or a killed process (background) and zero delegate calls;
+ * exit-3 `ask` silently executes the rewritten command. The originals are
  * restored when the last owning plugin fiber unloads. Duplicate mounts share
  * the first mount's configuration and only increase the ownership reference
  * count. When enabled, grep results are also compressed exactly once after
@@ -82,7 +84,7 @@ export const Config = {
  * @param {object} [config] - validated config; falls back to defaults.
  * @param {string} [config.rtkBinary]
  * @param {number} [config.rewriteTimeoutMs]
- * @param {string} [config.askNote]
+ * @param {string} [config.askNote] Deprecated and ignored; ask rewrites are silent.
  * @param {boolean} [config.grepCompress]
  */
 export default function apply(ctx, config) {
@@ -90,12 +92,12 @@ export default function apply(ctx, config) {
   const shellTarget = shell[CORDIS_ORIGINAL] ?? shell
   let decoration = decorations.get(shellTarget)
   if (decoration === undefined) {
-    const rtkBinary = config?.rtkBinary ?? 'rtk'
+    const configuredRtkBinary = config?.rtkBinary ?? 'rtk'
+    const rtkBinary = resolveRtkBinary(configuredRtkBinary) ?? null
     const rewriteTimeoutMs = config?.rewriteTimeoutMs ?? RTK_REWRITE_TIMEOUT_MS
-    const askNote = config?.askNote ?? RTK_ASK_NOTE
     const originalRun = shellTarget.run
     const originalStart = shellTarget.start
-    const opts = { rtkBinary, timeoutMs: rewriteTimeoutMs, askNote }
+    const opts = { rtkBinary, timeoutMs: rewriteTimeoutMs }
     decoration = {
       refs: 0,
       originalRun,
@@ -106,19 +108,25 @@ export default function apply(ctx, config) {
     decorations.set(shellTarget, decoration)
     shellTarget.run = async (spec) => {
       if (spec.signal?.aborted === true) spec.signal.throwIfAborted()
-      const decision = await rtkRewriteDecision(spec.command, opts)
+      const decision = await rtkRewriteDecision(spec.command, {
+        ...opts,
+        cwd: spec.workdir,
+        env: spec.env,
+        dshEnv: spec.dshEnv,
+      })
       if (decision.kind === 'deny') {
         throw new RtkDenyError(decision.reason)
       }
       const target = decision.kind === 'rewrite' ? { ...spec, command: decision.command } : spec
-      const result = await originalRun.call(shellTarget, target)
-      if (decision.kind === 'rewrite' && decision.note !== undefined) {
-        return withNote(result, decision.note)
-      }
-      return result
+      return originalRun.call(shellTarget, target)
     }
     shellTarget.start = (spec) => {
-      const decision = rtkRewriteDecisionSync(spec.command, opts)
+      const decision = rtkRewriteDecisionSync(spec.command, {
+        ...opts,
+        cwd: spec.workdir,
+        env: spec.env,
+        dshEnv: spec.dshEnv,
+      })
       if (decision.kind === 'deny') {
         return deniedProcess(decision.reason)
       }
@@ -126,11 +134,7 @@ export default function apply(ctx, config) {
       // Delegate startup errors (confine throwing, runner spawn failure) escape
       // synchronously here with their original type and message, matching the
       // baseline SandboxBashExecutor.start() contract.
-      const inner = originalStart.call(shellTarget, target)
-      if (decision.kind === 'rewrite' && decision.note !== undefined) {
-        return withNoteProcess(inner, decision.note)
-      }
-      return inner
+      return originalStart.call(shellTarget, target)
     }
   }
   decoration.refs += 1
