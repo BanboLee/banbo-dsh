@@ -1,6 +1,6 @@
 # banbo-dsh
 
-[![CI](https://github.com/BanboLee/banbo-dsh/actions/workflows/ci.yml/badge.svg)](https://github.com/BanboLee/banbo-dsh/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/BanboLee/banbo-dsh/ci.yml?label=CI&logo=github)](https://github.com/BanboLee/banbo-dsh/actions/workflows/ci.yml)
 
 Local DeepSeek Harness profile bundles for this checkout: a curated set of
 DSH plugin bundles (rtk, codegraph-mcp, fish-shell, lsp-diagnostics,

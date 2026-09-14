@@ -30,8 +30,10 @@ describe('isolated Go build probe', () => {
   }, 30_000)
 
   it('reports an actionable spawn failure when no Go executable is available', () => {
-    // Given: neither QA_GO nor PATH can resolve a Go executable.
-    const environment: Record<string, string | undefined> = { ...process.env, PATH: '/usr/bin:/bin' }
+    // Given: neither QA_GO nor PATH can resolve a Go executable. Use a PATH
+    // that cannot contain go on any machine (GitHub ubuntu-latest images
+    // ship /usr/bin/go, so a plain /usr/bin:/bin PATH resolves one there).
+    const environment: Record<string, string | undefined> = { ...process.env, PATH: '/no-go-toolchain' }
     delete environment.QA_GO
 
     // When: the probe attempts to compile.

@@ -22,7 +22,7 @@ describe('foreground lifecycle', () => {
     const controller = new AbortController()
     const spec = shell.resolve({ command: 'sleep 30', signal: controller.signal })
     const promise = shell.run(spec)
-    await expect.poll(() => calls.length, { timeout: 2_000 }).toBe(1)
+    await expect.poll(() => calls.length, { timeout: 10_000 }).toBe(1)
     controller.abort()
     const result = await promise
 

@@ -31,5 +31,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # The composition suite boots real isolated DSH profiles, so the dsh
+      # CLI (and its bundled @deepseek-ai package tree) must be on PATH.
+      - name: Install dsh CLI
+        run: npm install -g @deepseek-ai/dsh@0.1.5-rc.1
+
+      # fish-shell bundle composition tests execute the real fish binary.
+      - name: Install fish
+        run: sudo apt-get update && sudo apt-get install -y fish
+
       - name: Run test suite
         run: pnpm test
