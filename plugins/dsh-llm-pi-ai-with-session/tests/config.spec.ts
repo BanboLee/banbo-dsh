@@ -8,7 +8,7 @@ function parse(value: unknown): unknown {
   return result.value
 }
 
-describe('dsh-llm-pi-ai-with-session Config', () => {
+describe('@banbolee/dsh-llm-pi-ai-with-session Config', () => {
   it('defaults the session header name to x-session-id', () => {
     const config = parse({}) as { sessionHeader?: string }
     expect(config.sessionHeader).toBe('x-session-id')

@@ -13,7 +13,7 @@
  * Content-Length, malformed JSON — throws and is a fatal transport failure for
  * the consuming session.
  *
- * @module dsh-lsp-diagnostics/framing
+ * @module @banbolee/dsh-lsp-diagnostics/framing
  */
 
 /** The fixed cap on one header block (text plus CRLFCRLF), in bytes. */

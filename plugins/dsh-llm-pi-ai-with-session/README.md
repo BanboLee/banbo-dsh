@@ -1,4 +1,4 @@
-# dsh-llm-pi-ai-with-session
+# @banbolee/dsh-llm-pi-ai-with-session
 
 > **English summary.** A generic session wrapper over the official `llm-pi-ai`
 > adapter for DeepSeek Harness. It registers explicit session provider routes

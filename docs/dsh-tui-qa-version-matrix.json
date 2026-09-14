@@ -5,10 +5,10 @@
   "cordis": "4.0.2",
   "piAi": "0.84.4",
   "bundles": {
-    "dsh-fish-shell": "0.4.0",
-    "dsh-rtk": "0.1.0",
-    "dsh-codegraph-mcp": "0.1.0",
-    "dsh-llm-pi-ai-with-session": "0.1.0",
-    "dsh-lsp-diagnostics": "0.1.0"
+    "@banbolee/dsh-fish-shell": "0.4.0",
+    "@banbolee/dsh-rtk": "0.1.0",
+    "@banbolee/dsh-codegraph-mcp": "0.1.0",
+    "@banbolee/dsh-llm-pi-ai-with-session": "0.1.0",
+    "@banbolee/dsh-lsp-diagnostics": "0.1.0"
   }
 }

@@ -10,12 +10,12 @@ import {
 const REAL_E2E_ENABLED = process.env.RUN_REAL_HEADLESS_E2E === '1'
 const realDescribe = REAL_E2E_ENABLED ? describe : describe.skip
 const PERMUTATIONS = [
-  ['dsh-fish-shell', 'dsh-rtk', 'dsh-codegraph-mcp'],
-  ['dsh-fish-shell', 'dsh-codegraph-mcp', 'dsh-rtk'],
-  ['dsh-rtk', 'dsh-fish-shell', 'dsh-codegraph-mcp'],
-  ['dsh-rtk', 'dsh-codegraph-mcp', 'dsh-fish-shell'],
-  ['dsh-codegraph-mcp', 'dsh-fish-shell', 'dsh-rtk'],
-  ['dsh-codegraph-mcp', 'dsh-rtk', 'dsh-fish-shell'],
+  ['@banbolee/dsh-fish-shell', '@banbolee/dsh-rtk', '@banbolee/dsh-codegraph-mcp'],
+  ['@banbolee/dsh-fish-shell', '@banbolee/dsh-codegraph-mcp', '@banbolee/dsh-rtk'],
+  ['@banbolee/dsh-rtk', '@banbolee/dsh-fish-shell', '@banbolee/dsh-codegraph-mcp'],
+  ['@banbolee/dsh-rtk', '@banbolee/dsh-codegraph-mcp', '@banbolee/dsh-fish-shell'],
+  ['@banbolee/dsh-codegraph-mcp', '@banbolee/dsh-fish-shell', '@banbolee/dsh-rtk'],
+  ['@banbolee/dsh-codegraph-mcp', '@banbolee/dsh-rtk', '@banbolee/dsh-fish-shell'],
 ] as const satisfies readonly (readonly PluginName[])[]
 
 let harness: RealHeadlessHarness
@@ -56,7 +56,7 @@ realDescribe('all real local plugin layer permutations', () => {
       ...order,
     ])
     expect(booted.localPluginOrder()).toEqual(order)
-    expect(booted.shellProviders()).toEqual(['dsh-fish-shell'])
+    expect(booted.shellProviders()).toEqual(['@banbolee/dsh-fish-shell'])
     expect(booted.toolNames()).toContain('fish')
     expect(booted.toolNames()).not.toContain('bash')
     expect(shell.exitCode).toBe(0)

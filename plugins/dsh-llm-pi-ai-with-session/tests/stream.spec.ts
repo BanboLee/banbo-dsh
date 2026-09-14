@@ -36,7 +36,7 @@ function finishOf(chunks: Array<Record<string, unknown>>) {
   return finish
 }
 
-describe('dsh-llm-pi-ai-with-session error classification', () => {
+describe('@banbolee/dsh-llm-pi-ai-with-session error classification', () => {
   it('maps a context-window-exceeded provider error to CONTEXT_WINDOW_EXCEEDED', async () => {
     const chunks = await drain(errorEvent(
       'This model maximum context length is 128000 tokens. You requested 130000 tokens.',

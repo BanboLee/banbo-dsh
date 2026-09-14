@@ -1,5 +1,5 @@
 /**
- * dsh-llm-pi-ai-with-session: a Cordis plugin that registers LLM provider
+ * @banbolee/dsh-llm-pi-ai-with-session: a Cordis plugin that registers LLM provider
  * routes whose requests carry the live dsh session id in a configurable HTTP
  * header.
  *
@@ -10,7 +10,7 @@
  * models, credential, and reasoning defaults are inherited from the source
  * provider rather than restated here.
  *
- * @module dsh-llm-pi-ai-with-session
+ * @module @banbolee/dsh-llm-pi-ai-with-session
  */
 
 import { SessionHeaderAdapter } from './adapter.js'
@@ -34,7 +34,7 @@ export const inject = ['llm']
 export const Config = {
   '~standard': {
     version: /** @type {1} */ (1),
-    vendor: 'dsh-llm-pi-ai-with-session',
+    vendor: '@banbolee/dsh-llm-pi-ai-with-session',
     validate(value) {
       const input = value ?? {}
       return {

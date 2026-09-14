@@ -1,5 +1,5 @@
 /**
- * Test helpers for the dsh-codegraph-mcp bundle.
+ * Test helpers for the @banbolee/dsh-codegraph-mcp bundle.
  *
  * These model just enough of the DSH bundle/profile patch contract (documented
  * in deepseek-harness/packages/bundle/base/cordis.patch.yml and

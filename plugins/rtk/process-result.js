@@ -4,7 +4,7 @@
  * legacy consumers. The mounted plugin never calls the compatibility helpers,
  * so exit-3 (`ask`) execution remains silent.
  *
- * @module dsh-rtk/process-result
+ * @module @banbolee/dsh-rtk/process-result
  */
 
 /**

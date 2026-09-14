@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Optional real-CodeGraph smoke for the dsh-codegraph-mcp bundle.
+# Optional real-CodeGraph smoke for the @banbolee/dsh-codegraph-mcp bundle.
 #
 # The deterministic fake-MCP tests in plugins/codegraph-mcp/tests (see README
 # "Verification") remain the authoritative acceptance for this bundle. This
@@ -20,7 +20,7 @@ usage() {
 Usage:
   scripts/smoke-codegraph-mcp.sh [--help]
 
-Optional real-CodeGraph smoke for dsh-codegraph-mcp. Skips (exit 0) when
+Optional real-CodeGraph smoke for @banbolee/dsh-codegraph-mcp. Skips (exit 0) when
 codegraph is not on PATH. Verifies \`codegraph --version\` and that
 \`codegraph serve --help\` advertises the --mcp and -p/--path flags the bundle
 row uses. Never starts an MCP server or daemon.

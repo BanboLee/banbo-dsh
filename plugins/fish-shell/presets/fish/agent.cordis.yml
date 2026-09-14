@@ -34,7 +34,7 @@
 
 # ── shell ───────────────────────────────────────────────────────────────────
 
-# The dsh-fish-shell bundle mounts the model-facing `fish` tool on the HOST
+# The @banbolee/dsh-fish-shell bundle mounts the model-facing `fish` tool on the HOST
 # plane (global), so this preset carries no shell tool row — agents here see
 # exactly one shell tool, `fish`, and no bash tool. The fish executor
 # (FishSandboxExecutor) supplies ctx.shell on the host plane.

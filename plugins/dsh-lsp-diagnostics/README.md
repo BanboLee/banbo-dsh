@@ -1,4 +1,4 @@
-# dsh-lsp-diagnostics
+# @banbolee/dsh-lsp-diagnostics
 
 Host-plane Cordis bundle plugin for DeepSeek Harness: after an official
 `write`/`edit`/`str_replace_editor` mutation lands inside the session

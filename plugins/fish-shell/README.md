@@ -1,4 +1,4 @@
-# dsh-fish-shell
+# @banbolee/dsh-fish-shell
 
 Fish shell executors and tool for DeepSeek Harness: run commands with
 **fish** instead of bash. Distribution-ready and surface-agnostic: works in
@@ -15,11 +15,11 @@ host-tool based (headless).
   `dsh-permission-presets`) are inherited. Both the confined and the
   `danger-full-access` paths run fish (the base class's full-access branch
   falls through to hardcoded bash, so it is overridden).
-- **Executor, unconfined** (`local.js`, exported as `dsh-fish-shell/local`):
+- **Executor, unconfined** (`local.js`, exported as `@banbolee/dsh-fish-shell/local`):
   `FishLocalExecutor`, a `LocalBashExecutor` subclass running `fish -c`
   without a sandbox. For custom compositions that deliberately run without a
   sandbox; composing it with `dsh-permission-presets` fails loud at load.
-- **Tool** (`tool.js`, exported as `dsh-fish-shell/tool`): a model-facing
+- **Tool** (`tool.js`, exported as `@banbolee/dsh-fish-shell/tool`): a model-facing
   `fish` tool mounted host-globally, executing through `ctx.shell`. It passes
   the calling session's resolved sandbox policy (so `/permission` switches
   and the session workspace root are honored), collects the managed `DSH_*`
@@ -45,7 +45,7 @@ host-tool based (headless).
 dsh plugin --profile <name> add ./plugins/fish-shell
 ```
 
-For a published npm package: `dsh plugin --profile <name> add dsh-fish-shell`.
+For a published npm package: `dsh plugin --profile <name> add @banbolee/dsh-fish-shell`.
 
 Add it to every profile that should default to fish (dsh-tui, web, headless,
 …). The bundle patch is a no-op (with a warning) for a roster row id that the
@@ -58,7 +58,7 @@ The executors subclass `@deepseek-ai/dsh-bash-local` /
 runtime instance the harness uses — the launcher-maintained
 `profiles/node_modules/@deepseek-ai/*` symlink chain. A plain `link:` to this
 checkout (outside the profile tree) would resolve no `@deepseek-ai` package,
-so the deployed copy lives at `profiles/node_modules/dsh-fish-shell` (inside
+so the deployed copy lives at `profiles/node_modules/@banbolee/dsh-fish-shell` (inside
 the tree). `scripts/sync-to-profile.sh` copies the plugin there after edits
 and checks the bundled fish preset for drift against the shipped `standard`
 preset; a pnpm `file:` dependency points each profile at the deployed copy. A

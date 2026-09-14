@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Deterministic stdio Content-Length LSP server fixture for the
-// dsh-lsp-diagnostics plugin tests. Never talks to a real language server;
+// @banbolee/dsh-lsp-diagnostics plugin tests. Never talks to a real language server;
 // never touches the network.
 //
 // Usage: node tests/fixtures/fake-lsp-server.mjs <mode> [logPath]

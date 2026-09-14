@@ -440,7 +440,7 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
   return failures
 }
 
-describe('dsh-lsp-diagnostics README shape', () => {
+describe('@banbolee/dsh-lsp-diagnostics README shape', () => {
   it('has every required section heading', () => {
     for (const heading of REQUIRED_HEADINGS) {
       expect(README, `missing required heading: ## ${heading}`).toContain(`## ${heading}`)

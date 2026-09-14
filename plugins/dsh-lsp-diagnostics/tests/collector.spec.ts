@@ -23,7 +23,7 @@ function present(version: string): { readonly kind: 'present'; readonly version:
   return { kind: 'present', version }
 }
 
-describe('dsh-lsp-diagnostics mutation collector', () => {
+describe('@banbolee/dsh-lsp-diagnostics mutation collector', () => {
   it('records write observations as generation 1 candidates that are current', () => {
     const collector = createMutationCollector()
     const e = exec('write')

@@ -95,7 +95,7 @@ describe('LSP feedback through the real HTTP session adapter', () => {
     const loader = profile.ctx.get('loader')
     if (loader === undefined) throw new Error('missing real Loader')
     expect([...loader.entries()].some((entry) =>
-      entry.options.name === 'dsh-llm-pi-ai-with-session' && !entry.disabled)).toBe(true)
+      entry.options.name === '@banbolee/dsh-llm-pi-ai-with-session' && !entry.disabled)).toBe(true)
     const llmModule = await loadAnchorModule('dsh-llm') as {
       readonly createUserMessage: (input: unknown) => unknown
     }

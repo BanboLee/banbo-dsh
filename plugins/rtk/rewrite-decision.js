@@ -8,7 +8,7 @@
  * variant ever throws for a missing, hung, or failed oracle — those fail open
  * to passthrough so execution is never blocked.
  *
- * @module dsh-rtk/rewrite-decision
+ * @module @banbolee/dsh-rtk/rewrite-decision
  */
 
 import { execFile, spawnSync } from 'node:child_process'

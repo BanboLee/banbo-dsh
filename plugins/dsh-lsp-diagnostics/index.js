@@ -1,9 +1,9 @@
 /**
- * Public entrypoint of `dsh-lsp-diagnostics`: a Cordis function plugin that
+ * Public entrypoint of `@banbolee/dsh-lsp-diagnostics`: a Cordis function plugin that
  * appends a single bounded aggregate LSP diagnostics notice to a successful
  * write/edit/str_replace_editor mutation inside the session workspace.
  *
- * @module dsh-lsp-diagnostics
+ * @module @banbolee/dsh-lsp-diagnostics
  */
 
 import { createMutationCollector } from './collector.js'
@@ -180,7 +180,7 @@ const DEFAULTS = Object.freeze({
  * @returns {never}
  */
 function fail(message) {
-  throw new Error(`dsh-lsp-diagnostics config: ${message}`)
+  throw new Error(`@banbolee/dsh-lsp-diagnostics config: ${message}`)
 }
 
 /**
@@ -421,7 +421,7 @@ function validateServers(value) {
 export const Config = {
   '~standard': {
     version: /** @type {1} */ (1),
-    vendor: 'dsh-lsp-diagnostics',
+    vendor: '@banbolee/dsh-lsp-diagnostics',
     /**
      * @param {unknown} value - raw user config.
      * @returns {{ value: PluginConfig }} the validated config.
@@ -577,5 +577,5 @@ export function apply(ctx, config) {
       errors.push(error)
     }
     if (errors.length > 0) throw new AggregateError(errors)
-  }, 'dsh-lsp-diagnostics tool, listeners, operations, retired I/O, and runtime teardown')
+  }, '@banbolee/dsh-lsp-diagnostics tool, listeners, operations, retired I/O, and runtime teardown')
 }

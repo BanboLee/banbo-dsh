@@ -1,7 +1,7 @@
 /**
  * GenerateOptions → pi-ai Context conversion for the session wrapper adapter.
  *
- * @module dsh-llm-pi-ai-with-session/context
+ * @module @banbolee/dsh-llm-pi-ai-with-session/context
  */
 
 import {
@@ -28,7 +28,7 @@ export function assertSupportedImageRoles(messages) {
   for (const message of messages) {
     if (message.role !== 'user' && contentHasImage(message.content)) {
       throw new LlmError(
-        `dsh-llm-pi-ai-with-session: image input is not supported in ${message.role} history`,
+        `@banbolee/dsh-llm-pi-ai-with-session: image input is not supported in ${message.role} history`,
         'UNSUPPORTED_CONTENT',
       )
     }
@@ -117,7 +117,7 @@ function toPiAssistant(message) {
       case 'image':
         // Defense in depth: the adapter already rejects image input up front;
         // an assistant image reaching here still fails loudly, never silently.
-        throw new LlmError('dsh-llm-pi-ai-with-session: assistant image output is not supported', 'UNSUPPORTED_CONTENT')
+        throw new LlmError('@banbolee/dsh-llm-pi-ai-with-session: assistant image output is not supported', 'UNSUPPORTED_CONTENT')
       default:
         // Unknown merge-extensible block: not representable in pi-ai history.
         break
@@ -126,9 +126,9 @@ function toPiAssistant(message) {
   return {
     role: 'assistant',
     content,
-    api: 'dsh-llm-pi-ai-with-session',
-    provider: message.source?.provider ?? 'dsh-llm-pi-ai-with-session',
-    model: message.source?.model ?? 'dsh-llm-pi-ai-with-session',
+    api: '@banbolee/dsh-llm-pi-ai-with-session',
+    provider: message.source?.provider ?? '@banbolee/dsh-llm-pi-ai-with-session',
+    model: message.source?.model ?? '@banbolee/dsh-llm-pi-ai-with-session',
     usage: {
       input: 0,
       output: 0,

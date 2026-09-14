@@ -1,4 +1,4 @@
-# dsh-codegraph-mcp agent instructions
+# @banbolee/dsh-codegraph-mcp agent instructions
 
 Marker-fenced CodeGraph usage block, written into an `AGENTS.md` file by
 `scripts/install-codegraph-instructions.sh` (or appended by hand).
@@ -19,7 +19,7 @@ Keep the block SHORT — the main agent reads it every turn.
 
 In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:
 
-- **MCP tool** (when the dsh-codegraph-mcp bundle is installed): `mcp__codegraph__codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If the call reports no default project (the DSH bridge does not send a rootUri, so the server may have derived the project from its launch directory), pass `projectPath` explicitly.
+- **MCP tool** (when the @banbolee/dsh-codegraph-mcp bundle is installed): `mcp__codegraph__codegraph_explore` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If the call reports no default project (the DSH bridge does not send a rootUri, so the server may have derived the project from its launch directory), pass `projectPath` explicitly.
 - **Shell** (always works): `codegraph explore "<symbol names or question>"` prints the same output.
 
 If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.

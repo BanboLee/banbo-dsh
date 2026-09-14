@@ -57,4 +57,4 @@ fi
 printf 'Installing local DSH bundles into profile %s under DSH_HOME=%s\n' "$PROFILE" "$DSH_HOME"
 printf '+ %s plugin --profile %s add -w %s %s\n' "$DSH_BIN" "$PROFILE" "$RTK_BUNDLE" "$CODEGRAPH_BUNDLE"
 "$DSH_BIN" plugin --profile "$PROFILE" add -w "$RTK_BUNDLE" "$CODEGRAPH_BUNDLE"
-printf 'Installed dsh-rtk and dsh-codegraph-mcp into profile %s\n' "$PROFILE"
+printf 'Installed @banbolee/dsh-rtk and @banbolee/dsh-codegraph-mcp into profile %s\n' "$PROFILE"

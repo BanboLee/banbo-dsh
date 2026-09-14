@@ -1,4 +1,4 @@
-# dsh-rtk bundle: decorate the mounted shell executor with `rtk rewrite`.
+# @banbolee/dsh-rtk bundle: decorate the mounted shell executor with `rtk rewrite`.
 #
 # This bundle does NOT mount a shell provider. It loads a plain function
 # plugin that injects the live `ctx.shell` and wraps its `run`/`start` methods
@@ -9,4 +9,4 @@
 # registration can occur.
 - insert:
     - id: rtk
-      name: dsh-rtk
+      name: '@banbolee/dsh-rtk'

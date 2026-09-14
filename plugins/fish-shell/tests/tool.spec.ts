@@ -1,5 +1,5 @@
 /**
- * Deterministic unit tests for the `dsh-fish-shell` model-facing fish tool:
+ * Deterministic unit tests for the `@banbolee/dsh-fish-shell` model-facing fish tool:
  * the bash→fish guidance in TOOL_DESCRIPTION (A) and the [fish syntax] hint
  * injected into failed results (B). Pure functions only — no harness boot, no
  * live fish shell.
@@ -31,7 +31,7 @@ function result(overrides: Partial<ReturnType<typeof renderResult>> & Record<str
   }
 }
 
-describe('dsh-fish-shell tool description (A)', () => {
+describe('@banbolee/dsh-fish-shell tool description (A)', () => {
   it('opens by telling the model this is FISH, not bash', () => {
     expect(TOOL_DESCRIPTION).toContain('FISH shell, NOT bash')
   })

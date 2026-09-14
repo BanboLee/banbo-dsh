@@ -1,7 +1,7 @@
 /**
  * pi-ai model descriptors and request metadata inherited by session routes.
  *
- * @module dsh-llm-pi-ai-with-session/model
+ * @module @banbolee/dsh-llm-pi-ai-with-session/model
  */
 
 import { attributionHeaders, resolveImageAttachmentAccess } from '@deepseek-ai/dsh-llm'

@@ -11,7 +11,7 @@ import {
 } from './lsp-diagnostics-profile'
 
 /**
- * Real composition for `dsh-lsp-diagnostics` (test matrix 11-13 and the
+ * Real composition for `@banbolee/dsh-lsp-diagnostics` (test matrix 11-13 and the
  * composition-visible F5 claims):
  *
  *  11. real Loader/app/process install + namespace plugin load; actual official
@@ -76,8 +76,8 @@ async function writeFileThroughRealTool(
 /** Remove the live loader entry and await that plugin's async cleanup. */
 async function unloadDiagnostics(booted: LspDiagnosticsBooted): Promise<void> {
   const loader = (booted.ctx as any).get('loader')
-  const entry = [...loader.entries()].find((candidate: any) => candidate.options.name === 'dsh-lsp-diagnostics')
-  if (entry === undefined) throw new Error('live dsh-lsp-diagnostics loader entry not found')
+  const entry = [...loader.entries()].find((candidate: any) => candidate.options.name === '@banbolee/dsh-lsp-diagnostics')
+  if (entry === undefined) throw new Error('live @banbolee/dsh-lsp-diagnostics loader entry not found')
   await entry.update({ disabled: true })
 }
 
@@ -99,7 +99,7 @@ function renderedToolText(result: any): string {
 /** Extract the plugin notice text from a tool result, or undefined. */
 function pluginNoticeText(result: any): string | undefined {
   const contexts: any[] = result?.additionalContexts ?? []
-  const notice = contexts.find((context: any) => context?.source?.kind === 'plugin' && context?.source?.plugin === 'dsh-lsp-diagnostics')
+  const notice = contexts.find((context: any) => context?.source?.kind === 'plugin' && context?.source?.plugin === '@banbolee/dsh-lsp-diagnostics')
   if (notice === undefined) return undefined
   const text = notice?.content?.find((block: any) => block?.type === 'text')?.text
   return typeof text === 'string' ? text : undefined
@@ -126,17 +126,17 @@ const TS_DIAGNOSTIC_LINES = [
 
 const TS_ERROR_SUBSTRING = '- error 13:5-13:10 source="typescript" code="TS2322"'
 
-describe('dsh-lsp-diagnostics real composition', () => {
+describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
   it('installs the bundle through the real loader and delivers a byte-exact diagnostics notice for an actual write', async () => {
     const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'push-versioned' })
     bootedProfiles.push(booted)
 
     // Real dsh-app-boot Loader installed the bundle; the namespace plugin row is live.
     expect(booted.proof.loader).toBe('dsh-app-boot')
-    expect(booted.proof.installedBundles).toContain('dsh-lsp-diagnostics')
+    expect(booted.proof.installedBundles).toContain('@banbolee/dsh-lsp-diagnostics')
     const loader = booted.ctx.get('loader') as unknown as { entries(): Iterable<{ disabled: boolean; options: { name: string } }> }
     const entries = [...loader.entries()]
-    expect(entries.some((entry) => entry.options.name === 'dsh-lsp-diagnostics' && !entry.disabled)).toBe(true)
+    expect(entries.some((entry) => entry.options.name === '@banbolee/dsh-lsp-diagnostics' && !entry.disabled)).toBe(true)
     // The official tools are registered in the real app.
     expect(toolNames(booted)).toEqual(expect.arrayContaining(['write', 'edit', 'str_replace_editor', 'lsp_diagnostics']))
 

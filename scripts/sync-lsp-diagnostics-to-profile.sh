@@ -10,7 +10,7 @@ usage() {
 Usage:
   DSH_HOME=\$(mktemp -d) $0 <profile>
 
-Installs the local dsh-lsp-diagnostics bundle package into <profile>:
+Installs the local @banbolee/dsh-lsp-diagnostics bundle package into <profile>:
   dsh plugin --profile <profile> add -w ./plugins/dsh-lsp-diagnostics
 
 Environment:
@@ -50,7 +50,7 @@ if ! command -v "$DSH_BIN" >/dev/null 2>&1; then
 	fail "cannot find DSH_BIN executable: $DSH_BIN"
 fi
 
-printf 'Installing local dsh-lsp-diagnostics bundle into profile %s under DSH_HOME=%s\n' "$PROFILE" "$DSH_HOME"
+printf 'Installing local @banbolee/dsh-lsp-diagnostics bundle into profile %s under DSH_HOME=%s\n' "$PROFILE" "$DSH_HOME"
 printf '+ %s plugin --profile %s add -w %s\n' "$DSH_BIN" "$PROFILE" "$LSP_DIAGNOSTICS_BUNDLE"
 "$DSH_BIN" plugin --profile "$PROFILE" add -w "$LSP_DIAGNOSTICS_BUNDLE"
-printf 'Installed dsh-lsp-diagnostics into profile %s\n' "$PROFILE"
+printf 'Installed @banbolee/dsh-lsp-diagnostics into profile %s\n' "$PROFILE"

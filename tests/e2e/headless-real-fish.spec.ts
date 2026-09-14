@@ -31,7 +31,7 @@ realDescribe('real fish shell in the headless profile', () => {
     const tools = booted.toolNames()
 
     // Then fish is the sole shell surface and CodeGraph remains registered
-    expect(providers).toEqual(['dsh-fish-shell'])
+    expect(providers).toEqual(['@banbolee/dsh-fish-shell'])
     expect(tools).toContain('fish')
     expect(tools).not.toContain('bash')
     expect(tools).toContain('mcp__codegraph__codegraph_explore')

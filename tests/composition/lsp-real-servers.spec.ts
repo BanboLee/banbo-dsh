@@ -29,7 +29,7 @@ afterEach(async () => {
   }
 })
 
-describe('dsh-lsp-diagnostics explicit real-server lane', () => {
+describe('@banbolee/dsh-lsp-diagnostics explicit real-server lane', () => {
   if (process.env.RUN_REAL_LSP_SERVERS !== '1') {
     it('stays explicitly disabled during the portable test suite', () => {
       expect(process.env.RUN_REAL_LSP_SERVERS).not.toBe('1')

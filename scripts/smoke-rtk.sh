@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Optional real-RTK smoke for the dsh-rtk bundle.
+# Optional real-RTK smoke for the @banbolee/dsh-rtk bundle.
 #
 # The deterministic fake-RTK tests in plugins/rtk/tests (see README
 # "Verification") remain the authoritative acceptance for this plugin. This
@@ -19,7 +19,7 @@ usage() {
 Usage:
   scripts/smoke-rtk.sh [--help]
 
-Optional real-RTK smoke for dsh-rtk. Skips (exit 0) when rtk is not on
+Optional real-RTK smoke for @banbolee/dsh-rtk. Skips (exit 0) when rtk is not on
 PATH. Runs \`rtk rewrite '<command>'\` and verifies the exit code is one of the
 documented contract values 0/1/2/3.
 

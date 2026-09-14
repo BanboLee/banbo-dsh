@@ -33,9 +33,9 @@ realDescribe('real DSH headless profile', () => {
     expect(bundleStack).toEqual([
       '@deepseek-ai/dsh-base',
       '@deepseek-ai/dsh-headless',
-      'dsh-fish-shell',
-      'dsh-rtk',
-      'dsh-codegraph-mcp',
+      '@banbolee/dsh-fish-shell',
+      '@banbolee/dsh-rtk',
+      '@banbolee/dsh-codegraph-mcp',
     ])
   }, 120_000)
 

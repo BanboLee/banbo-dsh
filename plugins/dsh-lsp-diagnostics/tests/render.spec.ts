@@ -109,7 +109,7 @@ function config(overrides: Record<string, unknown> = {}): Record<string, unknown
 // Shared single-line display path sanitizer.
 // ---------------------------------------------------------------------------
 
-describe('dsh-lsp-diagnostics sanitizeDisplayPath', () => {
+describe('@banbolee/dsh-lsp-diagnostics sanitizeDisplayPath', () => {
   it('keeps an ordinary single-line path byte for byte', () => {
     expect(sanitizeDisplayPath('src/deep/nested/file.ts')).toBe('src/deep/nested/file.ts')
   })
@@ -162,7 +162,7 @@ describe('dsh-lsp-diagnostics sanitizeDisplayPath', () => {
 // Unique (renderPath, String(targetKey), canonicalUri) code-point comparator.
 // ---------------------------------------------------------------------------
 
-describe('dsh-lsp-diagnostics compareEligibleTargets', () => {
+describe('@banbolee/dsh-lsp-diagnostics compareEligibleTargets', () => {
   const base = { renderPath: 'src/a.ts', targetKey: 'a.ts', canonicalUri: A_TS_URI }
 
   it('orders by renderPath code points and picks the first differing one', () => {
@@ -217,7 +217,7 @@ describe('dsh-lsp-diagnostics compareEligibleTargets', () => {
 // implementation bug and must fail loud.
 // ---------------------------------------------------------------------------
 
-describe('dsh-lsp-diagnostics renderDiagnostics strict union validation', () => {
+describe('@banbolee/dsh-lsp-diagnostics renderDiagnostics strict union validation', () => {
   it('fails loud on non-array entries', () => {
     expect(() => renderDiagnostics(null as never, config())).toThrow()
     expect(() => renderDiagnostics({} as never, config())).toThrow()
@@ -305,7 +305,7 @@ describe('dsh-lsp-diagnostics renderDiagnostics strict union validation', () => 
 // advisory, byte-exact output.
 // ---------------------------------------------------------------------------
 
-describe('dsh-lsp-diagnostics renderDiagnostics canonical grammar', () => {
+describe('@banbolee/dsh-lsp-diagnostics renderDiagnostics canonical grammar', () => {
   it('renders a single diagnostics section with the unique title, the global advisory, and no trailing newline', () => {
     const result = renderDiagnostics([diagnosticsEntry()], config())
     expect(result.text).toBe(
@@ -444,7 +444,7 @@ describe('dsh-lsp-diagnostics renderDiagnostics canonical grammar', () => {
 // diagnostics by the unique per-file key.
 // ---------------------------------------------------------------------------
 
-describe('dsh-lsp-diagnostics renderDiagnostics ordering', () => {
+describe('@banbolee/dsh-lsp-diagnostics renderDiagnostics ordering', () => {
   it('re-sorts unordered entries by (renderPath, String(targetKey), canonicalUri)', () => {
     const result = renderDiagnostics(
       [
@@ -525,7 +525,7 @@ describe('dsh-lsp-diagnostics renderDiagnostics ordering', () => {
 // unavailable never consume it, empty sections are dropped entirely.
 // ---------------------------------------------------------------------------
 
-describe('dsh-lsp-diagnostics renderDiagnostics global count cap', () => {
+describe('@banbolee/dsh-lsp-diagnostics renderDiagnostics global count cap', () => {
   it('allocates one global budget across files in file order', () => {
     const second = diagnosticsEntry({
       renderPath: 'src/second.ts',
@@ -586,7 +586,7 @@ describe('dsh-lsp-diagnostics renderDiagnostics global count cap', () => {
 // surrogate pair, and never exceeds the cap.
 // ---------------------------------------------------------------------------
 
-describe('dsh-lsp-diagnostics renderDiagnostics char cap', () => {
+describe('@banbolee/dsh-lsp-diagnostics renderDiagnostics char cap', () => {
   it('returns the full canonical aggregate verbatim when within the cap, without a marker', () => {
     const result = renderDiagnostics([diagnosticsEntry()], config({ maxResultChars: 1000 }))
     expect(result.text).toBe(

@@ -7,7 +7,7 @@
  * route back to its source provider's gateway, credential, models, headers, and
  * reasoning defaults.
  *
- * @module dsh-llm-pi-ai-with-session/adapter
+ * @module @banbolee/dsh-llm-pi-ai-with-session/adapter
  */
 
 import { contentHasImage, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
@@ -121,13 +121,13 @@ export class SessionHeaderAdapter extends LlmAdapter {
     const route = this.routeByName.get(providerRoute)
     if (route === undefined) {
       throw new LlmError(
-        `dsh-llm-pi-ai-with-session: provider route "${String(providerRoute)}" is not configured`,
+        `@banbolee/dsh-llm-pi-ai-with-session: provider route "${String(providerRoute)}" is not configured`,
         'INVALID_REQUEST',
       )
     }
     if (this.config.providers?.[route.source] === undefined) {
       throw new LlmError(
-        `dsh-llm-pi-ai-with-session: provider route "${providerRoute}" references missing llm-pi-ai provider "${route.source}"`,
+        `@banbolee/dsh-llm-pi-ai-with-session: provider route "${providerRoute}" references missing llm-pi-ai provider "${route.source}"`,
         'INVALID_REQUEST',
       )
     }
@@ -190,14 +190,14 @@ export class SessionHeaderAdapter extends LlmAdapter {
     const provider = this.config.providers?.[source] ?? {}
     if (options.sessionId === undefined) {
       throw new LlmError(
-        `dsh-llm-pi-ai-with-session: provider route "${options.provider}" requires a request session id`,
+        `@banbolee/dsh-llm-pi-ai-with-session: provider route "${options.provider}" requires a request session id`,
         'INVALID_REQUEST',
       )
     }
     const apiKey = await this.resolveApiKey(provider.apiKeyEnv)
     if (apiKey === undefined || apiKey.length === 0) {
       throw new LlmError(
-        `dsh-llm-pi-ai-with-session: no API key for provider route "${options.provider}"`
+        `@banbolee/dsh-llm-pi-ai-with-session: no API key for provider route "${options.provider}"`
         + ` (mirrors llm-pi-ai provider "${source}"); set ${provider.apiKeyEnv ?? '<none>'} through the harness`
         + ' credentials service or in the environment',
         'MISSING_CREDENTIAL',
@@ -208,12 +208,12 @@ export class SessionHeaderAdapter extends LlmAdapter {
     const containsImage = options.messages.some(message => contentHasImage(message.content))
     if (containsImage) assertSupportedImageRoles(options.messages)
     if (containsImage && !model.input.includes('image')) {
-      throw new LlmError(`dsh-llm-pi-ai-with-session: model "${model.id}" does not accept image input`, 'UNSUPPORTED_CONTENT')
+      throw new LlmError(`@banbolee/dsh-llm-pi-ai-with-session: model "${model.id}" does not accept image input`, 'UNSUPPORTED_CONTENT')
     }
     const attachments = containsImage ? this.ctx?.get?.('attachments') : undefined
     if (containsImage && attachments === undefined) {
       throw new LlmError(
-        'dsh-llm-pi-ai-with-session: image input requires the durable attachment service',
+        '@banbolee/dsh-llm-pi-ai-with-session: image input requires the durable attachment service',
         'UNSUPPORTED_CONTENT',
       )
     }

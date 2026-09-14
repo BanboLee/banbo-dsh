@@ -134,7 +134,7 @@ function validateRtkReadmeContract(readme: string): string[] {
   return failures
 }
 
-describe('dsh-rtk README shape', () => {
+describe('@banbolee/dsh-rtk README shape', () => {
   it('has every required section heading', () => {
     for (const heading of REQUIRED_HEADINGS) {
       expect(README, `missing required heading: ## ${heading}`).toContain(`## ${heading}`)

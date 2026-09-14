@@ -23,7 +23,7 @@ function bodyOf64(): Buffer {
 /** The CRLFCRLF header terminator length; the header cap includes it. */
 const HEADER_TERMINATOR_BYTES = 4
 
-describe('dsh-lsp-diagnostics framing encoder', () => {
+describe('@banbolee/dsh-lsp-diagnostics framing encoder', () => {
   it('encodes an ascii message with an exact Content-Length byte count', () => {
     const message = { jsonrpc: '2.0', method: 'x', params: {} }
     const encoded = encodeMessage(message)
@@ -44,7 +44,7 @@ describe('dsh-lsp-diagnostics framing encoder', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics MessageDecoder', () => {
+describe('@banbolee/dsh-lsp-diagnostics MessageDecoder', () => {
   it('decodes one complete frame pushed at once', () => {
     const decoder = new MessageDecoder(1024)
     expect(decoder.push(frame({ jsonrpc: '2.0', result: 1 }))).toEqual([{ jsonrpc: '2.0', result: 1 }])

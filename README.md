@@ -13,10 +13,10 @@ llm-pi-ai-with-session) with a deterministic test harness. MIT licensed.
 | Node.js | >= 22 | all bundles (tests, runtime) |
 | pnpm | 9.x (pinned via `packageManager: pnpm@9.3.0`) | installs and tests |
 | `dsh` (DeepSeek Harness) | `0.1.5-rc.1` family (`@deepseek-ai/*` `^0.1.5-rc.1`) | all bundles |
-| `rtk` CLI | any current release | `dsh-rtk` — **must be pre-installed** or rewrites/grep-compression fail open to passthrough |
-| `codegraph` CLI | any current release | `dsh-codegraph-mcp` — **must be pre-installed** or the MCP bridge has no server |
-| fish | any current release | `dsh-fish-shell` executors and tool |
-| LSP servers | see plugin README | `dsh-lsp-diagnostics` (defaults: `typescript-language-server`, `gopls`; opt-in: `clangd`, `rust-analyzer`, `pyright-langserver`) |
+| `rtk` CLI | any current release | `@banbolee/dsh-rtk` — **must be pre-installed** or rewrites/grep-compression fail open to passthrough |
+| `codegraph` CLI | any current release | `@banbolee/dsh-codegraph-mcp` — **must be pre-installed** or the MCP bridge has no server |
+| fish | any current release | `@banbolee/dsh-fish-shell` executors and tool |
+| LSP servers | see plugin README | `@banbolee/dsh-lsp-diagnostics` (defaults: `typescript-language-server`, `gopls`; opt-in: `clangd`, `rust-analyzer`, `pyright-langserver`) |
 
 `rtk`, `codegraph`, and the LSP servers are never downloaded or installed by
 the bundles: install the executables yourself and make sure they are on
@@ -27,13 +27,13 @@ install or tests — the affected feature fails open.
 
 | Bundle | What it does | Binary it needs |
 | --- | --- | --- |
-| [`dsh-rtk`](plugins/rtk/README.md) | Decorates the mounted shell executor: every command is rewritten through the `rtk rewrite` oracle, and model-facing `grep` output is compressed via `rtk pipe` | `rtk` |
-| [`dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) | Adds an `mcp-codegraph` row that serves the CodeGraph MCP server over stdio through the official DSH bridge, plus agent-instructions install helper | `codegraph` |
-| [`dsh-fish-shell`](plugins/fish-shell/README.md) | Fish executors (sandboxed and local) plus a model-facing `fish` tool and a fish agent preset | fish |
-| [`dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | After `write`/`edit`/`str_replace_editor` mutations, appends a persistent LSP diagnostics notice to the next model inference; also registers a model-callable `lsp_diagnostics(file_path)` tool | `typescript-language-server`, `gopls` (+ opt-in servers) |
-| [`dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md) | Generic session wrapper over `llm-pi-ai`: registers explicit session provider routes that carry a dynamic session id header (default `x-session-id`) on every LLM request | none (reuses `llm-pi-ai` providers) |
+| [`@banbolee/dsh-rtk`](plugins/rtk/README.md) | Decorates the mounted shell executor: every command is rewritten through the `rtk rewrite` oracle, and model-facing `grep` output is compressed via `rtk pipe` | `rtk` |
+| [`@banbolee/dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) | Adds an `mcp-codegraph` row that serves the CodeGraph MCP server over stdio through the official DSH bridge, plus agent-instructions install helper | `codegraph` |
+| [`@banbolee/dsh-fish-shell`](plugins/fish-shell/README.md) | Fish executors (sandboxed and local) plus a model-facing `fish` tool and a fish agent preset | fish |
+| [`@banbolee/dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | After `write`/`edit`/`str_replace_editor` mutations, appends a persistent LSP diagnostics notice to the next model inference; also registers a model-callable `lsp_diagnostics(file_path)` tool | `typescript-language-server`, `gopls` (+ opt-in servers) |
+| [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md) | Generic session wrapper over `llm-pi-ai`: registers explicit session provider routes that carry a dynamic session id header (default `x-session-id`) on every LLM request | none (reuses `llm-pi-ai` providers) |
 
-`dsh-llm-pi-ai-with-session` 是 `llm-pi-ai` 的一个通用 session wrapper：按配置显式注册
+`@banbolee/dsh-llm-pi-ai-with-session` 是 `llm-pi-ai` 的一个通用 session wrapper：按配置显式注册
 session provider 路由，复用 pi-ai 的 openai-completions 实现并在每次请求里带上
 可配置的会话 header（默认 `x-session-id`）；
 见 [plugins/dsh-llm-pi-ai-with-session/README.md](plugins/dsh-llm-pi-ai-with-session/README.md)。
@@ -53,7 +53,7 @@ dsh plugin --profile <profile> add -w ./plugins/dsh-lsp-diagnostics
 dsh plugin --profile <profile> add ./plugins/fish-shell
 ```
 
-(`dsh-fish-shell` is the exception: no `-w`; it uses its own deploy-and-symlink
+(`@banbolee/dsh-fish-shell` is the exception: no `-w`; it uses its own deploy-and-symlink
 story documented in its README.)
 
 To install several bundles into one isolated profile with a single command,
@@ -71,11 +71,11 @@ scripts/install-codegraph-instructions.sh   # codegraph: marker-fenced block int
 ## Uninstall
 
 ```sh
-dsh plugin --profile <profile> remove dsh-rtk
-dsh plugin --profile <profile> remove dsh-codegraph-mcp
-dsh plugin --profile <profile> remove dsh-llm-pi-ai-with-session
-dsh plugin --profile <profile> remove dsh-lsp-diagnostics
-dsh plugin --profile <profile> remove dsh-fish-shell
+dsh plugin --profile <profile> remove @banbolee/dsh-rtk
+dsh plugin --profile <profile> remove @banbolee/dsh-codegraph-mcp
+dsh plugin --profile <profile> remove @banbolee/dsh-llm-pi-ai-with-session
+dsh plugin --profile <profile> remove @banbolee/dsh-lsp-diagnostics
+dsh plugin --profile <profile> remove @banbolee/dsh-fish-shell
 ```
 
 ## Testing

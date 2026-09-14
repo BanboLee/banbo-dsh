@@ -12,7 +12,7 @@
  * the caller-provided operation signal (the coordinator relays caller abort,
  * its absolute deadline, and cleanup abort into it).
  *
- * @module dsh-lsp-diagnostics/runtime
+ * @module @banbolee/dsh-lsp-diagnostics/runtime
  */
 
 import { FsError } from '@deepseek-ai/dsh-fs'
@@ -484,7 +484,7 @@ export class DiagnosticsRuntime {
     this.retiredProcessErrors.length = 0
     if (errors.length === 1) throw errors[0]
     if (errors.length > 1) {
-      throw new AggregateError(errors, 'dsh-lsp-diagnostics runtime dispose failed')
+      throw new AggregateError(errors, '@banbolee/dsh-lsp-diagnostics runtime dispose failed')
     }
   }
 
@@ -1593,7 +1593,7 @@ this.lifetimeController.abort()
     this.detachStreams()
     if (errors.length === 1) throw errors[0]
     if (errors.length > 1) {
-      throw new AggregateError(errors, 'dsh-lsp-diagnostics session teardown failed')
+      throw new AggregateError(errors, '@banbolee/dsh-lsp-diagnostics session teardown failed')
     }
   }
 

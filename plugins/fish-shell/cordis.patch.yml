@@ -1,4 +1,4 @@
-# dsh-fish-shell bundle: make fish the default shell executor instead of bash.
+# @banbolee/dsh-fish-shell bundle: make fish the default shell executor instead of bash.
 #
 # Works across every surface:
 #   - dsh-tui / web (agent-preset roster): disables the base bash executor
@@ -22,10 +22,10 @@
 
 - insert:
     - id: fish-shell
-      name: dsh-fish-shell
+      name: '@banbolee/dsh-fish-shell'
 
     - id: tool-fish
-      name: dsh-fish-shell/tool
+      name: '@banbolee/dsh-fish-shell/tool'
 
 - id: dsh-tui-agent-presets
   config:
@@ -39,7 +39,7 @@
           return /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path
         }
         const system = new URL('../node_modules/@deepseek-ai/dsh/config/agent-presets/', base)
-        const own = new URL('./node_modules/dsh-fish-shell/presets/', base)
+        const own = new URL('./node_modules/@banbolee/dsh-fish-shell/presets/', base)
         return [
           { path: resolvePath(system), trust: 'system' },
           { path: resolvePath(own), trust: 'system' },

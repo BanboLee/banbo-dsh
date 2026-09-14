@@ -17,7 +17,7 @@
  * runtime instance the harness runs — no duplicate Cordis or Service class
  * copies.
  *
- * @module dsh-fish-shell
+ * @module @banbolee/dsh-fish-shell
  */
 
 import { SandboxBashExecutor } from '@deepseek-ai/dsh-bash-sandbox'

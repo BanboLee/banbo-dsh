@@ -18,7 +18,7 @@
  * and absent observations are silently ignored. The observer never throws:
  * hostile observations and internal counter anomalies are contained.
  *
- * @module dsh-lsp-diagnostics/collector
+ * @module @banbolee/dsh-lsp-diagnostics/collector
  */
 
 /**

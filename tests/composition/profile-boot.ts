@@ -12,7 +12,7 @@ import {
 } from './profile-loader'
 
 const profileName = 'rtk-codegraph-profile'
-const shellProviderNames = new Set(['@deepseek-ai/dsh-bash-sandbox', '@deepseek-ai/dsh-bash-local', 'dsh-fish-shell'])
+const shellProviderNames = new Set(['@deepseek-ai/dsh-bash-sandbox', '@deepseek-ai/dsh-bash-local', '@banbolee/dsh-fish-shell'])
 let isolatedProfileFactory: (name: string) => IsolatedProfile = createIsolatedProfile
 
 interface EnvSnapshot {

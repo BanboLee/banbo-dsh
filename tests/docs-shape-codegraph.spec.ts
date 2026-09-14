@@ -28,7 +28,7 @@ import { parseConfigTable, section } from './docs-shape-codegraph/parsers'
 
 const README = readFileSync(fileURLToPath(new URL('../plugins/codegraph-mcp/README.md', import.meta.url)), 'utf8')
 
-describe('dsh-codegraph-mcp README shape', () => {
+describe('@banbolee/dsh-codegraph-mcp README shape', () => {
   it('has every required section heading', () => {
     for (const heading of REQUIRED_HEADINGS) {
       expect(README, `missing required heading: ## ${heading}`).toContain(`## ${heading}`)

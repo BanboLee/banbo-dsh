@@ -34,8 +34,8 @@ function collectDshVersions(value: unknown, result = new Map<string, Set<string>
 
 describe('fish-shell installed dependency graph', () => {
   it('resolves sandbox and LLM packages from the coherent 0.1.5-rc.1 family', () => {
-    // Given the real installed dependency chain rooted at dsh-fish-shell
-    const listed = spawnSync('pnpm', ['list', '--filter', 'dsh-fish-shell', '--depth=8', '--json'], {
+    // Given the real installed dependency chain rooted at @banbolee/dsh-fish-shell
+    const listed = spawnSync('pnpm', ['list', '--filter', '@banbolee/dsh-fish-shell', '--depth=8', '--json'], {
       cwd: repoRoot,
       encoding: 'utf8',
     })

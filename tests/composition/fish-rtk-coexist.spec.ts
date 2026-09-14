@@ -26,7 +26,7 @@ describe('isolated DSH profile composition for fish + rtk bundles', () => {
 
     const rewritten = await booted.runShell('rewrite git status')
 
-    expect(booted.shellProviders()).toEqual(['dsh-fish-shell'])
+    expect(booted.shellProviders()).toEqual(['@banbolee/dsh-fish-shell'])
     expect(rewritten.stdout.text).toBe('rtk git status\n')
     expect(booted.toolNames()).toContain('fish')
   })
@@ -37,7 +37,7 @@ describe('isolated DSH profile composition for fish + rtk bundles', () => {
 
     const rewritten = await booted.runShell('rewrite git status')
 
-    expect(booted.shellProviders()).toEqual(['dsh-fish-shell'])
+    expect(booted.shellProviders()).toEqual(['@banbolee/dsh-fish-shell'])
     expect(rewritten.stdout.text).toBe('rtk git status\n')
     expect(booted.toolNames()).toEqual(expect.arrayContaining(['fish', 'mcp__codegraph__echo_context']))
   })

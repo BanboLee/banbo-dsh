@@ -3,11 +3,11 @@ import { dirname, join, resolve } from 'node:path'
 import { runChild } from './process.mjs'
 
 export const BUNDLES = [
-  ['plugins/fish-shell', 'dsh-fish-shell'],
-  ['plugins/rtk', 'dsh-rtk'],
-  ['plugins/codegraph-mcp', 'dsh-codegraph-mcp'],
-  ['plugins/dsh-llm-pi-ai-with-session', 'dsh-llm-pi-ai-with-session'],
-  ['plugins/dsh-lsp-diagnostics', 'dsh-lsp-diagnostics'],
+  ['plugins/fish-shell', '@banbolee/dsh-fish-shell'],
+  ['plugins/rtk', '@banbolee/dsh-rtk'],
+  ['plugins/codegraph-mcp', '@banbolee/dsh-codegraph-mcp'],
+  ['plugins/dsh-llm-pi-ai-with-session', '@banbolee/dsh-llm-pi-ai-with-session'],
+  ['plugins/dsh-lsp-diagnostics', '@banbolee/dsh-lsp-diagnostics'],
 ]
 
 export function writeToolWrappers(layout, tools) {

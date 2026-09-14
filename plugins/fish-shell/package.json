@@ -1,5 +1,5 @@
 {
-  "name": "dsh-fish-shell",
+  "name": "@banbolee/dsh-fish-shell",
   "version": "0.4.0",
   "description": "Fish shell executors and tool for DeepSeek Harness: run commands with fish instead of bash.",
   "type": "module",

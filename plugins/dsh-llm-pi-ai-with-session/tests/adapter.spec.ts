@@ -28,7 +28,7 @@ function demoProviders(baseURL: string, apiKeyEnv = 'DEEPSEEK_API_KEY') {
 
 const DEMO_ROUTE = [{ route: 'demo-affinity', source: 'demo', displayName: 'Demo Affinity' }]
 
-describe('dsh-llm-pi-ai-with-session adapter', () => {
+describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
   it('sends the live session id in the configured header on the LLM request', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
@@ -828,7 +828,7 @@ describe('dsh-llm-pi-ai-with-session adapter', () => {
   })
 })
 
-describe('dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
+describe('@banbolee/dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
   it('mirrors providers registered under the llm-pi-ai settings namespace', async () => {
     const deepseek = await mockGateway([{ events: textEvents }])
     const light = await mockGateway([{ events: textEvents }])

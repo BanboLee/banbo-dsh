@@ -12,7 +12,7 @@
  * retired late-final-stat I/O, with the entry applying `runtime.dispose()`
  * only after both registries are empty.
  *
- * @module dsh-lsp-diagnostics/coordinator
+ * @module @banbolee/dsh-lsp-diagnostics/coordinator
  */
 
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -611,7 +611,7 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs, n
             content: [{ type: 'text', text: rendered.text }],
             source: {
               kind: 'plugin',
-              plugin: 'dsh-lsp-diagnostics',
+              plugin: '@banbolee/dsh-lsp-diagnostics',
               form: 'notice',
               summary: boundContextSummary(rendered.text),
             },

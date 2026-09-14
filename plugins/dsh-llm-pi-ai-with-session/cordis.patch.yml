@@ -1,4 +1,4 @@
-# dsh-llm-pi-ai-with-session bundle: mount the session wrapper LLM provider route.
+# @banbolee/dsh-llm-pi-ai-with-session bundle: mount the session wrapper LLM provider route.
 #
 # The plugin registers one provider route (default `pi-ai-session`) whose
 # requests carry the live dsh session id in a configurable HTTP header
@@ -13,4 +13,4 @@
 # public `ctx.llm.registerAdapter` seam is the supported extension point.
 - insert:
     - id: llm-pi-ai-with-session
-      name: dsh-llm-pi-ai-with-session
+      name: '@banbolee/dsh-llm-pi-ai-with-session'

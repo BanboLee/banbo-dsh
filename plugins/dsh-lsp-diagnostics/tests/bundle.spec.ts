@@ -107,7 +107,7 @@ function fakeTools(register = vi.fn((_definition: unknown) => vi.fn(() => true))
   return { register }
 }
 
-describe('dsh-lsp-diagnostics Config schema', () => {
+describe('@banbolee/dsh-lsp-diagnostics Config schema', () => {
   it('exposes a standard-schema validator on the namespace', () => {
     expect(typeof Config['~standard']?.validate).toBe('function')
   })
@@ -507,7 +507,7 @@ describe('dsh-lsp-diagnostics Config schema', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics plugin entry', () => {
+describe('@banbolee/dsh-lsp-diagnostics plugin entry', () => {
   it('exports the named namespace surface without a default export', async () => {
     const mod = await import('../index.js')
     expect(mod.name).toBe('lsp-diagnostics')
@@ -580,7 +580,7 @@ describe('dsh-lsp-diagnostics plugin entry', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics tool assembly', () => {
+describe('@banbolee/dsh-lsp-diagnostics tool assembly', () => {
   it('registers exactly one lsp_diagnostics definition backed by the coordinator runtime', async () => {
     const ctx = new Context()
     const tools = fakeTools()
@@ -645,7 +645,7 @@ describe('dsh-lsp-diagnostics tool assembly', () => {
     await ctx.plugin(await import('../index.js'), DEFAULT_CONFIG)
     expect(onEvents).toEqual(['fs/observed', 'tools/post-execute'])
     expect(effectLabels).toHaveLength(1)
-    expect(effectLabels[0]).toBe('dsh-lsp-diagnostics tool, listeners, operations, retired I/O, and runtime teardown')
+    expect(effectLabels[0]).toBe('@banbolee/dsh-lsp-diagnostics tool, listeners, operations, retired I/O, and runtime teardown')
   })
 
   it('waits a listener already entered but still blocked in downstream next before cleanup resolves', async () => {

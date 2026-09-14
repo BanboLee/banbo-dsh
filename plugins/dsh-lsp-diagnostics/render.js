@@ -9,7 +9,7 @@
  * its conditional single global advisory, and the final `maxResultChars`
  * Unicode code-point cap with the fixed `…(truncated)` marker.
  *
- * @module dsh-lsp-diagnostics/render
+ * @module @banbolee/dsh-lsp-diagnostics/render
  */
 
 /**
@@ -80,7 +80,7 @@ const UNAVAILABLE_REASONS = new Set([
  * @returns {never}
  */
 function failLoud(message) {
-  throw new Error(`dsh-lsp-diagnostics render: ${message}`)
+  throw new Error(`@banbolee/dsh-lsp-diagnostics render: ${message}`)
 }
 
 /**

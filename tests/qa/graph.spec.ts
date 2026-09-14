@@ -14,11 +14,11 @@ const matrix = {
   cordis: '4.0.2',
   piAi: '0.84.4',
   bundles: {
-    'dsh-fish-shell': '0.4.0',
-    'dsh-rtk': '0.1.0',
-    'dsh-codegraph-mcp': '0.1.0',
-    'dsh-llm-pi-ai-with-session': '0.1.0',
-    'dsh-lsp-diagnostics': '0.1.0',
+    '@banbolee/dsh-fish-shell': '0.4.0',
+    '@banbolee/dsh-rtk': '0.1.0',
+    '@banbolee/dsh-codegraph-mcp': '0.1.0',
+    '@banbolee/dsh-llm-pi-ai-with-session': '0.1.0',
+    '@banbolee/dsh-lsp-diagnostics': '0.1.0',
   },
 } as const
 
@@ -58,7 +58,7 @@ describe('isolated dsh-tui graph validation', () => {
 
     // Then: all required package versions are reported without mismatches.
     expect(result.versions['@deepseek-ai/dsh-agent']).toEqual([matrix.dsh])
-    expect(result.versions['dsh-fish-shell']).toEqual([matrix.bundles['dsh-fish-shell']])
+    expect(result.versions['@banbolee/dsh-fish-shell']).toEqual([matrix.bundles['@banbolee/dsh-fish-shell']])
   })
 
   it('rejects a mixed Harness family when an incompatible duplicate is present', () => {
@@ -88,7 +88,7 @@ describe('isolated dsh-tui graph validation', () => {
     }
     const dependencies = root.dependencies
     if (typeof dependencies !== 'object' || dependencies === null) throw new TypeError('invalid dependencies fixture')
-    delete dependencies['dsh-rtk']
+    delete dependencies['@banbolee/dsh-rtk']
 
     // When: the graph is validated against the complete matrix.
     const validate = () => validateDependencyGraph(graph, matrix)
@@ -109,7 +109,7 @@ describe('isolated dsh-tui graph validation', () => {
     writeFileSync(packagePath, '{}')
 
     // When: the package realpath is checked.
-    const validate = () => assertInstalledRealpath('dsh-rtk', packagePath, dshHome, repoRoot)
+    const validate = () => assertInstalledRealpath('@banbolee/dsh-rtk', packagePath, dshHome, repoRoot)
 
     // Then: workspace-linked installation is rejected.
     expect(validate).toThrow(/outside isolated DSH_HOME/)

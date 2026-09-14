@@ -627,7 +627,7 @@ async function diagnoseUntilAbort(h: Harness, value = candidate()): Promise<Diag
 
 // ---------------------------------------------------------------------------
 
-describe('dsh-lsp-diagnostics runtime pooling', () => {
+describe('@banbolee/dsh-lsp-diagnostics runtime pooling', () => {
   it('keeps automatic diagnose behavior by delegating candidate.target and candidate.version', async () => {
     const h = makeHarness('clean')
     const diagnoseTarget = vi.spyOn(h.runtime, 'diagnoseTarget')
@@ -907,7 +907,7 @@ server.ackAll()
   })
 })
 
-describe('dsh-lsp-diagnostics runtime json-rpc', () => {
+describe('@banbolee/dsh-lsp-diagnostics runtime json-rpc', () => {
   it('sends the canonical initialize payload then awaits initialized before didOpen', async () => {
     const h = makeHarness('push-versioned')
     await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
@@ -1008,7 +1008,7 @@ describe('dsh-lsp-diagnostics runtime json-rpc', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
+describe('@banbolee/dsh-lsp-diagnostics runtime uri and version correlation', () => {
   it('ignores cross-uri publications entirely, even with a matching version', async () => {
     const h = makeHarness('cross-uri-same-version')
     await expect(diagnoseUntilAbort(h)).resolves.toMatchObject({
@@ -1141,7 +1141,7 @@ describe('dsh-lsp-diagnostics runtime uri and version correlation', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
+describe('@banbolee/dsh-lsp-diagnostics runtime diagnostic normalization', () => {
   it('projects only consumed fields into the deeply frozen normalized schema', async () => {
     const h = makeHarness('strict-diagnostic')
     const outcome = await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
@@ -1256,7 +1256,7 @@ describe('dsh-lsp-diagnostics runtime diagnostic normalization', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics runtime bounded read', () => {
+describe('@banbolee/dsh-lsp-diagnostics runtime bounded read', () => {
   it('uses the eligibility-frozen opaque canonical uri for read and correlation, never re-deriving it', async () => {
     const h = makeHarness('push-versioned')
     // The frozen canonical URI is opaque and NOT derivable from displayPath:
@@ -1354,7 +1354,7 @@ describe('dsh-lsp-diagnostics runtime bounded read', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics runtime deadline and signals', () => {
+describe('@banbolee/dsh-lsp-diagnostics runtime deadline and signals', () => {
   it('waits the quiet window and returns the latest accepted batch', async () => {
     const h = makeHarness('two-batches', { settleMs: 300 })
     await vi.useFakeTimers()
@@ -1466,7 +1466,7 @@ await vi.advanceTimersByTimeAsync(300)
   })
 })
 
-describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart', () => {
+describe('@banbolee/dsh-lsp-diagnostics runtime transport failure, eviction, and restart', () => {
   it('retries once after stdin.write throws synchronously', async () => {
     const h = makeHarness('push-versioned', {}, {}, (server) => {
       if (server.spawnIndex === 0) {
@@ -1624,7 +1624,7 @@ describe('dsh-lsp-diagnostics runtime transport failure, eviction, and restart',
   })
 })
 
-describe('dsh-lsp-diagnostics runtime unique graceful-first teardown', () => {
+describe('@banbolee/dsh-lsp-diagnostics runtime unique graceful-first teardown', () => {
   it('follows the exact graceful teardown event order', async () => {
     const h = makeHarness('push-versioned')
     await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
@@ -1734,7 +1734,7 @@ await dispose
   })
 })
 
-describe('dsh-lsp-diagnostics runtime dispose', () => {
+describe('@banbolee/dsh-lsp-diagnostics runtime dispose', () => {
   it('settles an active waiter before awaiting its queue and teardown', async () => {
     const h = makeHarness('timeout', { shutdownTimeoutMs: 100 })
     await vi.useFakeTimers()

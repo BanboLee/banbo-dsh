@@ -1,5 +1,5 @@
 /**
- * Public entrypoint of `dsh-rtk`: a general-purpose Cordis function
+ * Public entrypoint of `@banbolee/dsh-rtk`: a general-purpose Cordis function
  * plugin that decorates whatever shell executor the host mounts as `ctx.shell`.
  * Every command is transparently rewritten through `rtk rewrite` before the
  * delegate executes it; sandbox confinement, result facts, and lifecycle
@@ -8,10 +8,10 @@
  * (or replaces) a shell provider, so it coexists with any executor (bash,
  * fish, ...) without a duplicate service registration.
  *
- * Re-exports the {@link module:dsh-rtk/rewrite-decision} oracle and the
- * {@link module:dsh-rtk/process-result} wrappers' public surface.
+ * Re-exports the {@link module:@banbolee/dsh-rtk/rewrite-decision} oracle and the
+ * {@link module:@banbolee/dsh-rtk/process-result} wrappers' public surface.
  *
- * @module dsh-rtk
+ * @module @banbolee/dsh-rtk
  */
 
 import { deniedProcess } from './process-result.js'
@@ -50,7 +50,7 @@ export const inject = ['shell', 'tools']
 export const Config = {
   '~standard': {
     version: /** @type {1} */ (1),
-    vendor: 'dsh-rtk',
+    vendor: '@banbolee/dsh-rtk',
     validate(value) {
       const input = value ?? {}
       return {

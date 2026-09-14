@@ -26,9 +26,9 @@ export const CODEGRAPH_BIN = process.env.DSH_REAL_E2E_CODEGRAPH_BIN ?? DEFAULT_C
 export const PROFILE_NAME = 'headless-real'
 export const BASE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'] as const
 export const PLUGIN_NAMES = [
-  'dsh-fish-shell',
-  'dsh-rtk',
-  'dsh-codegraph-mcp',
+  '@banbolee/dsh-fish-shell',
+  '@banbolee/dsh-rtk',
+  '@banbolee/dsh-codegraph-mcp',
 ] as const
 
 export type PluginName = (typeof PLUGIN_NAMES)[number]

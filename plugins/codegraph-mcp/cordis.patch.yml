@@ -1,4 +1,4 @@
-# The dsh-codegraph-mcp bundle patch: one @deepseek-ai/dsh-mcp-client row that
+# The @banbolee/dsh-codegraph-mcp bundle patch: one @deepseek-ai/dsh-mcp-client row that
 # connects the CodeGraph MCP server to any DSH profile.
 #
 # Defaults follow the plan contract: stdio transport launching

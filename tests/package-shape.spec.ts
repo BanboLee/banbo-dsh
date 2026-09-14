@@ -31,7 +31,7 @@ interface BundleExpectation {
 const bundleExpectations: readonly BundleExpectation[] = [
   {
     directory: 'plugins/rtk',
-    packageName: 'dsh-rtk',
+    packageName: '@banbolee/dsh-rtk',
     files: ['index.js', 'grep-compress.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
@@ -40,7 +40,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
   },
   {
     directory: 'plugins/codegraph-mcp',
-    packageName: 'dsh-codegraph-mcp',
+    packageName: '@banbolee/dsh-codegraph-mcp',
     files: ['cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
@@ -49,7 +49,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
   },
   {
     directory: 'plugins/dsh-llm-pi-ai-with-session',
-    packageName: 'dsh-llm-pi-ai-with-session',
+    packageName: '@banbolee/dsh-llm-pi-ai-with-session',
     files: ['index.js', 'adapter.js', 'context.js', 'model.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
@@ -59,7 +59,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
   },
   {
     directory: 'plugins/dsh-lsp-diagnostics',
-    packageName: 'dsh-lsp-diagnostics',
+    packageName: '@banbolee/dsh-lsp-diagnostics',
     files: ['index.js', 'collector.js', 'framing.js', 'runtime.js', 'tool.js', 'render.js', 'coordinator.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
@@ -71,7 +71,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
   },
   {
     directory: 'plugins/fish-shell',
-    packageName: 'dsh-fish-shell',
+    packageName: '@banbolee/dsh-fish-shell',
     files: ['index.js', 'local.js', 'tool.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
@@ -273,11 +273,11 @@ function extractLockImporterDevDeps(
   return result
 }
 
-describe('dsh-lsp-diagnostics dependency locking', () => {
+describe('@banbolee/dsh-lsp-diagnostics dependency locking', () => {
   it('resolves every direct devDependency to its declared range base in pnpm-lock.yaml', () => {
     const lock = readRepoFile('pnpm-lock.yaml')
     const manifest: unknown = JSON.parse(readRepoFile('plugins/dsh-lsp-diagnostics/package.json'))
-    if (!isRecord(manifest)) throw new TypeError('dsh-lsp-diagnostics package.json is not an object')
+    if (!isRecord(manifest)) throw new TypeError('@banbolee/dsh-lsp-diagnostics package.json is not an object')
     const devDeps = stringRecordField(manifest, 'devDependencies')
     const resolved = extractLockImporterDevDeps(lock, 'plugins/dsh-lsp-diagnostics')
     for (const [name, expected] of Object.entries(devDeps)) {

@@ -21,7 +21,7 @@ function fencedBlock(): string {
   return text.slice(start, end + END.length)
 }
 
-describe('dsh-codegraph-mcp agent instructions block', () => {
+describe('@banbolee/dsh-codegraph-mcp agent instructions block', () => {
   it('ships one marker-fenced CodeGraph block usable by dsh-agent-instructions', () => {
     const block = fencedBlock()
     // Exactly one fenced section, markers paired once each.

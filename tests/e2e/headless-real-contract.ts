@@ -65,12 +65,12 @@ export type RealHeadlessHarness = {
 const SHELL_PROVIDERS = new Set([
   '@deepseek-ai/dsh-bash-sandbox',
   '@deepseek-ai/dsh-bash-local',
-  'dsh-fish-shell',
+  '@banbolee/dsh-fish-shell',
 ])
 const LOCAL_PLUGIN_LOADER_NAMES = new Map<string, string>([
-  ['dsh-fish-shell', 'dsh-fish-shell'],
-  ['dsh-rtk', 'dsh-rtk'],
-  ['@deepseek-ai/dsh-mcp-client', 'dsh-codegraph-mcp'],
+  ['@banbolee/dsh-fish-shell', '@banbolee/dsh-fish-shell'],
+  ['@banbolee/dsh-rtk', '@banbolee/dsh-rtk'],
+  ['@deepseek-ai/dsh-mcp-client', '@banbolee/dsh-codegraph-mcp'],
 ])
 
 export function activeShellProviders(ctx: BootContext): string[] {

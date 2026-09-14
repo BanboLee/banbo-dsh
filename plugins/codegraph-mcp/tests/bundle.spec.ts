@@ -13,7 +13,7 @@ import {
   parseRowConfig,
 } from './helpers'
 
-describe('dsh-codegraph-mcp bundle patch', () => {
+describe('@banbolee/dsh-codegraph-mcp bundle patch', () => {
   it('inserts exactly one mcp-codegraph row consuming the official @deepseek-ai/dsh-mcp-client bridge', () => {
     const rows = composePatch(readPatch(patchPath()))
     const matching = rows.filter((row) => row.id === ROW_ID)

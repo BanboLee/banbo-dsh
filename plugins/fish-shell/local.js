@@ -12,14 +12,14 @@
  * Prefer {@link FishSandboxExecutor} (this package's default export) in any
  * composition that mounts `dsh-permission-presets`, which requires the
  * mounted `ctx.shell` executor to confine (`sandboxMode`). Mount this module
- * (`dsh-fish-shell/local`) only in custom compositions that deliberately run
+ * (`@banbolee/dsh-fish-shell/local`) only in custom compositions that deliberately run
  * without a sandbox.
  *
  * `@deepseek-ai/dsh-bash-local` resolves through the launcher-maintained
  * `profiles/node_modules` symlink chain, so this subclass shares the exact
  * runtime instance the harness runs.
  *
- * @module dsh-fish-shell/local
+ * @module @banbolee/dsh-fish-shell/local
  */
 
 import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local'

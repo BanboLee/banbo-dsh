@@ -13,7 +13,7 @@
  * idioms; without it, every `export`/`$(...)`/`if then fi` would fail under
  * fish.
  *
- * @module dsh-fish-shell/tool
+ * @module @banbolee/dsh-fish-shell/tool
  */
 
 import { isAbsolute, resolve } from 'node:path'
@@ -50,7 +50,7 @@ function installPreset() {
     mkdirSync(targetDir, { recursive: true })
     writeFileSync(target, readFileSync(BUNDLED_PRESET_URL, 'utf8'))
   } catch (error) {
-    console.warn('dsh-fish-shell: could not install the fish agent preset:', String(error))
+    console.warn('@banbolee/dsh-fish-shell: could not install the fish agent preset:', String(error))
   }
 }
 

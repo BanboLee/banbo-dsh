@@ -1,5 +1,5 @@
 /**
- * Test helpers for dsh-llm-pi-ai-with-session: a local openai-completions mock
+ * Test helpers for @banbolee/dsh-llm-pi-ai-with-session: a local openai-completions mock
  * gateway plus harness assemblies that mount LlmRuntime and the plugin.
  *
  * Two assembly styles mirror the two injection paths the plugin supports:

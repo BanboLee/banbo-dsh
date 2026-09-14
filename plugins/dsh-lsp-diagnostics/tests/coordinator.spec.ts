@@ -352,7 +352,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('dsh-lsp-diagnostics coordinator waterfall contract', () => {
+describe('@banbolee/dsh-lsp-diagnostics coordinator waterfall contract', () => {
   it('registers a real three-parameter listener that preserves _result identity and calls next exactly once', async () => {
     const harness = makeHarness()
     const exec = makeExec()
@@ -537,7 +537,7 @@ describe('dsh-lsp-diagnostics coordinator waterfall contract', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics coordinator eligibility', () => {
+describe('@banbolee/dsh-lsp-diagnostics coordinator eligibility', () => {
   it('admits every added canonical extension and rejects nearby noncanonical variants', async () => {
     const optionalServers = {
       clangd: {
@@ -693,7 +693,7 @@ describe('dsh-lsp-diagnostics coordinator eligibility', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics coordinator shared ordering', () => {
+describe('@banbolee/dsh-lsp-diagnostics coordinator shared ordering', () => {
   it('diagnoses and renders in the shared (renderPath, targetKey, canonicalUri) order', async () => {
     const harness = makeHarness()
     const exec = makeExec()
@@ -758,7 +758,7 @@ describe('dsh-lsp-diagnostics coordinator shared ordering', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics coordinator aggregate context', () => {
+describe('@banbolee/dsh-lsp-diagnostics coordinator aggregate context', () => {
   it('appends exactly one plugin notice and preserves existing contexts', async () => {
     const harness = makeHarness()
     const exec = makeExec()
@@ -782,7 +782,7 @@ describe('dsh-lsp-diagnostics coordinator aggregate context', () => {
     expect(notice).toBeDefined()
     expect(notice!.source).toEqual({
       kind: 'plugin',
-      plugin: 'dsh-lsp-diagnostics',
+      plugin: '@banbolee/dsh-lsp-diagnostics',
       form: 'notice',
       summary: expect.stringContaining('[LSP diagnostics after write]'),
     })
@@ -823,7 +823,7 @@ describe('dsh-lsp-diagnostics coordinator aggregate context', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics coordinator final gate', () => {
+describe('@banbolee/dsh-lsp-diagnostics coordinator final gate', () => {
   it('commits stats-first when every final stat settles before the deadline', async () => {
     const harness = makeHarness()
     const exec = makeExec()
@@ -1150,7 +1150,7 @@ describe('dsh-lsp-diagnostics coordinator final gate', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics coordinator admission and registration', () => {
+describe('@banbolee/dsh-lsp-diagnostics coordinator admission and registration', () => {
   it('refuses registration once admission is closed, retiring candidates synchronously', async () => {
     const harness = makeHarness()
     harness.coordinator.stopAdmission()
@@ -1313,7 +1313,7 @@ describe('dsh-lsp-diagnostics coordinator admission and registration', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics coordinator cleanup ownership', () => {
+describe('@banbolee/dsh-lsp-diagnostics coordinator cleanup ownership', () => {
   it('cleans up an unload racing the final stat, with runtime.dispose only after quiescence', async () => {
     const harness = makeHarness()
     const exec = makeExec()
@@ -1543,7 +1543,7 @@ describe('dsh-lsp-diagnostics coordinator cleanup ownership', () => {
   })
 })
 
-describe('dsh-lsp-diagnostics coordinator unload stage matrix (real runtime composition)', () => {
+describe('@banbolee/dsh-lsp-diagnostics coordinator unload stage matrix (real runtime composition)', () => {
   // The REAL DiagnosticsRuntime is composed with the real collector and
   // coordinator through a real Cordis context; the runtime-side phases of the
   // unload matrix (contains before/after, target stat, target read, runtime
