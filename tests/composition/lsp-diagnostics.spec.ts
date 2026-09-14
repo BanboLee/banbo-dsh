@@ -780,7 +780,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
     }
     ctx.llm.registerAdapter(['mock'], adapter)
 
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' }, { cwd: booted.workspace })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' }, { cwd: booted.workspace })
 
     const idle = new Promise<void>((resolve) => {
       const off = ctx.on('agent/status', ({ agent: subject, status }) => {
@@ -926,7 +926,7 @@ describe('dsh-lsp-diagnostics real composition', () => {
     }
     ctx.llm.registerAdapter(['mock'], adapter)
 
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' }, { cwd: booted.workspace })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' }, { cwd: booted.workspace })
 
     const idle = new Promise<void>((resolve) => {
       const off = ctx.on('agent/status', ({ agent: subject, status }) => {

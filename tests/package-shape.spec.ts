@@ -35,7 +35,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'grep-compress.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
-      '@deepseek-ai/dsh-subprocess': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-subprocess': '^0.1.5-rc.1',
     }
   },
   {
@@ -44,7 +44,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
-      '@deepseek-ai/dsh-mcp-client': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-mcp-client': '^0.1.5-rc.1',
     },
   },
   {
@@ -53,7 +53,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'adapter.js', 'context.js', 'model.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
-      '@deepseek-ai/dsh-llm': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-llm': '^0.1.5-rc.1',
       '@earendil-works/pi-ai': '^0.84.2',
     },
   },
@@ -63,10 +63,10 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'collector.js', 'framing.js', 'runtime.js', 'tool.js', 'render.js', 'coordinator.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
-      '@deepseek-ai/dsh-fs': '^0.1.2-rc.1',
-      '@deepseek-ai/dsh-llm': '^0.1.2-rc.1',
-      '@deepseek-ai/dsh-subprocess': '^0.1.2-rc.1',
-      '@deepseek-ai/dsh-tools': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-fs': '^0.1.5-rc.1',
+      '@deepseek-ai/dsh-llm': '^0.1.5-rc.1',
+      '@deepseek-ai/dsh-subprocess': '^0.1.5-rc.1',
+      '@deepseek-ai/dsh-tools': '^0.1.5-rc.1',
     },
   },
   {
@@ -75,9 +75,9 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'local.js', 'tool.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
-      '@deepseek-ai/dsh-bash-local': '^0.1.2-rc.1',
-      '@deepseek-ai/dsh-bash-sandbox': '^0.1.2-rc.1',
-      '@deepseek-ai/dsh-home-paths': '^0.1.2-rc.1',
+      '@deepseek-ai/dsh-bash-local': '^0.1.5-rc.1',
+      '@deepseek-ai/dsh-bash-sandbox': '^0.1.5-rc.1',
+      '@deepseek-ai/dsh-home-paths': '^0.1.5-rc.1',
     },
   },
 ] as const
@@ -161,14 +161,14 @@ describe('DSH dependency family ranges', () => {
   it('codegraph-mcp declares @deepseek-ai/dsh-llm from the rc.1 family', () => {
     const manifest = readManifest('plugins/codegraph-mcp')
 
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.1.2-rc.1')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.1.5-rc.1')
   })
 
   it('rtk declares @deepseek-ai/dsh-llm and @deepseek-ai/dsh-settings from the rc.1 family', () => {
     const manifest = readManifest('plugins/rtk')
 
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.1.2-rc.1')
-    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('^0.1.2-rc.1')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.1.5-rc.1')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('^0.1.5-rc.1')
   })
 })
 

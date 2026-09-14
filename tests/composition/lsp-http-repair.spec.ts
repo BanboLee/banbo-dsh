@@ -103,7 +103,7 @@ describe('LSP feedback through the real HTTP session adapter', () => {
       readonly SessionId: (id: string) => unknown
     }
     const ctx = profile.ctx as unknown as AgentLoopContext
-    const agent = ctx.agentLoop.create(
+    const agent = await ctx.agentLoop.create(
       sessionModule.SessionId('lsp-http-repair'),
       { provider: 'loopback-session', model: 'loopback-model' },
       { cwd: profile.workspace },
