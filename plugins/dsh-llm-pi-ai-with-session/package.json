@@ -1,6 +1,6 @@
 {
   "name": "@banbolee/dsh-llm-pi-ai-with-session",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "LLM session-id header injection for DeepSeek Harness: registers a provider route whose requests carry the live session id in a configurable HTTP header, reusing the pi-ai openai-completions wire implementation so a gateway can correlate every request with its dsh session.",
   "type": "module",
   "main": "index.js",
@@ -47,6 +47,10 @@
     "bundle"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "engines": {
     "node": ">=22"
   }

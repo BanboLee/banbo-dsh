@@ -1,6 +1,6 @@
 {
   "name": "@banbolee/dsh-rtk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "General-purpose RTK integration for DeepSeek Harness: a plain function plugin that decorates the mounted shell executor's `run`/`start` through `rtk rewrite` and compresses model-facing grep output through `rtk pipe`. Decorates the live `ctx.shell`, so it coexists with any shell provider (bash, fish, ...) without a duplicate service registration.",
   "type": "module",
   "main": "index.js",
@@ -47,6 +47,10 @@
     "bundle"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "engines": {
     "node": ">=22"
   }

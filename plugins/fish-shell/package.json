@@ -1,6 +1,6 @@
 {
   "name": "@banbolee/dsh-fish-shell",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Fish shell executors and tool for DeepSeek Harness: run commands with fish instead of bash.",
   "type": "module",
   "main": "index.js",
@@ -46,6 +46,10 @@
     "bundle"
   ],
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "engines": {
     "node": ">=22"
   }
