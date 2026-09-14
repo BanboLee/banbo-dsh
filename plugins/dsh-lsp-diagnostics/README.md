@@ -16,7 +16,13 @@ monkey-patches official objects.
 
 ## Usage
 
-Install the bundle into any DSH profile from the repository root. The
+**Install from npm (recommended)** — no clone needed:
+
+```sh
+dsh plugin --profile <name> add @banbolee/dsh-lsp-diagnostics
+```
+
+For local development, install the bundle into any DSH profile from the repository root. The
 workspace-root flag `-w` is required: without it pnpm cannot resolve the local
 package inside the profile's generated workspace.
 

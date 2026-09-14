@@ -32,6 +32,14 @@ Harness 官方有两条 LLM 通路：
 
 ## 安装
 
+**直接安装（推荐）**——从 npm 安装，无需 clone：
+
+```sh
+dsh plugin --profile <profile> add @banbolee/dsh-llm-pi-ai-with-session
+```
+
+本地开发时从仓库根目录安装：
+
 ```sh
 cd ~/project/banbo-dsh
 dsh plugin --profile <profile> add -w ./plugins/dsh-llm-pi-ai-with-session

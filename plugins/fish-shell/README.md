@@ -40,12 +40,17 @@ host-tool based (headless).
 
 ## Install
 
+**From npm (recommended)** — no clone needed:
+
 ```sh
-# from this checkout, per profile:
-dsh plugin --profile <name> add ./plugins/fish-shell
+dsh plugin --profile <name> add @banbolee/dsh-fish-shell
 ```
 
-For a published npm package: `dsh plugin --profile <name> add @banbolee/dsh-fish-shell`.
+From this checkout, per profile:
+
+```sh
+dsh plugin --profile <name> add ./plugins/fish-shell
+```
 
 Add it to every profile that should default to fish (dsh-tui, web, headless,
 …). The bundle patch is a no-op (with a warning) for a roster row id that the
