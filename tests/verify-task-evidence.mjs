@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Verifies per-task evidence directories under `.omo/evidence/...`.
+// Verifies per-task evidence directories under an evidence root passed as an argument.
 //
 // Usage: node tests/verify-task-evidence.mjs <evidence-root> <task-nums...>
 // Exit 0 when every listed task has valid evidence; exit 1 otherwise.

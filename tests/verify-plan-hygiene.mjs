@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Verifies `.omo/plans/rtk-codegraph-dsh-plugins.md` task-row grammar.
+// Verifies task-row grammar of a plan file passed as an argument.
 //
 // Usage: node tests/verify-plan-hygiene.mjs <plan-file>
 // Exit 0 when the plan is healthy; exit 1 with a report on stdout otherwise.

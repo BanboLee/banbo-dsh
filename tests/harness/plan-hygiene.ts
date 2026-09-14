@@ -8,7 +8,6 @@ import { runNode } from '../helpers/process'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..')
 const planHygiene = join(root, 'tests/verify-plan-hygiene.mjs')
-const realPlan = join(root, '.omo/plans/rtk-codegraph-dsh-plugins.md')
 
 describe('verify-plan-hygiene.mjs', () => {
   const validPlanSections = [
@@ -44,10 +43,10 @@ describe('verify-plan-hygiene.mjs', () => {
     return path
   }
 
-  it('passes on the real plan file', async () => {
-    const result = await runNode(planHygiene, [realPlan])
-    expect(result.code).toBe(0)
-  }, 30000)
+  // NOTE: the git-ignored `.omo/plans/...` real-plan lane is intentionally
+  // NOT part of this suite: it reads local-only execution evidence that a
+  // clean checkout (CI, fresh clone) can never have. Run the verifier against
+  // `.omo/plans/rtk-codegraph-dsh-plugins.md` manually on the authoring machine.
 
   it('accepts a valid open plan whose task rows are all `- [ ]`', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'plan-hygiene-open-'))
