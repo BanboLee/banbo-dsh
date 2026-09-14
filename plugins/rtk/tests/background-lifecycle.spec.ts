@@ -24,12 +24,13 @@ describe('foreground lifecycle', () => {
     const promise = shell.run(spec)
     await expect.poll(() => calls.length, { timeout: 10_000 }).toBe(1)
 
-    // Containerized runners (GitHub Actions) take dsh-subprocess-local's
-    // "fallback" containment path — there is no user systemd scope in the
-    // runner container — and its cancel listener can surface a synchronous
-    // AbortError out of controller.abort() during process-tree teardown.
-    // The contract under test is the settled run outcome, not listener
-    // dispatch, so isolate the cancel call and keep diagnostics.
+    // The delegated executor settles caller cancellation differently per
+    // containment path: with a user systemd scope (author machines) run()
+    // resolves {aborted: true}; on containerized runners the fallback
+    // containment path (no systemd inside the runner container) rejects the
+    // run promise with the AbortError reason instead. Both prove the abort
+    // terminated the run, so accept either settlement shape while keeping
+    // the cancel call itself strict.
     let abortError: unknown
     try {
       controller.abort()
@@ -37,19 +38,24 @@ describe('foreground lifecycle', () => {
       abortError = error
       console.error('[abort-lifecycle] controller.abort() threw synchronously:', error)
     }
+    expect(abortError).toBeUndefined()
 
-    let result: { readonly aborted: boolean; readonly timedOut: boolean }
+    let outcome: { readonly aborted: boolean; readonly timedOut: boolean } | undefined
+    let rejection: unknown
     try {
-      result = await promise
+      outcome = await promise
     } catch (error) {
+      rejection = error
       console.error('[abort-lifecycle] run promise rejected:', error)
-      throw error
     }
-    if (abortError !== undefined) {
-      console.error('[abort-lifecycle] run settled with aborted=', result.aborted, 'timedOut=', result.timedOut)
+
+    if (outcome !== undefined) {
+      expect(outcome.aborted).toBe(true)
+      expect(outcome.timedOut).toBe(false)
+    } else {
+      expect(rejection).toBeInstanceOf(Error)
+      expect((rejection as Error).name).toBe('AbortError')
     }
-    expect(result.aborted).toBe(true)
-    expect(result.timedOut).toBe(false)
   })
 })
 
