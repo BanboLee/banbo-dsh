@@ -2,6 +2,7 @@
   "name": "banbo-dsh",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Local DeepSeek Harness plugin bundles (rtk, codegraph-mcp) with a deterministic test harness.",
   "type": "module",
   "packageManager": "pnpm@9.3.0",
