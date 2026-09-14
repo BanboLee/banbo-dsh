@@ -1,5 +1,20 @@
 # dsh-llm-pi-ai-with-session
 
+> **English summary.** A generic session wrapper over the official `llm-pi-ai`
+> adapter for DeepSeek Harness. It registers explicit session provider routes
+> (only the routes declared in `routes`) that reuse pi-ai's
+> `openai-completions` implementation and add a dynamic session id header
+> (default `x-session-id`) to every LLM request, so your own gateway can
+> correlate requests with dsh sessions. Gateway, credentials, static headers,
+> models, and reasoning tiers are all inherited from the source provider in
+> `llm-pi-ai.providers` — nothing is duplicated. It uses the public
+> `ctx.llm.registerAdapter` extension point, never modifies harness core, and
+> needs no extra binary. Install:
+> `dsh plugin --profile <profile> add -w ./plugins/dsh-llm-pi-ai-with-session`,
+> then point your agent's default provider at one of the declared session
+> routes. Full Chinese documentation follows below (安装 / 配置 / 使用 /
+> 行为细节 / 限制).
+
 一个给 DeepSeek Harness 的 LLM 调用加上「会话（session）标识」能力的插件：在每次 LLM 请求的 HTTP 头里带上当前会话 id，方便自建网关把请求和 dsh 会话关联起来。
 
 它是 `llm-pi-ai` 的一个**通用 session wrapper**：只为配置中显式声明的 provider 注册 session 路由，复用 pi-ai 的 **openai-completions** 线上实现，在每次请求里额外带上一个可配置的会话 header（默认 `x-session-id`）。网关、模型、凭据、静态 headers、推理档位全部从 source provider **继承**，无需重复配置——不含任何环境特定内容，无需改动 harness 内核、无需碰被锁死的 `sendSessionAffinityHeaders` 开关。

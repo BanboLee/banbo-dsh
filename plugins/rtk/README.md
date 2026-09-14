@@ -9,6 +9,15 @@ executor (bash, fish, ...) and never registers a duplicate shell provider.
 Sandbox confinement and result semantics are inherited from the mounted
 executor.
 
+## Prerequisites
+
+The `rtk` CLI must be **pre-installed** and reachable on `PATH` (or pinned via
+the `rtkBinary` config) for this bundle to have any effect. Without `rtk`, the
+plugin still installs and runs, but every command fails open to passthrough —
+no `rtk rewrite` happens and `grep` output is never compressed. The bundle
+never downloads or installs `rtk` itself; test against any current `rtk`
+release (verified with 0.47.0).
+
 ## Usage
 
 Install the bundle into any DSH profile from the repository root. The

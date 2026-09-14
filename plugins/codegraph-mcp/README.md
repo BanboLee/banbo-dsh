@@ -5,6 +5,14 @@ Harness profile through the official [`@deepseek-ai/dsh-mcp-client`] bridge. It
 adds one configurable row, `mcp-codegraph`, which launches
 `codegraph serve --mcp` over stdio with `CODEGRAPH_NO_DAEMON=1`.
 
+## Prerequisites
+
+The `codegraph` CLI must be **pre-installed** and reachable on `PATH` for the
+bundle to work: the `mcp-codegraph` row launches `codegraph serve --mcp` over
+stdio, so without the binary the bridge has no server and no
+`mcp__codegraph__*` tools are available. The bundle never downloads or
+installs CodeGraph; test against any current release (verified with 1.6.0).
+
 ## Usage
 
 Install the bundle into any DSH profile from the repository root. The
