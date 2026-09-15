@@ -1,6 +1,6 @@
 {
   "name": "@banbolee/dsh-codegraph-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "CodeGraph MCP bridge bundle for DeepSeek Harness: connects CodeGraph to any DSH profile through the official @deepseek-ai/dsh-mcp-client bridge (codegraph serve --mcp).",
   "type": "module",
   "files": [
