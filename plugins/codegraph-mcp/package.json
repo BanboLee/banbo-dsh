@@ -5,7 +5,6 @@
   "type": "module",
   "files": [
     "cordis.patch.yml",
-    "instructions/CODEGRAPH.md",
     "README.md"
   ],
   "dsh": {

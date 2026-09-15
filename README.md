@@ -79,7 +79,6 @@ dsh plugin --profile <profile> add ./plugins/fish-shell
 DSH_HOME="$(mktemp -d)" scripts/sync-rtk-codegraph-to-profile.sh <profile>
 DSH_HOME="$(mktemp -d)" scripts/sync-lsp-diagnostics-to-profile.sh <profile>
 scripts/sync-to-profile.sh            # fish-shell：把插件拷贝进 profile 树
-scripts/install-codegraph-instructions.sh   # codegraph：把 marker 围栏块写进 AGENTS.md
 ```
 
 ### 测试

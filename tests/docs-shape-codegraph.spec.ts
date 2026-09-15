@@ -72,13 +72,14 @@ describe('@banbolee/dsh-codegraph-mcp README shape', () => {
     expect(override).toMatch(/(?:no deep merge|whole-config replacement|last write wins)/)
   })
 
-  it('documents the Agent instructions block, install script, and why it exists', () => {
+  it('documents the no-write agent-guidance strategy (tool descriptions, no AGENTS.md)', () => {
     expect(agentInstructionsChecks(README)).toEqual([])
     const block = section(README, 'Agent instructions', 'Model Experience')
-    expect(block).toContain('instructions/CODEGRAPH.md')
-    expect(block).toContain('scripts/install-codegraph-instructions.sh')
     expect(block).toContain('mcp__codegraph__codegraph_explore')
     expect(block).toMatch(/does NOT consume/i)
+    expect(block).toMatch(/tool description/i)
+    expect(block).toMatch(/no AGENTS\.md|writes? no|does NOT install/i)
+    expect(block).not.toMatch(/install-codegraph-instructions\.sh|instructions\/CODEGRAPH\.md/)
   })
 
   it('scopes Model Experience to observed server-qualified tools only', () => {

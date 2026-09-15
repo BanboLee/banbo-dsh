@@ -87,7 +87,6 @@ isolated state):
 DSH_HOME="$(mktemp -d)" scripts/sync-rtk-codegraph-to-profile.sh <profile>
 DSH_HOME="$(mktemp -d)" scripts/sync-lsp-diagnostics-to-profile.sh <profile>
 scripts/sync-to-profile.sh            # fish-shell: copy the plugin into the profile tree
-scripts/install-codegraph-instructions.sh   # codegraph: marker-fenced block into AGENTS.md
 ```
 
 ### Testing

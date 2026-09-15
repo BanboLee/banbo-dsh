@@ -130,33 +130,45 @@ export function noNetworkChecks(limits: string): string[] {
 }
 
 /**
- * Bind the Agent-instructions section: it must name the shipped block file and
- * the idempotent install script, explain WHY the block exists (the DSH bridge
- * does not consume the MCP initialize instructions), and point agents at the
- * server-qualified tool. No sentence may claim the bridge surfaces those
- * instructions to the model.
+ * Bind the Agent-instructions section to the no-write strategy: it must explain
+ * WHY no AGENTS.md block is installed (the DSH bridge does not consume the MCP
+ * initialize instructions, so guidance must cross the bridge some other way),
+ * state that guidance comes from the upstream tool descriptions (which the
+ * bridge registers verbatim, so agents and subagents see them), point agents at
+ * the server-qualified tool, and commit to writing no AGENTS.md. No sentence
+ * may claim the bridge surfaces the initialize instructions, and none may
+ * reference the removed install script or block file.
  */
 export function agentInstructionsChecks(readme: string): string[] {
   const failures: string[] = []
   const sectionText = rawSection(readme, 'Agent instructions', 'Model Experience')
   const normalized = section(readme, 'Agent instructions', 'Model Experience')
-  if (!sectionText.includes('instructions/CODEGRAPH.md')) {
-    failures.push('Agent instructions must name the shipped block file instructions/CODEGRAPH.md')
-  }
-  if (!sectionText.includes('scripts/install-codegraph-instructions.sh')) {
-    failures.push('Agent instructions must document the install script scripts/install-codegraph-instructions.sh')
-  }
-  if (!sectionText.includes('<!-- CODEGRAPH_START/END -->') && !sectionText.includes('CODEGRAPH_START')) {
-    failures.push('Agent instructions must state the write is marker-fenced (CODEGRAPH_START/END)')
-  }
   if (!sectionText.includes('mcp__codegraph__codegraph_explore')) {
     failures.push('Agent instructions must point agents at mcp__codegraph__codegraph_explore')
   }
   if (!/does NOT consume those instructions|does not consume.*instructions/i.test(normalized)) {
     failures.push('Agent instructions must explain the DSH bridge does not consume initialize instructions')
   }
-  if (/surfaces? (?:those|the|its) instructions|instructions.*reach(?:es)? the model/i.test(normalized)) {
+  // A sentence claiming the instructions reach the model is only a violation
+  // when it is not negated ("never reaches the model" is the required stance).
+  if (
+    sentences(normalized).some(
+      (sentence) =>
+        /instructions/.test(sentence) &&
+        /reach(?:es)? the model/.test(sentence) &&
+        !/(?:never|no|not|nor)\b/.test(sentence),
+    )
+  ) {
     failures.push('Agent instructions contradicts itself: initialize instructions asserted as reaching the model')
+  }
+  if (!/tool description/i.test(normalized)) {
+    failures.push('Agent instructions must state the guidance comes from the tool descriptions')
+  }
+  if (!/no AGENTS\.md|writes? no|does NOT install|does not install/i.test(normalized)) {
+    failures.push('Agent instructions must commit to writing no AGENTS.md (no file installation)')
+  }
+  if (/install-codegraph-instructions\.sh|instructions\/CODEGRAPH\.md/i.test(sectionText)) {
+    failures.push('Agent instructions must not reference the removed install script or block file')
   }
   return failures
 }
@@ -200,8 +212,9 @@ export function validateCodegraphReadmeContract(readme: string): string[] {
   }
   failures.push(...overrideRowChecks(readme))
 
-  // Agent instructions: the marker-fenced block and install script, plus the
-  // reason it exists (DSH bridge does not consume initialize instructions).
+  // Agent instructions: the no-write strategy — guidance via tool descriptions,
+  // no AGENTS.md installation, plus the reason (DSH bridge does not consume
+  // initialize instructions).
   failures.push(...agentInstructionsChecks(readme))
 
   // Model Experience: only server-qualified tools surfaced; raw names never.
