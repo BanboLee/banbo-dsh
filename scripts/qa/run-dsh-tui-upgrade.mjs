@@ -105,7 +105,7 @@ async function main() {
     cwd: layout.workspace,
     env: environment,
   })
-  for (const row of ['fish-shell', 'tool-fish', 'rtk', 'mcp-codegraph', 'llm-pi-ai-with-session', 'lsp-diagnostics']) {
+  for (const row of ['fish-shell', 'tool-fish', 'fish-preset-policy', 'rtk', 'mcp-codegraph', 'llm-pi-ai-with-session', 'lsp-diagnostics']) {
     if (!dump.output.includes(row)) throw new Error(`profile dump is missing ${row}`)
   }
   await runChild(DEFAULTS.node, [

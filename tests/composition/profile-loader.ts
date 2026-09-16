@@ -189,7 +189,7 @@ function writeTestRoot(profile: string): string {
   const seams = [
     "import { Service } from '@deepseek-ai/cordis'",
     "import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'",
-    "class TestSystemPrompt extends Service { constructor(ctx){ super(ctx, 'systemPrompt') } tools(){ return () => undefined } context(){ return () => undefined } section(){ return () => undefined } }",
+    "class TestSystemPrompt extends Service { constructor(ctx){ super(ctx, 'systemPrompt') } tools(){ return () => undefined } context(){ return () => undefined } section(){ return () => undefined } getSectionOrder(){ return 0 } }",
     "class TestSandbox extends SandboxProvider { confine(argv){ return { argv: [...argv], enforcement: 'full', denialSignatures: ['permission denied'], runnerFailureRules: [{ fatalSignatures: ['fake-runner: '] }] } } }",
     "export default function apply(ctx, config){ if (config.kind === 'systemPrompt') new TestSystemPrompt(ctx); else if (config.kind === 'sandbox') new TestSandbox(ctx); else throw new Error(`unknown test seam ${config.kind}`) }",
   ].join('\n')

@@ -22,18 +22,23 @@ export async function runTuiScenarios(environment) {
     fixture.server.listen(Number(environment.QA_LOOPBACK_PORT), '127.0.0.1', resolve)
   })
   try {
+    // Baseline: the roster default is untouched (standard), then switch to
+    // minimal and persist the choice.
     const baseline = await runTuiSession({
       environment,
       actions: [
-        { input: '/preset status\r', waitFor: 'Current preset fish' },
+        { input: '/preset status\r', waitFor: 'Current preset standard' },
         { input: '/preset minimal\r', waitFor: 'Preset switched: minimal' },
       ],
     })
+    // Second session: minimal is restored, switch back to standard, and run
+    // the controlled turn under standard — the per-agent fish policy must
+    // leave the agent with fish and no bash even under a bash preset.
     const persisted = await runTuiSession({
       environment,
       actions: [
         { input: '/preset status\r', waitFor: 'Current preset minimal' },
-        { input: '/preset fish\r', waitFor: 'Preset switched: fish' },
+        { input: '/preset standard\r', waitFor: 'Preset switched: standard' },
         {
           prompt: 'qa controlled turn',
           waitFor: 'qa-tool-ok',
@@ -47,7 +52,7 @@ export async function runTuiScenarios(environment) {
       environment,
       args: ['--resume', persisted.resumeToken],
       actions: [
-        { input: '/preset status\r', waitFor: 'Current preset fish' },
+        { input: '/preset status\r', waitFor: 'Current preset standard' },
         {
           prompt: 'qa resumed turn',
           completed: () => fixture.evidence().requestCount > requestsAfterControlledTurn
@@ -72,8 +77,8 @@ export async function runTuiScenarios(environment) {
     const hasFish = loopback.toolNames.includes('fish')
     const hasBash = loopback.toolNames.includes('bash')
     const toolResultVisible = persisted.cleanTranscript.includes('qa-tool-ok')
-    if (preference.preset !== 'fish') throw new Error('fish preset was not restored')
-    if (!hasFish || hasBash) throw new Error('effective TUI catalog is not fish-only')
+    if (preference.preset !== 'standard') throw new Error('standard preset was not restored')
+    if (!hasFish || hasBash) throw new Error('effective TUI catalog is not fish-only (per-agent policy)')
     if (!toolResultVisible) throw new Error('controlled fish tool result was not visible in the TUI transcript')
     if (logs.length < 2) throw new Error('isolated session persistence did not create distinct logs')
     if (!loopback.headerPresent || !loopback.sameSessionEqual || !loopback.differentSessionDifferent) {
@@ -84,15 +89,15 @@ export async function runTuiScenarios(environment) {
       && resumed.processCleanup && separate.processCleanup
     if (!cleanup) throw new Error('a TUI process group survived normal exit')
     return [
-      result('FISH-04', { driver: 'pty-preset', baselineFish: true, persistedMinimal: true, restoredFish: true }),
+      result('FISH-04', { driver: 'pty-preset', baselineStandard: true, persistedMinimal: true, restoredStandard: true }),
       result('LLM-02', {
         driver: 'real-tui-loopback',
         headerPresent: loopback.headerPresent,
         sameSessionEqual: loopback.sameSessionEqual,
         differentSessionDifferent: loopback.differentSessionDifferent,
       }),
-      result('TUI-01', { driver: 'pty-catalog', baselineFish: true, fishTool: hasFish, bashTool: hasBash }),
-      result('TUI-02', { driver: 'pty-preset', persistedMinimal: true, restoredFish: true }),
+      result('TUI-01', { driver: 'pty-catalog', baselineStandard: true, fishTool: hasFish, bashTool: hasBash }),
+      result('TUI-02', { driver: 'pty-preset', persistedMinimal: true, restoredStandard: true }),
       result('TUI-03', { driver: 'session-jsonl', logCount: logs.length, singleOwner: true }),
       result('TUI-04', { driver: 'pty-resume', identityPreserved: true, priorTurnVisible: resumed.cleanTranscript.includes('qa controlled turn') }),
       result('TUI-05', { driver: 'pty-loopback-turn', toolResultVisible }),
@@ -110,6 +115,8 @@ export async function runTuiScenarios(environment) {
       result('TUI-08', { driver: 'pty-exit', exitCode: 0, processCleanup: cleanup }),
     ]
   } finally {
-    await new Promise((resolve, reject) => fixture.server.close((error) => error === undefined ? resolve() : reject(error)))
+    await new Promise((resolve, reject) => {
+      fixture.server.close((error) => error === undefined ? resolve() : reject(error))
+    })
   }
 }

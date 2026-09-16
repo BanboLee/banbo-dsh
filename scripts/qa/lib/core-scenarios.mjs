@@ -17,7 +17,7 @@ export async function runProfileScenarios(options) {
     cwd: options.environment.DSH_TUI_WORKSPACE_TARGET,
     env: options.environment,
   })
-  const requiredRows = ['fish-shell', 'tool-fish', 'rtk', 'mcp-codegraph', 'llm-pi-ai-with-session', 'lsp-diagnostics']
+  const requiredRows = ['fish-shell', 'tool-fish', 'fish-preset-policy', 'rtk', 'mcp-codegraph', 'llm-pi-ai-with-session', 'lsp-diagnostics']
   const presentRows = requiredRows.filter((row) => dump.output.includes(row))
   if (presentRows.length !== requiredRows.length) throw new Error('profile dump is missing required QA rows')
   return [
