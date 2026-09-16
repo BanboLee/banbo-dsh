@@ -1,19 +1,42 @@
-# @banbolee/dsh-fish-shell bundle: make fish the default shell executor instead of bash.
+# @banbolee/dsh-fish-shell bundle: run commands with fish instead of bash,
+# on every surface and under every agent preset.
 #
-# Works across every surface:
-#   - dsh-tui / web (agent-preset roster): disables the base bash executor
-#     (`bash-sandbox`) and the host bash tool (`tool-bash`), mounts the fish
-#     executor (ctx.shell) and a host-global `fish` tool, and points the
-#     roster default at the bundled `fish` agent preset (discovered through
-#     the package's own `presets/` directory, registered below as a system
-#     preset root).
-#   - headless (no preset roster; the agent uses host-plane tools): the
-#     host-global `fish` tool and the disabled `tool-bash` already make fish
-#     the agent's only shell tool.
+# How it works now:
+#   - The base bash executor (`bash-sandbox`) and the host bash tool
+#     (`tool-bash`) are disabled at the host plane, the fish executor
+#     (ctx.shell) is mounted, and a host-global `fish` tool is registered
+#     (`fish-shell` + `tool-fish` rows below). Headless (no preset roster)
+#     agents therefore see only the `fish` tool.
+#   - Presets are NOT touched: the roster default stays `standard`, and no
+#     bundled preset root or user copy is installed. Standard/ptc/cordis/
+#     minimal/third-party presets keep registering their own `bash`-named
+#     tool at the preset standing scope.
+#   - `fish-preset-policy` fixes that per agent at the agent boundary: on
+#     `agent/created` and on every `tools/change` (preset recompose) it
+#     calls `agent.ctx.tools.restrict({ deny: ['bash'] })` to hide the
+#     preset-inherited bash tool and registers an empty agent-scoped
+#     `tool:bash` prompt section that shadows the preset's static bash
+#     guidance. The agent ends up with exactly one shell tool: `fish`.
 #
-# The model-facing `fish` tool is host-global so every surface sees it; the
-# bundled `fish` preset (standard with the shell rows removed) keeps agents
-# that select it free of a duplicate or bash shell tool.
+# Boundaries:
+#   - `minimal` keeps its persistent PTY bash machinery mounted. When the
+#     policy detects the persistent bash form (a `bash` tool whose
+#     parameters carry only `command` and whose output schema is a plain
+#     string), it registers a persistent `fish` tool at the agent scope
+#     (shadowing the host one-shot fish) before hiding bash, so minimal
+#     sessions keep their persistent semantics — cwd, variables, and
+#     functions survive across calls — in fish.
+#   - The persistent fish PTY is SELF-MANAGED by the policy: `persistent.js`
+#     owns a `FishTerminalBackend` instance and calls `backend.spawn(...)`
+#     directly. Nothing is registered in the `terminals` registry (which is
+#     entry-local to the `minimal` preset and invisible at the host/agent
+#     plane), so the bundle must NOT mount the `terminal-fish` plugin row
+#     here — that would leave the entry pending forever in host-plane
+#     profiles (headless, dsh-tui, composition tests) that have no
+#     `terminals` service.
+#   - A third-party preset that allowlists the global `fish` tool out (or
+#     registers its shell tool under a non-`bash` name) is left as authored,
+#     with a one-time warning per agent.
 - id: bash-sandbox
   disabled: true
 
@@ -27,21 +50,5 @@
     - id: tool-fish
       name: '@banbolee/dsh-fish-shell/tool'
 
-- id: dsh-tui-agent-presets
-  config:
-    default: fish
-    roots: !!js >-
-      (() => {
-        const base = ctx.baseUrl
-        if (!base) return []
-        const resolvePath = (url) => {
-          const path = decodeURIComponent(url.pathname)
-          return /^\/[A-Za-z]:/.test(path) ? path.slice(1) : path
-        }
-        const system = new URL('../node_modules/@deepseek-ai/dsh/config/agent-presets/', base)
-        const own = new URL('./node_modules/@banbolee/dsh-fish-shell/presets/', base)
-        return [
-          { path: resolvePath(system), trust: 'system' },
-          { path: resolvePath(own), trust: 'system' },
-        ]
-      })()
+    - id: fish-preset-policy
+      name: '@banbolee/dsh-fish-shell/policy'
