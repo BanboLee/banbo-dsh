@@ -28,7 +28,7 @@ dsh plugin --profile <profile> add @banbolee/dsh-llm-pi-ai-with-session
 | --- | --- | --- |
 | [`@banbolee/dsh-rtk`](plugins/rtk/README.md) | Decorates the mounted shell executor: every command is rewritten through the `rtk rewrite` oracle, and model-facing `grep` output is compressed via `rtk pipe` | `rtk` |
 | [`@banbolee/dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) | Adds an `mcp-codegraph` row that serves the CodeGraph MCP server over stdio through the official DSH bridge, plus an agent-instructions install helper | `codegraph` |
-| [`@banbolee/dsh-fish-shell`](plugins/fish-shell/README.md) | Fish executors (sandboxed and local) plus a model-facing `fish` tool and a fish agent preset | fish |
+| [`@banbolee/dsh-fish-shell`](plugins/fish-shell/README.md) | Fish executors (sandboxed and local) plus a model-facing `fish` tool and a per-agent policy that swaps bash for fish under any agent preset | fish |
 | [`@banbolee/dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | After `write`/`edit`/`str_replace_editor` mutations, appends a persistent LSP diagnostics notice to the next model inference; also registers a model-callable `lsp_diagnostics(file_path)` tool | `typescript-language-server`, `gopls` (opt-in: `clangd`, `rust-analyzer`, `pyright-langserver`) |
 | [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md) | Generic session wrapper over `llm-pi-ai`: registers explicit session provider routes that carry a dynamic session id header (default `x-session-id`) on every LLM request | none (reuses `llm-pi-ai` providers) |
 

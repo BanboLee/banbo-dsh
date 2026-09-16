@@ -26,7 +26,7 @@ dsh plugin --profile <profile> add @banbolee/dsh-llm-pi-ai-with-session
 | --- | --- | --- |
 | [`@banbolee/dsh-rtk`](plugins/rtk/README.md) | 装饰已挂载的 shell 执行器：每条命令经 `rtk rewrite` 改写后执行，模型侧 `grep` 输出经 `rtk pipe` 压缩 | `rtk` |
 | [`@banbolee/dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) | 通过官方 DSH bridge 在 profile 中接入 CodeGraph MCP 服务（`codegraph serve --mcp`），并附 agent 指令安装脚本 | `codegraph` |
-| [`@banbolee/dsh-fish-shell`](plugins/fish-shell/README.md) | 用 fish 替代 bash：沙箱/本地两种执行器 + 模型可调的 `fish` 工具 + fish agent 预设 | fish |
+| [`@banbolee/dsh-fish-shell`](plugins/fish-shell/README.md) | 用 fish 替代 bash：沙箱/本地两种执行器 + 模型可调的 `fish` 工具 + 任意 agent preset 下用 fish 替换 bash 的 per-agent 策略 | fish |
 | [`@banbolee/dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | `write`/`edit`/`str_replace_editor` 改动落盘后，自动把 LSP 诊断结果附到下轮模型推理；另注册模型可调用的 `lsp_diagnostics(file_path)` 工具 | `typescript-language-server`、`gopls`（可选 `clangd`、`rust-analyzer`、`pyright-langserver`） |
 | [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md) | `llm-pi-ai` 的通用 session wrapper：注册显式 session provider 路由，每次 LLM 请求携带动态会话 header（默认 `x-session-id`） | 无（复用 `llm-pi-ai` provider） |
 
