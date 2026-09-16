@@ -38,6 +38,11 @@ describe('fish-shell installed dependency graph', () => {
     const listed = spawnSync('pnpm', ['list', '--filter', '@banbolee/dsh-fish-shell', '--depth=8', '--json'], {
       cwd: repoRoot,
       encoding: 'utf8',
+      // The full fish dev-dependency tree (agents, jobs, sandbox, approval,
+      // shell-env, …) serializes well past the 1 MiB spawnSync default, which
+      // would truncate the JSON and fail the call; the graph itself stays
+      // well under this bound.
+      maxBuffer: 64 * 1024 * 1024,
     })
     expect(listed.status, listed.stderr).toBe(0)
 
