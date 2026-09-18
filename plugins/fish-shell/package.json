@@ -1,6 +1,6 @@
 {
   "name": "@banbolee/dsh-fish-shell",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Fish shell executors and tool for DeepSeek Harness: run commands with fish instead of bash.",
   "type": "module",
   "main": "index.js",
