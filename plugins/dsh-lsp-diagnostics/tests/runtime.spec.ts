@@ -687,13 +687,23 @@ describe('@banbolee/dsh-lsp-diagnostics runtime pooling', () => {
       },
     }
     await h.runtime.dispose()
+    const typescript = h.config.servers.typescript
+    if (typescript === undefined) throw new Error('typescript server missing from test config')
+    const typescriptWithJavascript = {
+      ...typescript,
+      extensionToLanguage: {
+        '.js': 'javascript',
+        ...typescript.extensionToLanguage,
+      },
+    }
     const config = makeConfig('clean', {
-      servers: { ...h.config.servers, ...optionalServers },
+      servers: { ...h.config.servers, typescript: typescriptWithJavascript, ...optionalServers },
     })
-    const { subprocess, servers, spawnSpecs } = makeSubprocess(Array(14).fill('clean'))
+    const { subprocess, servers, spawnSpecs } = makeSubprocess(Array(15).fill('clean'))
     const runtime = new DiagnosticsRuntime({ fs: h.fs, subprocess, config })
     harness = { ...h, runtime, config, subprocess, servers, spawnSpecs }
     const routes = [
+      ['.js', 'fake-ts', 'javascript'],
       ['.ts', 'fake-ts', 'typescript'],
       ['.tsx', 'fake-ts', 'typescriptreact'],
       ['.go', 'fake-go', 'go'],

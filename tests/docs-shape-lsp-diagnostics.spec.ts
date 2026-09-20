@@ -4,7 +4,7 @@
  * Asserts the structural and contract strings a user needs from the README:
  * the six required section headings, the fixed `-w` install command, the
  * named Loader surface, `enabled=false` zero runtime, the closed
- * `.ts`/`.tsx`/`.go` route, silent workspace eligibility, plugin-owned
+ * `.ts`/`.tsx`/`.go` route, silent workspace/worktree eligibility, plugin-owned
  * fail-open and caller-abort boundaries, the real three-parameter
  * `tools/post-execute` waterfall, the independent monotonic generation
  * counter with active marker and overflow fail-safe, the shared
@@ -113,6 +113,9 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
   ) {
     failures.push('extension route must map .tsx → typescript/typescriptreact and .go → go/go')
   }
+  if (!route.some((s) => s.includes('.js') && s.includes('typescript/javascript') && s.includes('optional explicit'))) {
+    failures.push('extension route must document optional explicit .js → typescript/javascript compatibility')
+  }
   if (!route.some((s) => s.includes('fail') && s.includes('load'))) {
     failures.push('extension route violations must fail loud at load')
   }
@@ -141,8 +144,8 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
 
   // Behavior: silent eligibility, fail-open, caller abort, waterfall.
   const eligibility = sentencesContaining(f, 'silently ignored')
-  if (!eligibility.some((s) => s.includes('cwd') && s.includes('workspace'))) {
-    failures.push('eligibility must document silent ignore for missing/empty cwd and outside-workspace targets')
+  if (!eligibility.some((s) => s.includes('cwd') && s.includes('workspace') && s.includes('marker-rooted'))) {
+    failures.push('eligibility must document silent ignore for missing/empty cwd and outside targets without marker-rooted workspaces')
   }
   if (!sentencesContaining(f, 'workspace unavailable').some((s) => s.includes('never'))) {
     failures.push('must state workspace unavailable is never rendered')
@@ -194,11 +197,14 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
     failures.push('direct tool must not claim workspace containment')
   }
   const directAuthority = sentencesContaining(f, 'same path authority')
-  if (!directAuthority.some((s) => s.includes('official `read` tool') && s.includes('LSP project root') && s.includes('outside'))) {
-    failures.push('direct tool must document read-equivalent path authority with cwd only as LSP project root')
+  if (!directAuthority.some((s) => s.includes('official `read` tool') && s.includes('session.header.cwd') && s.includes('marker-rooted'))) {
+    failures.push('direct tool must document read-equivalent path authority with contained cwd roots and marker-rooted outside roots')
   }
   if (!f.includes('a readable file outside the session cwd is eligible')) {
     failures.push('limitations must state that readable external files are eligible for direct calls')
+  }
+  if (!f.includes('marker-rooted sibling worktree/project')) {
+    failures.push('README must document sibling worktree/project automatic feedback eligibility')
   }
   if (!f.includes('`diagnostics`') || !f.includes('`no_diagnostics`') || !f.includes('`unavailable`')) {
     failures.push('direct tool must document diagnostics/no_diagnostics/unavailable as its three canonical outcomes')
@@ -467,6 +473,7 @@ describe('@banbolee/dsh-lsp-diagnostics README shape', () => {
     const route = sentencesContaining(flat(README), 'extension route')
     expect(route.some((s) => s.includes('closed') && s.includes('.ts') && s.includes('typescript/typescript'))).toBe(true)
     expect(route.some((s) => s.includes('.tsx') && s.includes('typescript/typescriptreact') && s.includes('.go') && s.includes('go/go'))).toBe(true)
+    expect(route.some((s) => s.includes('.js') && s.includes('typescript/javascript') && s.includes('optional explicit'))).toBe(true)
     expect(route.some((s) => s.includes('.c') && s.includes('clangd/c') && s.includes('.h') && s.includes('clangd/cpp'))).toBe(true)
     expect(route.some((s) => s.includes('.rs') && s.includes('rust/rust') && s.includes('.py') && s.includes('python/python'))).toBe(true)
     expect(route.some((s) => s.includes('fail') && s.includes('load'))).toBe(true)
@@ -639,7 +646,7 @@ describe('@banbolee/dsh-lsp-diagnostics README shape', () => {
   })
 
   it('rejects a README that restores the old dsh peer family (mutation regression)', () => {
-    const mutated = README.replaceAll('^0.1.5-rc.1', '>=0.1.4-rc.2 <0.1.5-0')
+    const mutated = README.split('^0.1.5-rc.1').join('>=0.1.4-rc.2 <0.1.5-0')
     expect(mutated).not.toEqual(README)
     expect(validateLspDiagnosticsReadmeContract(mutated)).not.toEqual([])
   })

@@ -118,6 +118,19 @@ describe('@banbolee/dsh-lsp-diagnostics Config schema', () => {
     expect(validated({ servers: {} })).toEqual(DEFAULT_CONFIG)
   })
 
+  it('accepts an explicit JavaScript route for TypeScript without enabling it by default', () => {
+    const servers = mutableServers()
+    ;(servers.typescript.extensionToLanguage as Record<string, string>)['.js'] = 'javascript'
+    const result = validated({ servers }) as { servers: { typescript: { extensionToLanguage: Record<string, string> } } }
+
+    expect(DEFAULT_CONFIG.servers.typescript.extensionToLanguage).not.toHaveProperty('.js')
+    expect(result.servers.typescript.extensionToLanguage).toMatchObject({
+      '.js': 'javascript',
+      '.ts': 'typescript',
+      '.tsx': 'typescriptreact',
+    })
+  })
+
   it('overlays one default-enabled provider without requiring its sibling', () => {
     const result = validated({ servers: { go: { command: '/path/trae-gopls' } } }) as {
       servers: Record<string, { command: string; args: string[]; extensionToLanguage: Record<string, string> }>
@@ -244,7 +257,7 @@ describe('@banbolee/dsh-lsp-diagnostics Config schema', () => {
   it('rejects unknown extension keys, case variants, missing entries, duplicates, and rewritten routes', () => {
     // Unknown extension.
     let servers = mutableServers()
-    ;(servers.typescript.extensionToLanguage as Record<string, string>)['.js'] = 'javascript'
+    ;(servers.typescript.extensionToLanguage as Record<string, string>)['.mjs'] = 'javascript'
     expect(() => validated({ servers })).toThrow()
     // Case variant.
     servers = mutableServers()

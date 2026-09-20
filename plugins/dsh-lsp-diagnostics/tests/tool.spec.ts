@@ -30,6 +30,7 @@ interface FakeFs {
   stat: ReturnType<typeof vi.fn>
   contains: ReturnType<typeof vi.fn>
   fileUrl: ReturnType<typeof vi.fn>
+  processPath: ReturnType<typeof vi.fn>
 }
 
 interface FakeRuntime {
@@ -65,6 +66,7 @@ function makeFs(options: {
     }),
     contains: vi.fn(() => options.contained ?? true),
     fileUrl: vi.fn(() => options.uri ?? 'file:///workspace/src/a.ts'),
+    processPath: vi.fn((value: { targetKey: string }) => value.targetKey),
   }
 }
 
@@ -308,6 +310,40 @@ describe('lsp_diagnostics eligibility and freshness', () => {
     }
   })
 
+  it('keeps the session workspace as LSP root for targets contained by the session cwd', async () => {
+    const nestedWorkspace = { targetKey: 'nested-workspace', displayPath: '/workspace/packages/app' }
+    const nestedPackage = { targetKey: 'nested-package-json', displayPath: '/workspace/packages/app/package.json' }
+    const fs = makeFs({ target: { ...TARGET, displayPath: '/workspace/packages/app/src/a.ts' } })
+    fs.resolve.mockImplementation(async (path: string, opts?: { cwd?: string; signal?: AbortSignal }) => {
+      if (path === '/workspace' && opts?.cwd === undefined) return WORKSPACE
+      if (path === '/workspace/packages/app/package.json') return nestedPackage
+      if (path === '/workspace/packages/app') return nestedWorkspace
+      return { ...TARGET, displayPath: '/workspace/packages/app/src/a.ts' }
+    })
+    fs.stat.mockImplementation(async (target: unknown) => {
+      if (target === WORKSPACE || target === nestedWorkspace) return WORKSPACE_INFO
+      if (target === nestedPackage) return { version: 'package-v1', type: 'file', size: 2 }
+      return TARGET_INFO
+    })
+    fs.contains.mockImplementation((parent: { displayPath: string }, child: { displayPath: string }) => {
+      return child.displayPath === parent.displayPath || child.displayPath.startsWith(`${parent.displayPath}/`)
+    })
+    fs.processPath.mockImplementation((value: { displayPath: string }) => value.displayPath)
+    const { tool, runtime } = makeTool({ fs })
+
+    await expect(tool.execute({ file_path: 'packages/app/src/a.ts' }, execution())).resolves.toMatchObject({
+      kind: 'diagnostics',
+      file_path: '/workspace/packages/app/src/a.ts',
+    })
+    expect(runtime.diagnoseTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ displayPath: '/workspace/packages/app/src/a.ts' }),
+      WORKSPACE,
+      'file:///workspace/src/a.ts',
+      expect.any(AbortSignal),
+      'target-v1',
+    )
+  })
+
   it.each(['/tmp/outside.ts', '../outside.ts'])(
     'diagnoses a readable external target for %s using the session workspace as LSP root',
     async (filePath) => {
@@ -318,7 +354,7 @@ describe('lsp_diagnostics eligibility and freshness', () => {
         kind: 'diagnostics',
         file_path: '/tmp/outside.ts',
       })
-      expect(fs.contains).not.toHaveBeenCalled()
+      expect(fs.contains).toHaveBeenCalledWith(WORKSPACE, OUTSIDE_TARGET)
       expect(runtime.diagnoseTarget).toHaveBeenCalledWith(
         OUTSIDE_TARGET,
         WORKSPACE,
@@ -330,10 +366,10 @@ describe('lsp_diagnostics eligibility and freshness', () => {
   )
 
   it('rejects an extension with no configured provider route', async () => {
-    const { tool, runtime } = makeTool({ fs: makeFs({ uri: 'file:///workspace/src/a.js' }) })
+    const { tool, runtime } = makeTool({ fs: makeFs({ uri: 'file:///workspace/src/a.mjs' }) })
 
-    await expect(tool.execute({ file_path: 'src/a.js' }, execution())).rejects.toThrow(
-      'no configured diagnostics provider for extension .js',
+    await expect(tool.execute({ file_path: 'src/a.mjs' }, execution())).rejects.toThrow(
+      'no configured diagnostics provider for extension .mjs',
     )
     expect(runtime.diagnoseTarget).not.toHaveBeenCalled()
   })

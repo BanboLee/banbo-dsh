@@ -1,7 +1,6 @@
-import { EventEmitter } from 'node:events'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createMutationCollector, type MutationCandidate } from '../collector.js'
+import { createMutationCollector } from '../collector.js'
 import { createDiagnosticsCoordinator } from '../coordinator.js'
 import { compareEligibleTargets, renderDiagnostics } from '../render.js'
 import { DiagnosticsRuntime } from '../runtime.js'
@@ -153,7 +152,7 @@ function makeFs(): FakeFs {
     }),
     contains: vi.fn(() => true),
     fileUrl: vi.fn((target: FakeTarget) => `file:///ws/${target.displayPath}`),
-    processPath: vi.fn(() => '/ws'),
+    processPath: vi.fn((target: FakeTarget) => target.displayPath),
     readBytes: vi.fn(async () => new Uint8Array()),
   }
 }
@@ -200,7 +199,7 @@ function makeHarness(
     fs,
     coordinator,
     config,
-    workspaceTarget: { targetKey: 'ws:/ws', displayPath: '/ws' },
+    workspaceTarget: { targetKey: `ws:${cwd}`, displayPath: cwd },
     clock,
   }
 }
@@ -239,7 +238,7 @@ function makeComposedFs(): FakeFs {
     }),
     contains: vi.fn(() => true),
     fileUrl: vi.fn((target: FakeTarget) => `file:///ws/${target.displayPath}`),
-    processPath: vi.fn(() => '/ws'),
+    processPath: vi.fn((target: FakeTarget) => target.displayPath),
     readBytes: vi.fn(async () => new Uint8Array()),
   }
 }
@@ -596,9 +595,9 @@ describe('@banbolee/dsh-lsp-diagnostics coordinator eligibility', () => {
   it('silently drops unsupported extensions before any workspace or runtime work', async () => {
     const harness = makeHarness()
     const exec = makeExec()
-    const js = makeTarget('src/a.js', 'f:js')
+    const mjs = makeTarget('src/a.mjs', 'f:mjs')
     const txt = makeTarget('notes.txt', 'f:txt')
-    observe(harness, exec, js)
+    observe(harness, exec, mjs)
     observe(harness, exec, txt)
     const decision = await drive(harness, exec, {}, acceptNext())
     expect(decision).toEqual({ kind: 'accept' })
@@ -663,6 +662,42 @@ describe('@banbolee/dsh-lsp-diagnostics coordinator eligibility', () => {
     expect(notice).toBeDefined()
     expect(fileLinesOf(notice!.content[0]!.text)).toEqual(['src/inside.ts'])
     expect(harness.runtime.diagnose).toHaveBeenCalledTimes(1)
+  })
+
+  it('diagnoses a sibling git worktree by resolving the workspace from the written target', async () => {
+    const harness = makeHarness('/repo')
+    const exec = makeExec('/repo')
+    const worktreeTarget = makeTarget('/repo-worktree/pkg/a.go', 'f:worktree')
+    const worktreeRoot = makeTarget('/repo-worktree', 'ws:/repo-worktree')
+    observe(harness, exec, worktreeTarget)
+    harness.fs.fileUrl.mockImplementation((target: FakeTarget) => `file://${target.displayPath}`)
+    harness.fs.contains.mockImplementation((parent: FakeTarget, child: FakeTarget) => {
+      return child.displayPath === parent.displayPath || child.displayPath.startsWith(`${parent.displayPath}/`)
+    })
+    harness.fs.stat.mockImplementation(async (target: FakeTarget) => {
+      if (target.targetKey === 'ws:/repo' || target.targetKey === 'ws:/repo-worktree') {
+        return { version: 'ws-v', type: 'directory' }
+      }
+      if (target.targetKey === 'ws:/repo-worktree/.git') {
+        return { version: 'git-v', type: 'file' }
+      }
+      if (target.targetKey === 'f:worktree') {
+        return { version: 'v1', type: 'file', size: 32 }
+      }
+      return undefined
+    })
+
+    const decision = await drive(harness, exec, {}, acceptNext())
+
+    const notice = noticeOf(decision)
+    expect(notice).toBeDefined()
+    expect(fileLinesOf(notice!.content[0]!.text)).toEqual(['/repo-worktree/pkg/a.go'])
+    expect(harness.runtime.diagnose).toHaveBeenCalledWith(
+      expect.objectContaining({ target: worktreeTarget, version: 'v1', generation: 1 }),
+      worktreeRoot,
+      'file:///repo-worktree/pkg/a.go',
+      expect.any(AbortSignal),
+    )
   })
 
   it('canonicalizes the workspace exactly once and freezes renderPath/canonicalUri per eligible target', async () => {

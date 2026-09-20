@@ -17,13 +17,14 @@
 
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { compareEligibleTargets, renderDiagnostics, sanitizeDisplayPath } from './render.js'
+import { resolveWorkspaceRoot } from './workspace-root.js'
 
 /**
  * Loose structural seams, mirroring the runtime's own public shapes. The
  * coordinator only consumes the documented surface (`take/isCurrent/
  * retireIfCurrent`, `diagnose/stopAdmission/dispose`, `resolve/stat/
- * contains/fileUrl`); keeping these structural keeps both the real services
- * and the deterministic test fakes assignable.
+ * contains/fileUrl/processPath`); keeping these structural keeps both the real
+ * services and the deterministic test fakes assignable.
  * @typedef {object} CollectorSeam
  * @property {(exec: any, target: any, observation: any) => void} observe
  * @property {(exec: any) => import('./collector.js').MutationCandidate[]} take
@@ -44,6 +45,7 @@ import { compareEligibleTargets, renderDiagnostics, sanitizeDisplayPath } from '
  * @property {(target: any, signal?: AbortSignal) => Promise<{ version: string, type: string, size?: number } | undefined>} stat
  * @property {(parent: any, child: any) => boolean} contains
  * @property {(target: any) => string} fileUrl
+ * @property {(target: any) => string} processPath
  */
 
 /**
@@ -382,10 +384,12 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs, n
         retireAll()
         return decision
       }
-      // 2. Workspace root from the session header; missing/empty is ineligible.
+      // 2. Canonicalize the session workspace once. Files inside it keep the
+      // original behavior; files outside it may still resolve to their own
+      // project/worktree root.
       const execRecord = /** @type {{ agent?: { session?: { header?: { cwd?: unknown } } } }} */ (exec)
-      const workspaceRoot = execRecord?.agent?.session?.header?.cwd
-      if (typeof workspaceRoot !== 'string' || workspaceRoot.length === 0) {
+      const sessionRoot = execRecord?.agent?.session?.header?.cwd
+      if (typeof sessionRoot !== 'string' || sessionRoot.length === 0) {
         retireAll()
         return decision
       }
@@ -393,10 +397,9 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs, n
         retireAll()
         return decision
       }
-      // 3. Canonicalize the workspace exactly once.
-      let workspaceTarget
+      let sessionWorkspace
       try {
-        workspaceTarget = await fs.resolve(workspaceRoot, { signal })
+        sessionWorkspace = await fs.resolve(sessionRoot, { signal })
       } catch {
         retireAll()
         return decision
@@ -405,9 +408,9 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs, n
         retireAll()
         return decision
       }
-      let workspaceInfo
+      let sessionWorkspaceInfo
       try {
-        workspaceInfo = await fs.stat(workspaceTarget, signal)
+        sessionWorkspaceInfo = await fs.stat(sessionWorkspace, signal)
       } catch {
         retireAll()
         return decision
@@ -416,26 +419,43 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs, n
         retireAll()
         return decision
       }
-      if (workspaceInfo === undefined || workspaceInfo.type !== 'directory') {
+      if (sessionWorkspaceInfo === undefined || sessionWorkspaceInfo.type !== 'directory') {
         retireAll()
         return decision
       }
-      // 4. Per-target eligibility: contains with pre/post abort checks, then
-      // freeze renderPath + canonicalUri exactly once. Every early exit and
-      // abort break retires the remaining taken candidates.
-      /** @type {{ candidate: import('./collector.js').MutationCandidate, renderPath: string, targetKey: string, canonicalUri: string }[]} */
+      // 3. Per-target eligibility: use session cwd when it contains the target;
+      // otherwise resolve the LSP workspace from target-local markers
+      // (go.mod/.git/package markers). Then freeze renderPath + canonicalUri.
+      /** @type {{ candidate: import('./collector.js').MutationCandidate, workspaceTarget: any, renderPath: string, targetKey: string, canonicalUri: string }[]} */
       const eligible = []
       for (const route of routed) {
         const { candidate, canonicalUri } = route
         if (signal.aborted) break
         let contained = false
         try {
-          contained = fs.contains(workspaceTarget, candidate.target) === true
+          contained = fs.contains(sessionWorkspace, candidate.target) === true
         } catch {
           contained = false
         }
         if (signal.aborted) break
-        if (!contained) {
+        let workspaceTarget = contained ? sessionWorkspace : undefined
+        if (workspaceTarget === undefined) {
+          try {
+            workspaceTarget = await resolveWorkspaceRoot({
+              fs,
+              target: candidate.target,
+              extension: extensionOf(canonicalUri),
+              sessionRoot,
+              signal,
+              sessionFallback: 'never',
+              markerMode: 'git',
+            })
+          } catch {
+            workspaceTarget = undefined
+          }
+        }
+        if (signal.aborted) break
+        if (workspaceTarget === undefined) {
           collector.retireIfCurrent(candidate)
           continue
         }
@@ -448,6 +468,7 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs, n
         }
         eligible.push({
           candidate,
+          workspaceTarget,
           renderPath,
           targetKey: String(candidate.target.targetKey ?? ''),
           canonicalUri,
@@ -470,7 +491,7 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs, n
         /** @type {import('./runtime.js').DiagnosisOutcome} */
         let outcome
         try {
-          outcome = await runtime.diagnose(target.candidate, workspaceTarget, target.canonicalUri, signal)
+          outcome = await runtime.diagnose(target.candidate, target.workspaceTarget, target.canonicalUri, signal)
         } catch (error) {
           if (signal.aborted) break
           // Plugin-owned failure after eligibility: bounded unavailable with

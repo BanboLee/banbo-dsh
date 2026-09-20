@@ -2,9 +2,10 @@
 
 Host-plane Cordis bundle plugin for DeepSeek Harness: after an official
 `write`/`edit`/`str_replace_editor` mutation lands inside the session
-workspace, the tool result still succeeds and the next model inference carries
-a single persistent LSP diagnostics plugin notice. It also registers the
-model-callable `lsp_diagnostics(file_path)` tool for explicit diagnosis.
+workspace, or inside a marker-rooted sibling worktree/project, the tool result
+still succeeds and the next model inference carries a single persistent LSP
+diagnostics plugin notice. It also registers the model-callable
+`lsp_diagnostics(file_path)` tool for explicit diagnosis.
 
 The plugin is a named namespace function plugin: it exports `name`, `inject`,
 `Config`, and `apply`, and has no default export. The real Loader reads the
@@ -65,20 +66,22 @@ deviation from the closed extension route fail loud at load time.
 | `servers` | TypeScript + Go | Closed provider catalog; TypeScript and Go are enabled by default, while `clangd`, `rust`, and `python` are opt-in. |
 
 The extension route is closed: `.ts` → typescript/typescript, `.tsx` →
-typescript/typescriptreact, `.go` → go/go, `.c` → clangd/c,
-`.cc`/`.cpp`/`.cxx` → clangd/cpp, `.h`/`.hh`/`.hpp`/`.hxx` → clangd/cpp,
-`.rs` → rust/rust, and `.py`/`.pyi` → python/python; any other extension key,
-missing canonical provider entry, cross-provider collision, or rewritten
-language id fails loud at load time, while other extensions at runtime are
-silently ignored.
+typescript/typescriptreact, optional explicit `.js` → typescript/javascript,
+`.go` → go/go, `.c` → clangd/c, `.cc`/`.cpp`/`.cxx` → clangd/cpp,
+`.h`/`.hh`/`.hpp`/`.hxx` → clangd/cpp, `.rs` → rust/rust, and
+`.py`/`.pyi` → python/python; any other extension key, missing canonical
+provider entry, cross-provider collision, or rewritten language id fails loud at
+load time, while other extensions at runtime are silently ignored.
 
 The `servers` block is a provider-level partial overlay: omitting `servers` or
 supplying `servers: {}` keeps exactly the TypeScript and Go defaults, while
 supplying a known optional `clangd`, `rust`, or `python` key activates that
 provider. For example, `servers: { go: { command: '/path/trae-gopls' } }`
 changes only Go without requiring a TypeScript block. The legacy
-`extensionToLanguage` field is accepted only when it exactly equals that
-provider's canonical mapping; it never defines new routes.
+`extensionToLanguage` field is accepted only when it contains that provider's
+canonical mapping and only supported provider-owned extras. `.js` is accepted
+for compatibility with explicit TypeScript configs, but it is not enabled by
+default.
 
 Default commands are `typescript-language-server --stdio`, `gopls`, `clangd`,
 `rust-analyzer`, and `pyright-langserver --stdio`. clangd, rust-analyzer, and
@@ -87,13 +90,16 @@ gopls receive no default arguments. Per-server `env`, `configuration`, and
 
 ## Behavior
 
-Only a non-empty `session.header.cwd` that canonicalizes to a directory and
-contains the target is eligible; missing or empty cwd, non-directory
-canonicalization, and outside-workspace targets are ineligible and silently
-ignored — never a `workspace unavailable` or `outside workspace` notice.
-Workspace, cwd, and URI are always derived through the public `ctx.fs` API
-(`resolve`/`stat`/`contains`/`targetKey`/`processPath`/`fileUrl`), never from
-`displayPath` or the host `process.cwd()`.
+A non-empty `session.header.cwd` that canonicalizes to a directory is required.
+Automatic feedback first keeps the old behavior for targets contained by that
+workspace; targets outside it are eligible only when a target-local `.git` file
+or directory identifies their own git worktree root. Missing or empty cwd,
+non-directory canonicalization, and outside targets without a marker-rooted
+git worktree are silently ignored — never a `workspace unavailable` or
+`outside workspace` notice. Workspace, cwd, and URI are always
+derived through the public `ctx.fs` API (`resolve`/`stat`/`contains`/`targetKey`/
+`processPath`/`fileUrl`), never from raw `displayPath` or the host
+`process.cwd()`.
 
 Fail-open is plugin-owned post-processing failure only: after the downstream
 `await next()` decision succeeded, a diagnostics error, missing or crashed
@@ -193,13 +199,14 @@ natural-close wait → conditional `handle.terminate()` (only while still alive)
 existing file that `ctx.fs` permits the session to read. It accepts a
 workspace-relative or absolute path and uses every configured provider and the
 closed extension route documented above. It has the same path authority as the
-official `read` tool: the session cwd is only the LSP project root, so an
-explicit direct call may diagnose a readable file outside that root. It never
-creates, edits, or deletes a file. Invalid requests fail explicitly with
-`file_path must be a non-empty string`, `session workspace cwd`, `session
-workspace is not an existing directory`, `target does not exist`, `target is
-not a regular file`, `no configured diagnostics provider`, or `target changed
-during diagnosis`.
+official `read` tool: for files contained by `session.header.cwd`, that cwd
+remains the LSP project root; for a readable file outside the session cwd, the
+tool prefers the target's marker-rooted project/worktree root and then falls
+back to the session cwd. It never creates, edits, or deletes a file. Invalid
+requests fail explicitly with `file_path must be a non-empty string`, `session
+workspace cwd`, `session workspace is not an existing directory`, `target does
+not exist`, `target is not a regular file`, `no configured diagnostics
+provider`, or `target changed during diagnosis`.
 
 The direct tool has exactly three canonical outcomes: `diagnostics` with the
 normalized list sorted by the same comparator as automatic rendering and sliced
@@ -237,13 +244,13 @@ unavailable`.
 - shell redirection, `sed -i`, scripts, formatters, generators, and external
   editors that bypass `ctx.fs`/`fs/observed` are out of scope for automatic
   feedback; the model may call `lsp_diagnostics(file_path)` afterward. There is no
-  filesystem watcher and no project-root probing — the session cwd is the
-  workspace root.
+  filesystem watcher; project-root probing is marker-based and only runs for
+  supported source files.
 - For automatic feedback, agentless tool execution, missing/empty or
-  non-directory cwd, and outside-workspace targets are silently out of scope
-  and never produce a notice. Direct calls use official `read`-equivalent path
-  authority instead: a readable file outside the session cwd is eligible, while
-  that cwd remains the LSP project root.
+  non-directory cwd, and outside targets without a marker-rooted git worktree are
+  silently out of scope and never produce a notice. Direct calls use official
+  `read`-equivalent path authority instead: a readable file outside the session
+  cwd is eligible, using its marker-rooted project/worktree root when available.
 - The plugin does not install or download `typescript-language-server`,
   `gopls`, `clangd`, `rust-analyzer`, or `pyright-langserver`; install requested
   executables yourself and configure their paths. A missing server fails open

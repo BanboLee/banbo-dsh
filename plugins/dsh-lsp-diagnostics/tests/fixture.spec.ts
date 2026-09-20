@@ -28,6 +28,15 @@ function startServer(mode: string, log = true): FixtureHarness {
   return harness
 }
 
+async function waitForLogEntry(logPath: string, entry: string): Promise<readonly string[]> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const log = readLogLines(logPath)
+    if (log.includes(entry)) return log
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  return readLogLines(logPath)
+}
+
 async function initialize(client: FakeLspClient): Promise<LspMessage> {
   await client.send({
     jsonrpc: '2.0',
@@ -328,7 +337,7 @@ describe('fake LSP server', () => {
     await didOpen(client)
     const publish = await client.next()
     expect(publish.method).toBe('textDocument/publishDiagnostics')
-    const log = readLogLines(logPath)
+    const log = await waitForLogEntry(logPath, 'close-stdin')
     expect(log).toContain('close-stdin')
   })
 

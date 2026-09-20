@@ -1,5 +1,6 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { compareDiagnostics, sanitizeDisplayPath } from './render.js'
+import { resolveWorkspaceRoot } from './workspace-root.js'
 
 /** Closed runtime reasons exposed by the canonical tool output. */
 const UNAVAILABLE_REASONS = /** @type {const} */ ([
@@ -105,7 +106,9 @@ const OUTPUT_SCHEMA = /** @type {const} */ ({
  * @typedef {object} FsSeam
  * @property {(path: string, opts?: { cwd?: string, signal?: AbortSignal }) => Promise<import('@deepseek-ai/dsh-fs').FsTarget>} resolve
  * @property {(target: import('@deepseek-ai/dsh-fs').FsTarget, signal?: AbortSignal) => Promise<import('@deepseek-ai/dsh-fs').FsInfo | undefined>} stat
+ * @property {(parent: import('@deepseek-ai/dsh-fs').FsTarget, child: import('@deepseek-ai/dsh-fs').FsTarget) => boolean} contains
  * @property {(target: import('@deepseek-ai/dsh-fs').FsTarget) => string} fileUrl
+ * @property {(target: import('@deepseek-ai/dsh-fs').FsTarget) => string} processPath
  */
 
 /**
@@ -351,13 +354,13 @@ export function createDiagnosticsTool({ fs, runtime, config, now = () => perform
       let early = abortOutcome(operation)
       if (early !== undefined) return early
       const signal = operation.controller.signal
-      const workspace = await fs.resolve(workspaceRoot, { signal })
+      const sessionWorkspace = await fs.resolve(workspaceRoot, { signal })
       early = abortOutcome(operation)
       if (early !== undefined) return early
-      const workspaceInfo = await fs.stat(workspace, signal)
+      const sessionWorkspaceInfo = await fs.stat(sessionWorkspace, signal)
       early = abortOutcome(operation)
       if (early !== undefined) return early
-      if (workspaceInfo === undefined || workspaceInfo.type !== 'directory') {
+      if (sessionWorkspaceInfo === undefined || sessionWorkspaceInfo.type !== 'directory') {
         throw new Error('lsp_diagnostics: session workspace is not an existing directory')
       }
 
@@ -378,6 +381,28 @@ export function createDiagnosticsTool({ fs, runtime, config, now = () => perform
       if (!supportedExtensions.has(extension)) {
         const label = extension.length === 0 ? '(none)' : extension
         throw new Error(`lsp_diagnostics: no configured diagnostics provider for extension ${label}`)
+      }
+      /** @type {import('@deepseek-ai/dsh-fs').FsTarget | undefined} */
+      let workspace = sessionWorkspace
+      try {
+        if (fs.contains(sessionWorkspace, target) !== true) workspace = undefined
+      } catch {
+        workspace = undefined
+      }
+      if (workspace === undefined) {
+        workspace = await resolveWorkspaceRoot({
+          fs,
+          target,
+          extension,
+          sessionRoot: workspaceRoot,
+          signal,
+          sessionFallback: 'always',
+        })
+      }
+      early = abortOutcome(operation)
+      if (early !== undefined) return early
+      if (workspace === undefined) {
+        throw new Error('lsp_diagnostics: workspace root could not be resolved')
       }
 
       const outcome = await runtime.diagnoseTarget(

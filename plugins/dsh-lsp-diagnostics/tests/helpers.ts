@@ -95,8 +95,15 @@ export class FakeLspClient {
     child.on('error', (error) => this.failAll(error))
   }
 
-  send(message: unknown): void {
-    this.child.stdin?.write(encodeMessage(message))
+  send(message: unknown): Promise<void> {
+    const stdin = this.child.stdin
+    if (stdin === null) return Promise.resolve()
+    return new Promise<void>((resolve, reject) => {
+      stdin.write(encodeMessage(message), (error) => {
+        if (error === null || error === undefined) resolve()
+        else reject(error)
+      })
+    })
   }
 
   next(timeoutMs = this.defaultTimeoutMs): Promise<LspMessage> {

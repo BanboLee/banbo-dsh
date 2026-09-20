@@ -90,6 +90,7 @@ const DEFAULT_ENABLED_PROVIDERS = Object.freeze(['typescript', 'go'])
  * @type {Readonly<Record<string, Readonly<{ provider: ProviderId, language: string }>>>}
  */
 const CANONICAL_ROUTE = Object.freeze({
+  '.js': Object.freeze({ provider: 'typescript', language: 'javascript' }),
   '.ts': Object.freeze({ provider: 'typescript', language: 'typescript' }),
   '.tsx': Object.freeze({ provider: 'typescript', language: 'typescriptreact' }),
   '.go': Object.freeze({ provider: 'go', language: 'go' }),
@@ -290,11 +291,8 @@ function assertExtensionToLanguage(map, provider) {
   if (defaults === undefined) fail(`provider ${provider} has no catalog defaults`)
   const expected = defaults.extensionToLanguage
   const expectedExtensions = Object.keys(expected)
-  if (
-    routes.size !== expectedExtensions.length
-    || !expectedExtensions.every((extension) => routes.get(extension) === expected[extension])
-  ) {
-    fail(`servers.${provider}.extensionToLanguage must equal the canonical provider mapping`)
+  if (!expectedExtensions.every((extension) => routes.get(extension) === expected[extension])) {
+    fail(`servers.${provider}.extensionToLanguage must include the canonical provider mapping`)
   }
   return Object.fromEntries(routes)
 }

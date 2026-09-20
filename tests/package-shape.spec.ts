@@ -61,7 +61,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
   {
     directory: 'plugins/dsh-lsp-diagnostics',
     packageName: '@banbolee/dsh-lsp-diagnostics',
-    files: ['index.js', 'collector.js', 'framing.js', 'runtime.js', 'tool.js', 'render.js', 'coordinator.js', 'cordis.patch.yml', 'README.md'],
+    files: ['index.js', 'collector.js', 'framing.js', 'runtime.js', 'tool.js', 'render.js', 'coordinator.js', 'workspace-root.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
       '@deepseek-ai/dsh-fs': '^0.1.5-rc.1',

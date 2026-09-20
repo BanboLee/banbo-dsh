@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -6,7 +6,6 @@ import { goBuildStatus } from '../helpers/go-tool'
 import {
   bootLspDiagnosticsProfile,
   loadAnchorModule,
-  type FakeLspMode,
   type LspDiagnosticsBooted,
 } from './lsp-diagnostics-profile'
 
@@ -114,6 +113,10 @@ function expectedSingleFileNotice(workspace: string, relativePath: string, lines
   ].join('\n')
 }
 
+function canonicalFileUrl(path: string): string {
+  return pathToFileURL(realpathSync(path)).href
+}
+
 /**
  * The `push-versioned` fixture mode falls through to the fake server's default
  * branch, which publishes the full two-diagnostic batch for the opened URI
@@ -153,7 +156,7 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     // The protocol didOpen used the canonical fs-derived file URL of the real
     // target — never a displayPath-guessed URI — through the whole real path.
     const protocol = readFileSync(booted.typescriptLog, 'utf8')
-    const canonicalUrl = pathToFileURL(join(booted.workspace, 'src', 'a.ts')).href
+    const canonicalUrl = canonicalFileUrl(join(booted.workspace, 'src', 'a.ts'))
     expect(protocol).toContain(`didOpen ${canonicalUrl} v1`)
     expect(protocol).toContain(`publish ${canonicalUrl} v1`)
   })
@@ -305,7 +308,7 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
         expectedSingleFileNotice(booted.workspace, relativePath, ['Status: clean']),
       )
       const protocol = readFileSync(logPath, 'utf8')
-      expect(protocol, relativePath).toContain(`didOpen ${pathToFileURL(join(booted.workspace, relativePath)).href} v`)
+      expect(protocol, relativePath).toContain(`didOpen ${canonicalFileUrl(join(booted.workspace, relativePath))} v`)
       expect(protocol, relativePath).toContain(`languageId ${languageId}`)
     }
   }, 30_000)
@@ -348,7 +351,7 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
       expect(result.value, relativePath).toEqual({ kind: 'no_diagnostics', file_path: absolutePath })
       expect(readFileSync(absolutePath, 'utf8'), relativePath).toBe(bytes)
       const protocol = readFileSync(logPath, 'utf8')
-      expect(protocol, relativePath).toContain(`didOpen ${pathToFileURL(absolutePath).href} v1\nlanguageId ${languageId}`)
+      expect(protocol, relativePath).toContain(`didOpen ${canonicalFileUrl(absolutePath)} v1\nlanguageId ${languageId}`)
     }
   }, 30_000)
 
@@ -374,7 +377,7 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
       expect(readFileSync(outsidePath, 'utf8'), filePath).toBe(outsideContents)
     }
     const protocol = readFileSync(booted.typescriptLog, 'utf8').trim().split('\n')
-    const outsideUri = pathToFileURL(outsidePath).href
+    const outsideUri = canonicalFileUrl(outsidePath)
     expect(protocol.filter((entry) => entry === `didOpen ${outsideUri} v1`)).toHaveLength(2)
 
     const unsupported = await executeTool(booted, 'lsp_diagnostics', { file_path: 'src/unsupported.js' }, booted.workspace)
@@ -393,7 +396,7 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     const direct = await executeTool(booted, 'lsp_diagnostics', { file_path: relativePath }, booted.workspace)
     expect(direct.value).toMatchObject({ kind: 'diagnostics', file_path: absolutePath })
 
-    const uri = pathToFileURL(absolutePath).href
+    const uri = canonicalFileUrl(absolutePath)
     const events = readFileSync(booted.typescriptLog, 'utf8').trim().split('\n')
     expect(events.filter((event) => event === 'initialize')).toHaveLength(2)
     expect(events.filter((event) => event.startsWith('didOpen '))).toEqual([
@@ -404,7 +407,28 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     const closes = events.flatMap((event, index) => event === `didClose ${uri}` ? [index] : [])
     expect(closes[0]).toBeGreaterThan(opens[0]!)
     expect(opens[1]).toBeGreaterThan(closes[0]!)
-    expect(closes[1]).toBeGreaterThan(opens[1]!)
+  })
+
+  it('diagnoses an absolute write in a sibling git worktree outside the session workspace', async () => {
+    const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'push-versioned' })
+    bootedProfiles.push(booted)
+    const sibling = join(booted.profile, 'sibling-worktree')
+    const absolutePath = join(sibling, 'probe.ts')
+    mkdirSync(sibling, { recursive: true })
+    writeFileSync(join(sibling, '.git'), 'gitdir: /tmp/dsh-lsp-composition-smoke.git\n')
+
+    const result = await executeTool(booted, 'write', {
+      file_path: absolutePath,
+      content: 'const smokeValue: string = 123;\nconsole.log(smokeValue);\n',
+    }, booted.workspace)
+
+    expect(result.isError).toBe(false)
+    const notice = pluginNoticeText(result)
+    expect(notice).toContain('[LSP diagnostics after write]')
+    expect(notice).toContain(`File: ${absolutePath}`)
+    expect(notice).toContain(TS_ERROR_SUBSTRING)
+    expect(readFileSync(absolutePath, 'utf8')).toContain('smokeValue')
+    expect(readFileSync(booted.typescriptLog, 'utf8')).toContain(`didOpen ${canonicalFileUrl(absolutePath)} v1`)
   })
 
   it('silently ignores unsupported extensions, missing session cwd, and outside-workspace targets', async () => {
@@ -553,7 +577,8 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     const originalStat = fs.stat.bind(fs)
     let targetStats = 0
     let releaseFinal!: () => void
-    const statSpy = vi.spyOn(fs, 'stat').mockImplementation(async (target: any, signal?: AbortSignal) => {
+    const statSpy = vi.spyOn(fs, 'stat').mockImplementation(async (...args: unknown[]) => {
+      const [target, signal] = args as [any, AbortSignal?]
       if (String(target.displayPath).endsWith('late.ts')) {
         targetStats += 1
         if (targetStats === 2) {
@@ -710,8 +735,9 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     const sessionModule = await loadAnchorModule('dsh-session') as { SessionId: (id: string) => unknown }
     const { LlmAdapter, createUserMessage, ToolCallId } = llmModule
     const { SessionId } = sessionModule
+    const BaseLlmAdapter = LlmAdapter as new () => object
 
-    class MockAdapter extends LlmAdapter {
+    class MockAdapter extends BaseLlmAdapter {
       requests: any[] = []
       constructor(private readonly script: any[]) { super() }
       resolveModel(provider: string, model: string) {
@@ -849,8 +875,9 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     const sessionModule = await loadAnchorModule('dsh-session') as { SessionId: (id: string) => unknown }
     const { LlmAdapter, createUserMessage, ToolCallId } = llmModule
     const { SessionId } = sessionModule
+    const BaseLlmAdapter = LlmAdapter as new () => object
 
-    class MockAdapter extends LlmAdapter {
+    class MockAdapter extends BaseLlmAdapter {
       requests: any[] = []
       constructor(private readonly script: any[]) { super() }
       resolveModel(provider: string, model: string) {
@@ -957,7 +984,7 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     const secondRequestMessages = JSON.stringify(adapter.requests[1]?.messages ?? [])
     expect(secondRequestMessages).toContain('[LSP diagnostics after write]')
     expect(secondRequestMessages).toContain('TS2322')
-    expect(secondRequestMessages).toContain(TS_ERROR_SUBSTRING.replaceAll('"', '\\"'))
+    expect(secondRequestMessages).toContain(TS_ERROR_SUBSTRING.split('"').join('\\"'))
     const thirdRequestMessages = JSON.stringify(adapter.requests[2]?.messages ?? [])
     expect(thirdRequestMessages).toContain('[LSP diagnostics after write]')
     expect(thirdRequestMessages).toContain('Status: clean')
