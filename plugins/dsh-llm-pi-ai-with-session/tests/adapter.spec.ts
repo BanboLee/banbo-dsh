@@ -11,6 +11,11 @@ import {
   type CredentialsStub,
 } from './helpers.js'
 
+function expectNormalMaxRetries(policy: { mode: string; maxRetries?: number } | undefined): number | undefined {
+  expect(policy?.mode).toBe('normal')
+  return policy?.maxRetries
+}
+
 installGatewayHooks()
 
 const MESSAGES = [userMessage('hello')]
@@ -192,7 +197,7 @@ describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
     const { ctx } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
 
-    const providers = await ctx.llm.listProviders()
+    const providers = ctx.llm.listProviders()
     expect(providers).toContainEqual({ id: 'demo-affinity', name: 'Demo Affinity' })
   })
 
@@ -209,7 +214,7 @@ describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
       routes: [{ route: 'light-affinity', source: 'light', displayName: 'Light Affinity' }],
     })
 
-    const providers = await ctx.llm.listProviders()
+    const providers = ctx.llm.listProviders()
     const ids = providers.map(entry => entry.id)
     expect(ids).not.toContain('deepseek-session')
     expect(ids).not.toContain('deepseek-affinity')
@@ -754,7 +759,7 @@ describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
   it('stays dormant (zero routes) when the providers table is empty', async () => {
     const { ctx } = await createHarness({ providers: demoProviders('http://gateway.test'), routes: [] })
 
-    const providers = await ctx.llm.listProviders()
+    const providers = ctx.llm.listProviders()
     expect(providers).toHaveLength(0)
   })
 
@@ -826,6 +831,62 @@ describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
     const body = gateway.requests[0] as { reasoning_effort?: string }
     expect(body.reasoning_effort).toBe('xhigh')
   })
+
+  it('captures the source profile retryPolicy on the registered route', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { ctx } = await createHarness({
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: gateway.url,
+          retryPolicy: { mode: 'normal', maxRetries: 50 },
+          models: [{ id: 'demo-model' }],
+        },
+      },
+      routes: DEMO_ROUTE,
+    })
+
+    const policy = ctx.llm.providerRetryPolicy('demo-affinity')
+    expect(expectNormalMaxRetries(policy)).toBe(50)
+  })
+
+  it('falls back to the registry default of five retries without a source retryPolicy', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { ctx } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
+
+    const policy = ctx.llm.providerRetryPolicy('demo-affinity')
+    expect(expectNormalMaxRetries(policy)).toBe(5)
+  })
+
+  it('fails the stream with TIMEOUT when the provider streamIdleTimeoutMs elapses without chunks', async () => {
+    const gateway = await mockGateway([{ events: textEvents, delayMs: 250 }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { stream } = await createHarness({
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: gateway.url,
+          streamIdleTimeoutMs: 80,
+          models: [{ id: 'demo-model' }],
+        },
+      },
+      routes: DEMO_ROUTE,
+    })
+
+    const chunks = await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-1',
+    })
+
+    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
+    const reason = (finish as { reason?: { kind?: string; failure?: { code?: string } } } | undefined)?.reason
+    expect(reason?.kind).toBe('error')
+    expect(reason?.failure?.code).toBe('TIMEOUT')
+  })
 })
 
 describe('@banbolee/dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
@@ -843,7 +904,7 @@ describe('@banbolee/dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
       },
     }, { routes: [{ route: 'light-affinity', source: 'light', displayName: 'Light Affinity' }] })
 
-    const providers = await ctx.llm.listProviders()
+    const providers = ctx.llm.listProviders()
     const ids = providers.map(entry => entry.id)
     expect(ids).toEqual(['light-affinity'])
     expect((await ctx.llm.resolveModelInfo('light-affinity', 'gpt-5.5')).inputModalities)
@@ -857,5 +918,173 @@ describe('@banbolee/dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
     })
     expect(light.headers).toHaveLength(1)
     expect(light.headers[0]?.['x-session-id']).toBe('session-mirror')
+  })
+
+  it('re-registers the route when the mirrored retryPolicy changes through settings', async () => {
+    const { ctx } = await createSettingsHarness({
+      demo: {
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        baseURL: 'http://gateway.test/v1',
+        models: [{ id: 'demo-model' }],
+      },
+    }, { routes: DEMO_ROUTE })
+
+    expect(expectNormalMaxRetries(ctx.llm.providerRetryPolicy('demo-affinity'))).toBe(5)
+
+    await ctx.settings.update('llm-pi-ai', {
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: 'http://gateway.test/v1',
+          retryPolicy: { mode: 'normal', maxRetries: 50 },
+          models: [{ id: 'demo-model' }],
+        },
+      },
+    })
+
+    expect(expectNormalMaxRetries(ctx.llm.providerRetryPolicy('demo-affinity'))).toBe(50)
+  })
+
+  it('keeps one provider snapshot for an in-flight request across settings updates', async () => {
+    const first = await mockGateway([{ events: textEvents }])
+    const second = await mockGateway([{ events: textEvents }])
+    let releaseCredential: ((value: { value: string }) => void) | undefined
+    const credentialReady = new Promise<{ value: string }>(resolve => { releaseCredential = resolve })
+    const credentials: CredentialsStub = { resolve: vi.fn(async () => credentialReady) }
+    const { ctx } = await createSettingsHarness({
+      demo: {
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        baseURL: first.url,
+        headers: { 'x-generation': 'old' },
+        timeoutMs: 111,
+        models: [{ id: 'demo-model' }],
+      },
+    }, { routes: DEMO_ROUTE })
+    ctx.provide('credentials', credentials)
+
+    const prepared = await ctx.llm.prepareCall({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+    })
+    await ctx.settings.update('llm-pi-ai', {
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: second.url,
+          headers: { 'x-generation': 'new' },
+          timeoutMs: 222,
+          models: [{ id: 'demo-model' }],
+        },
+      },
+    })
+    const chunksPromise = (async () => {
+      const chunks: unknown[] = []
+      for await (const chunk of prepared.stream({
+        provider: 'demo-affinity',
+        model: 'demo-model',
+        messages: MESSAGES,
+        sessionId: 'session-prepared',
+      } as Parameters<typeof prepared.stream>[0])) chunks.push(chunk)
+      return chunks
+    })()
+
+    releaseCredential?.({ value: 'test-key' })
+    const chunks = await chunksPromise
+
+    expect(chunks.some(chunk => (chunk as { type?: string }).type === 'finish')).toBe(true)
+    expect(first.headers).toHaveLength(1)
+    expect(second.headers).toHaveLength(0)
+    expect(first.headers[0]?.['x-generation']).toBe('old')
+    expect(first.headers[0]?.['x-session-id']).toBe('session-prepared')
+    expect((first.requests[0] as { model?: string } | undefined)?.model).toBe('demo-model')
+  })
+
+  it('uses updated timeout settings on the next request after settings changes', async () => {
+    const first = await mockGateway([{ events: textEvents }])
+    const second = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { ctx, stream } = await createSettingsHarness({
+      demo: {
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        baseURL: first.url,
+        timeoutMs: 111,
+        models: [{ id: 'demo-model' }],
+      },
+    }, { routes: DEMO_ROUTE })
+
+    const before = await ctx.llm.prepareCall({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+    })
+    await ctx.settings.update('llm-pi-ai', {
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: second.url,
+          timeoutMs: 222,
+          models: [{ id: 'demo-model' }],
+        },
+      },
+    })
+
+    const after = await ctx.llm.prepareCall({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+    })
+    const beforeChunks: unknown[] = []
+    for await (const chunk of before.stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-before',
+    } as Parameters<typeof before.stream>[0])) beforeChunks.push(chunk)
+    await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-after-direct',
+    })
+    const afterChunks: unknown[] = []
+    for await (const chunk of after.stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-after',
+    } as Parameters<typeof after.stream>[0])) afterChunks.push(chunk)
+
+    expect(beforeChunks.some(chunk => (chunk as { type?: string }).type === 'finish')).toBe(true)
+    expect(afterChunks.some(chunk => (chunk as { type?: string }).type === 'finish')).toBe(true)
+    expect(first.headers).toHaveLength(1)
+    expect(second.headers).toHaveLength(2)
+    expect(first.headers[0]?.['x-session-id']).toBe('session-before')
+    expect(second.headers.map(headers => headers['x-session-id'])).toEqual(['session-after-direct', 'session-after'])
+  })
+
+  it('keeps the last accepted provider snapshot when a settings update removes the source provider', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { ctx, stream } = await createSettingsHarness({
+      demo: {
+        apiKeyEnv: 'DEEPSEEK_API_KEY',
+        baseURL: gateway.url,
+        retryPolicy: { mode: 'normal', maxRetries: 9 },
+        models: [{ id: 'demo-model' }],
+      },
+    }, { routes: DEMO_ROUTE })
+
+    await ctx.settings.update('llm-pi-ai', { providers: {} })
+
+    expect(ctx.llm.listProviders()).toContainEqual({ id: 'demo-affinity', name: 'Demo Affinity' })
+    expect(expectNormalMaxRetries(ctx.llm.providerRetryPolicy('demo-affinity'))).toBe(9)
+    const chunks = await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-after-delete',
+    })
+
+    expect(chunks.some(chunk => (chunk as { type?: string }).type === 'finish')).toBe(true)
+    expect(gateway.headers).toHaveLength(1)
+    expect(gateway.headers[0]?.['x-session-id']).toBe('session-after-delete')
   })
 })

@@ -10,7 +10,8 @@
  * @module @banbolee/dsh-llm-pi-ai-with-session/adapter
  */
 
-import { contentHasImage, LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
+import { contentHasImage, LlmAdapter, LlmError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { streamSimple } from '@earendil-works/pi-ai/compat'
 import { assertSupportedImageRoles, toContext } from './context.js'
 import { buildModel, imageContext, requestHeaders, resolveModelInput } from './model.js'
@@ -18,6 +19,13 @@ import { toStreamChunks } from './stream.js'
 
 /** Reasoning efforts this adapter advertises by default, aligned with pi-ai ThinkingLevel. */
 const DEFAULT_REASONING_EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
+
+/**
+ * Default maximum provider-idle interval while one stream read is outstanding,
+ * matching the official dsh-llm-pi-ai default so both route families behave
+ * alike when the source profile does not set `streamIdleTimeoutMs`.
+ */
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 
 /**
  * Every thinking level pi-ai knows, in its precedence order. Levels absent
@@ -97,6 +105,45 @@ export class SessionHeaderAdapter extends LlmAdapter {
   }
 
   /**
+   * The current mirrored source profiles. The plugin config either carries a
+   * static `providers` table (explicit local injection) or a live getter
+   * (settings-backed) returning the latest accepted snapshot, so every
+   * per-request fact — timeouts, headers, models — is internally consistent.
+   * @returns the providers table keyed by source provider.
+   */
+  providersOf() {
+    const providers = this.config.providers
+    return typeof providers === 'function' ? providers() : providers
+  }
+
+  /**
+   * Return one request/configuration snapshot. Callers that cross an async
+   * boundary must keep passing this object instead of calling `providersOf()`
+   * again, so a settings write cannot mix generations inside one LLM call.
+   * @returns the providers table keyed by source provider.
+   */
+  providersSnapshot() {
+    return this.providersOf() ?? {}
+  }
+
+  /**
+   * Return the retry policy the mirrored source profile configures, resolved
+   * exactly as dsh-llm-pi-ai resolves it. A source profile without
+   * `retryPolicy` returns `undefined`, so the registry applies its normal
+   * defaults (five retries).
+   * @param provider - a route passed to `registerAdapter()` for this instance.
+   * @returns the resolved policy, or `undefined` for the registry defaults.
+   */
+  providerRetryPolicy(provider) {
+    const providers = this.providersSnapshot()
+    const route = this.routeByName.get(provider)
+    if (route === undefined) return undefined
+    const profile = providers[route.source]
+    if (profile?.retryPolicy === undefined) return undefined
+    return resolveRetryPolicy(profile.retryPolicy, `llm-pi-ai-with-session: provider "${provider}" retryPolicy`)
+  }
+
+  /**
    * Resolve the API key for one mirrored provider, mirroring dsh-llm-pi-ai's
    * priority: the harness credentials service when it is available, otherwise
    * the process environment. The service is looked up lazily on every call so
@@ -117,7 +164,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
     return undefined
   }
 
-  routeFor(providerRoute) {
+  routeFor(providerRoute, providers = this.providersSnapshot()) {
     const route = this.routeByName.get(providerRoute)
     if (route === undefined) {
       throw new LlmError(
@@ -125,7 +172,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
         'INVALID_REQUEST',
       )
     }
-    if (this.config.providers?.[route.source] === undefined) {
+    if (providers[route.source] === undefined) {
       throw new LlmError(
         `@banbolee/dsh-llm-pi-ai-with-session: provider route "${providerRoute}" references missing llm-pi-ai provider "${route.source}"`,
         'INVALID_REQUEST',
@@ -135,22 +182,29 @@ export class SessionHeaderAdapter extends LlmAdapter {
   }
 
   providerInfo(provider) {
-    const route = this.routeFor(provider)
-    return { id: provider, name: route.displayName ?? this.config.providers?.[route.source]?.displayName ?? provider }
+    const providers = this.providersSnapshot()
+    const route = this.routeFor(provider, providers)
+    return { id: provider, name: route.displayName ?? providers[route.source]?.displayName ?? provider }
   }
 
-  async resolveModel(provider, model) {
-    const { source } = this.routeFor(provider)
-    const entry = this.config.providers?.[source]?.models?.find(candidate => candidate.id === model)
+  resolveModelFromSnapshot(provider, model, providers) {
+    const { source } = this.routeFor(provider, providers)
+    const sourceProvider = providers[source] ?? {}
+    const entry = sourceProvider.models?.find(candidate => candidate.id === model)
+    const reasoning = this.reasoningMetadata(source, entry, providers)
     return {
       provider,
       id: model,
       name: entry?.name ?? model,
       ...entry?.contextWindow === undefined ? {} : { context: { contextWindow: entry.contextWindow } },
       ...entry?.maxTokens === undefined ? {} : { defaultMaxTokens: entry.maxTokens },
-      inputModalities: resolveModelInput(this.config.providers?.[source] ?? {}, source, model),
-      ...this.reasoningMetadata(source, entry) === undefined ? {} : { reasoning: this.reasoningMetadata(source, entry) },
+      inputModalities: resolveModelInput(sourceProvider, source, model),
+      ...reasoning === undefined ? {} : { reasoning },
     }
+  }
+
+  async resolveModel(provider, model) {
+    return this.resolveModelFromSnapshot(provider, model, this.providersSnapshot())
   }
 
   /**
@@ -160,15 +214,16 @@ export class SessionHeaderAdapter extends LlmAdapter {
    * (or the default list when the model declares none).
    * @param source - the mirrored source provider name.
    * @param entry - the mirrored source model entry, when one exists.
+   * @param providers - provider snapshot to read default reasoning from.
    */
-  reasoningMetadata(source, entry) {
+  reasoningMetadata(source, entry, providers = this.providersSnapshot()) {
     const efforts = entry?.reasoningEfforts
     if (efforts === false) return undefined
     const ids = efforts === undefined || efforts === null
       ? DEFAULT_REASONING_EFFORTS
       : Object.keys(efforts)
     if (ids.length === 0) return undefined
-    const sourceReasoning = this.config.providers?.[source]?.reasoning
+    const sourceReasoning = providers[source]?.reasoning
     return {
       efforts: ids.map(id => ({ id, name: `${id.charAt(0).toUpperCase()}${id.slice(1)}` })),
       ...sourceReasoning === undefined ? {} : { defaultEffort: sourceReasoning },
@@ -176,18 +231,32 @@ export class SessionHeaderAdapter extends LlmAdapter {
   }
 
   async listModels(provider) {
-    const { source } = this.routeFor(provider)
-    return (this.config.providers?.[source]?.models ?? []).map(entry => ({
+    const providers = this.providersSnapshot()
+    const { source } = this.routeFor(provider, providers)
+    const sourceProvider = providers[source] ?? {}
+    return (sourceProvider.models ?? []).map(entry => ({
       provider,
       id: entry.id,
       name: entry.name ?? entry.id,
-      inputModalities: resolveModelInput(this.config.providers?.[source] ?? {}, source, entry.id),
+      inputModalities: resolveModelInput(sourceProvider, source, entry.id),
     }))
   }
 
+  async prepareCall(provider, model) {
+    const providers = this.providersSnapshot()
+    return {
+      model: this.resolveModelFromSnapshot(provider, model, providers),
+      stream: options => this.streamWithSnapshot(options, providers),
+    }
+  }
+
   async * stream(options) {
-    const { source } = this.routeFor(options.provider)
-    const provider = this.config.providers?.[source] ?? {}
+    yield* this.streamWithSnapshot(options, this.providersSnapshot())
+  }
+
+  async * streamWithSnapshot(options, providers) {
+    const { source } = this.routeFor(options.provider, providers)
+    const provider = providers[source] ?? {}
     if (options.sessionId === undefined) {
       throw new LlmError(
         `@banbolee/dsh-llm-pi-ai-with-session: provider route "${options.provider}" requires a request session id`,
@@ -204,7 +273,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
       )
     }
     const entry = provider.models?.find(candidate => candidate.id === options.model)
-    const model = buildModel(this.config, source, options.model, thinkingLevelMapFromSource(entry))
+    const model = buildModel(providers, source, options.model, thinkingLevelMapFromSource(entry))
     const containsImage = options.messages.some(message => contentHasImage(message.content))
     if (containsImage) assertSupportedImageRoles(options.messages)
     if (containsImage && !model.input.includes('image')) {
@@ -221,16 +290,58 @@ export class SessionHeaderAdapter extends LlmAdapter {
       options,
       attachments === undefined ? undefined : imageContext(provider, attachments, this.ctx?.get?.('fs')),
     )
+    const streamIdleTimeoutMs = provider.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS
+    const consumer = new AbortController()
+    const upstream = options.signal === undefined
+      ? consumer.signal
+      : AbortSignal.any([options.signal, consumer.signal])
+    const watchdog = idleWatchdog(upstream, streamIdleTimeoutMs, 'LLM_STREAM_IDLE_TIMEOUT')
     const events = streamSimple(model, context, {
       apiKey,
       sessionId: String(options.sessionId),
       headers: requestHeaders(provider, this.config.sessionHeader, options.sessionId),
       maxRetries: 0,
-      signal: options.signal,
+      signal: watchdog.signal,
+      ...provider.timeoutMs === undefined ? {} : { timeoutMs: provider.timeoutMs },
       ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
       ...options.temperature === undefined ? {} : { temperature: options.temperature },
       ...options.reasoningEffort === undefined ? {} : { reasoning: options.reasoningEffort },
     })
-    yield* toStreamChunks(events, model.contextWindow)
+    const iterator = toStreamChunks(events, model.contextWindow)[Symbol.asyncIterator]()
+    let exhausted = false
+    try {
+      while (true) {
+        const result = await watchdog.next(iterator)
+        const timeout = timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT')
+        if (timeout !== undefined) throw timeout
+        if (result.done) {
+          exhausted = true
+          return
+        }
+        yield result.value
+      }
+    } catch (error) {
+      if (timeoutOf(watchdog.signal, 'LLM_STREAM_IDLE_TIMEOUT') !== undefined) {
+        throw new LlmError(
+          `llm-pi-ai-with-session: stream idle timeout after ${streamIdleTimeoutMs}ms`,
+          'TIMEOUT',
+          { cause: error },
+        )
+      }
+      if (options.signal?.aborted) {
+        throw new LlmError('llm-pi-ai-with-session: request aborted by caller', 'ABORTED', { cause: error })
+      }
+      throw error
+    } finally {
+      consumer.abort('llm-pi-ai-with-session stream consumer stopped')
+      if (!exhausted) {
+        try {
+          await iterator.return(undefined)
+        } catch {
+          // The stable signal already owns SDK termination; return-time abort cannot add an outcome.
+        }
+      }
+      watchdog[Symbol.dispose]()
+    }
   }
 }

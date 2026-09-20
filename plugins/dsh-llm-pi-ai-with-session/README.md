@@ -47,7 +47,7 @@ dsh plugin --profile <profile> add -w ./plugins/dsh-llm-pi-ai-with-session
 
 ## 配置
 
-**通用配置（网关、凭据、模型、推理档位）只写一份**——就在 `llm-pi-ai` 的 providers 里。插件自身只声明需要生成哪些 session 路由，以及会话 header 名；其余一切（baseURL、apiKeyEnv、headers、models、reasoning、reasoningEfforts）都从 source provider 继承：
+**通用配置（网关、凭据、模型、推理档位、重试与超时）只写一份**——就在 `llm-pi-ai` 的 providers 里。插件自身只声明需要生成哪些 session 路由，以及会话 header 名；其余一切（baseURL、apiKeyEnv、headers、models、reasoning、reasoningEfforts、retryPolicy、timeoutMs、streamIdleTimeoutMs）都从 source provider 继承：
 
 ```yaml
 # settings.yaml —— llm-pi-ai 的 providers 是唯一的事实来源
@@ -94,6 +94,16 @@ llm-pi-ai-with-session:
 | `routes[].displayName` | `route` | 模型选择器显示名，建议加上 `(session)` 与原 provider 区分。 |
 
 插件没有 `suffix`、`reasoning`、`reasoningEfforts` 配置——**路由名只来自 `routes[].route`，推理与输入模态从 source provider 继承**：默认档位取 source provider 的 `reasoning`，可选档位取 source 模型声明的 `reasoningEfforts` dict（未声明时用默认列表 `[off, low, medium, high, xhigh, max]`，`false` 表示禁用推理）。输入模态按 source 模型的非空 `input`、pi-ai 内置 catalog、provider `defaultInput`、`[text]` 的顺序解析。图片模型使用 Harness 的持久附件服务生成受像素和字节预算约束的请求图片；超出请求预算的历史图片会保留可用的只读附件路径。文本模型由 Harness 把各角色中的图片投影为稳定文本占位符。`baseURL`、`apiKeyEnv`、`headers`、`models` 同样从 `ctx.settings.get('llm-pi-ai')` 的对应 provider 逐条继承。若 settings namespace 未注册、providers 为空或 routes 为空，插件以零路由 dormant 启动，不报错。
+
+### 重试与超时（自 0.1.2 起继承）
+
+session 路由的**重试策略、请求超时、流式空闲超时**同样继承自 source provider 的 `retryPolicy` / `timeoutMs` / `streamIdleTimeoutMs`，解析方式与官方 `llm-pi-ai` 完全一致：
+
+- `retryPolicy`：在路由注册时解析并交给 harness 的 `dsh-llm-retry` 执行；未配置时与官方一致使用 normal 模式、默认 5 次重试。
+- `timeoutMs`：透传给底层 pi-ai / SDK 的单次请求超时。
+- `streamIdleTimeoutMs`：由本插件用与官方相同的 `idleWatchdog` 施加在流读取上，空闲超时映射为 `TIMEOUT` 错误（进入可重试错误码）；未配置时默认 5 分钟（300000ms），与官方默认一致。
+
+settings.yaml 中修改这三个字段会**热生效**：`timeoutMs` / `streamIdleTimeoutMs` 下一次请求即用新值，`retryPolicy` 通过订阅 `settings/updated` 自动重新注册路由，无需重启。
 
 ### 请求头
 
@@ -154,3 +164,4 @@ env -u NODE_ENV npx vitest run plugins/dsh-llm-pi-ai-with-session
 - 只复用 pi-ai 的 openai-completions 实现，不支持其它线上协议。
 - 只注册配置中声明的 route，不能与其它已注册路由冲突。
 - 依赖 `llm-pi-ai` 的 settings namespace 已注册（含 providers）；未注册或为空时插件 dormant，不提供任何路由。
+- 高级 profile 字段尚未继承：`compat`、`transport`、`cacheRetention`、`thinkingBudgets`、`modelOverrides`、`websocketConnectTimeoutMs` 等仍由 pi-ai 使用默认行为；需要时再逐字段对齐。

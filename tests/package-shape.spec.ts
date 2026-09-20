@@ -54,6 +54,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',
       '@deepseek-ai/dsh-llm': '^0.1.5-rc.1',
+      '@deepseek-ai/dsh-timeout': '^0.1.5-rc.1',
       '@earendil-works/pi-ai': '^0.84.2',
     },
   },

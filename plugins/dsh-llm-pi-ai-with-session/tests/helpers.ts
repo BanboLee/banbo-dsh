@@ -43,6 +43,14 @@ export interface ProviderProfile {
   maxRequestImageBytes?: number
   requestImagePixelBudget?: number
   requestImageMaxBytes?: number
+  timeoutMs?: number
+  streamIdleTimeoutMs?: number
+  retryPolicy?: {
+    mode?: string
+    maxRetries?: number
+    retryableCodes?: string[]
+    backoff?: { initialDelayMs?: number; maxDelayMs?: number; jitterRatio?: number }
+  }
   models?: Array<{
     id: string
     name?: string
@@ -95,6 +103,8 @@ export async function mockGateway(scripts: {
   events?: string[]
   body?: string
   headers?: Record<string, string>
+  /** Delay before writing the response, in milliseconds (idle-timeout tests). */
+  delayMs?: number
 }[]): Promise<MockGateway> {
   const paths: string[] = []
   const requests: unknown[] = []
@@ -107,16 +117,23 @@ export async function mockGateway(scripts: {
       requests.push(body.length === 0 ? undefined : JSON.parse(body))
       headers.push(request.headers)
       const script = scripts.shift() ?? { status: 500, body: 'script exhausted' }
-      if (script.status !== undefined && script.status !== 200) {
-        response.writeHead(script.status, { 'content-type': 'application/json', ...script.headers })
-        response.end(script.body ?? '{}')
-        return
+      const respond = () => {
+        if (script.status !== undefined && script.status !== 200) {
+          response.writeHead(script.status, { 'content-type': 'application/json', ...script.headers })
+          response.end(script.body ?? '{}')
+          return
+        }
+        response.writeHead(200, { 'content-type': 'text/event-stream' })
+        for (const event of script.events ?? []) {
+          response.write(`data: ${event}\n\n`)
+        }
+        response.end()
       }
-      response.writeHead(200, { 'content-type': 'text/event-stream' })
-      for (const event of script.events ?? []) {
-        response.write(`data: ${event}\n\n`)
+      if (script.delayMs !== undefined) {
+        setTimeout(respond, script.delayMs)
+      } else {
+        respond()
       }
-      response.end()
     })
   })
   servers.push(server)
@@ -227,6 +244,14 @@ export const llmPiAiSchema = z.object({
     maxRequestImageBytes: z.number(),
     requestImagePixelBudget: z.number(),
     requestImageMaxBytes: z.number(),
+    timeoutMs: z.number(),
+    streamIdleTimeoutMs: z.number(),
+    // Pass-through: the official llm-pi-ai schema validates retryPolicy; this
+    // stub only mirrors the value, so a declared-but-absent policy must not be
+    // materialized into an invalid shape (schemastery would otherwise turn an
+    // absent object into { retryableCodes: [], backoff: {} } and break
+    // resolveRetryPolicy's mode check).
+    retryPolicy: z.any(),
     models: z.array(z.object({
       id: z.string().required(),
       name: z.string(),

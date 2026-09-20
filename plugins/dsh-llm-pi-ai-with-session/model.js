@@ -34,14 +34,15 @@ export function resolveModelInput(provider, source, modelId) {
 
 /**
  * Build the pi-ai model descriptor for one mirrored source entry.
- * @param config - plugin configuration.
+ * @param providers - the source providers table (static or the latest
+ * settings snapshot), keyed by source provider.
  * @param source - mirrored source provider name.
  * @param modelId - requested model id.
  * @param thinkingLevelMap - resolved pi-ai reasoning-level map.
  * @returns the model descriptor consumed by pi-ai.
  */
-export function buildModel(config, source, modelId, thinkingLevelMap) {
-  const provider = config.providers?.[source] ?? {}
+export function buildModel(providers, source, modelId, thinkingLevelMap) {
+  const provider = providers?.[source] ?? {}
   const entry = provider.models?.find(model => model.id === modelId)
   return {
     id: modelId,

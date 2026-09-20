@@ -57,36 +57,96 @@ export const Config = {
 }
 
 /**
+ * Install the session routes for one providers source. The settings-backed
+ * source is a live getter, so every per-request fact (timeouts, headers,
+ * models) tracks the current settings snapshot; a change to the
+ * registration-captured facts (route set, display names, retry policies)
+ * re-registers the same adapter in place, so a `retryPolicy` edit in
+ * settings.yaml takes effect without a restart.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
+ * @param {object} config - validated plugin configuration.
+ * @param {object | (() => object)} providers - static providers table, or a
+ * getter returning the latest `llm-pi-ai` settings snapshot.
+ * @param {object} [settingsCtx] - settings-injected context; its presence
+ * enables the `settings/updated` re-registration listener.
+ */
+function install(ctx, config, providers, settingsCtx) {
+  const routes = config.routes.map(route => route.route)
+  if (routes.length === 0) return
+  const readProviders = () => (typeof providers === 'function' ? providers() : providers) ?? {}
+  let currentProviders = readProviders()
+  // Hand the harness context to the adapter so it can resolve the
+  // credentials service lazily at request time (it may not be mounted yet
+  // while this plugin applies), exactly like the native dsh-llm-pi-ai
+  // adapter, before falling back to the environment. The providers getter is
+  // this installer's last accepted settings snapshot, never the raw live
+  // document, so refused updates cannot create half-live routes.
+  const adapter = new SessionHeaderAdapter({ ...config, providers: () => currentProviders, routes: config.routes, ctx })
+  let registration
+  let registeredFacts
+  const factsOf = table => config.routes.map(route => {
+    const profile = table[route.source]
+    return [
+      route.route,
+      profile !== undefined,
+      route.displayName ?? profile?.displayName ?? route.route,
+      profile?.retryPolicy,
+    ]
+  })
+  const ensureRegistration = () => {
+    const table = readProviders()
+    const serialized = JSON.stringify(factsOf(table))
+    if (serialized === registeredFacts) {
+      currentProviders = table
+      return
+    }
+    const previousProviders = currentProviders
+    currentProviders = table
+    try {
+      if (registration === undefined) {
+        registration = ctx.llm.registerAdapter(routes, adapter)
+      } else {
+        registration.replace(routes)
+      }
+    } catch (error) {
+      currentProviders = previousProviders
+      throw error
+    }
+    // Only advance once the registry actually holds the new set, so returning
+    // to a working configuration always re-applies.
+    registeredFacts = serialized
+  }
+  ensureRegistration()
+  if (settingsCtx !== undefined) {
+    ctx.on('settings/updated', (ns) => {
+      if (ns !== 'llm-pi-ai') return
+      try {
+        ensureRegistration()
+      } catch (error) {
+        ctx.logger.error('llm-pi-ai-with-session: keeping the previously accepted routes and providers after a refused settings update')
+        ctx.logger.error(error)
+      }
+    })
+  }
+}
+
+/**
  * Register the explicitly configured session routes. When the plugin config
  * carries an explicit `providers` table it is used directly (local injection);
- * otherwise the table is read from the `llm-pi-ai` settings namespace — an
- * absent namespace, empty table, or empty route list leaves the plugin dormant
- * with zero routes, never an error.
+ * otherwise the table is read live from the `llm-pi-ai` settings namespace —
+ * an absent namespace, empty table, or empty route list leaves the plugin
+ * dormant with zero routes, never an error.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
  * @param {object} config - validated plugin configuration.
  */
 export default function apply(ctx, config) {
-  const mount = (providers) => {
-    const routes = config.routes.map(route => route.route)
-    if (routes.length === 0) return
-    // Hand the harness context to the adapter so it can resolve the
-    // credentials service lazily at request time (it may not be mounted yet
-    // while this plugin applies), exactly like the native dsh-llm-pi-ai
-    // adapter, before falling back to the environment.
-    ctx.llm.registerAdapter(routes, new SessionHeaderAdapter({
-      ...config,
-      providers,
-      routes: config.routes,
-      ctx,
-    }))
-  }
   if (config.providers !== undefined) {
-    mount(config.providers)
+    install(ctx, config, config.providers)
     return
   }
   ctx.inject(['settings'], (settingsCtx) => {
-    const piAi = settingsCtx.settings.get('llm-pi-ai')
-    mount(piAi?.providers ?? {})
+    const readProviders = () => settingsCtx.settings.get('llm-pi-ai')?.providers ?? {}
+    install(ctx, config, readProviders, settingsCtx)
   })
 }
 
