@@ -33,21 +33,27 @@ function fixture(options: { remoteFailure?: boolean, mountReject?: boolean } = {
     order.push('register')
     return slotDisposer
   })
+  // The namespace is resolved with `ctx.get` (root service store), NOT read as
+  // `ctx.remote.<ns>`: that key is created by this plugin's own `$mount`, so
+  // injecting it would deadlock and reading it as a property throws
+  // `cannot get property "remote.banboAgentsCatalog" without inject` on the
+  // real Web client.
+  const catalogService = {
+    list: vi.fn(async () => {
+      order.push('list')
+      return options.remoteFailure
+        ? { ok: false, error: { code: 'gateway/internal', message: 'catalog failed' } }
+        : { ok: true, value: catalog }
+    }),
+  }
   const ctx = {
+    get: vi.fn((key: string) => (key === 'remote.banboAgentsCatalog' ? catalogService : undefined)),
     remote: {
       $mount: vi.fn(async () => {
         order.push('mount')
         if (options.mountReject) throw new Error('mount failed')
         return mountDisposer
       }),
-      banboAgentsCatalog: {
-        list: vi.fn(async () => {
-          order.push('list')
-          return options.remoteFailure
-            ? { ok: false, error: { code: 'gateway/internal', message: 'catalog failed' } }
-            : { ok: true, value: catalog }
-        }),
-      },
     },
     settingsScope: {
       bind: vi.fn(() => {

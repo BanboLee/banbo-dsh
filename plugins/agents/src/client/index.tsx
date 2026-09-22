@@ -8,13 +8,24 @@ import TYPERT_REMOTE from '@banbolee/dsh-agents/remote'
 
 import { AgentSettingsCard, dictionaries, LOCALE_NAMESPACE, type AgentsSettingsCardFace } from './AgentSettingsCard.js'
 import { AgentsSettingsController, decodeAgentSettings } from './controller.js'
+import type { AgentCatalogView } from '@banbolee/dsh-agents/catalog-remote'
 import { installClientStyle } from './styles.js'
 
 export { AgentSettingsCard } from './AgentSettingsCard.js'
 export { AgentsSettingsController, decodeAgentSettings } from './controller.js'
 export type * from './controller.js'
 
+// `remote` only — deliberately NOT `remote.banboAgentsCatalog`. Cordis resolves
+// `ctx.remote.<ns>` as its own nested service key, but that key is created BY
+// THIS PLUGIN's `$mount` call below, so injecting it would make `apply` wait for
+// a service `apply` itself mounts: a deadlock. Resolve the namespace explicitly
+// with `ctx.get(...)` instead — the same way the Gateway resolves namespaces
+// (`dsh-api-gateway/lib/client.js` uses `this.ctx.get(serviceKey)`), because
+// `reflect.get` reads the root service store and needs no inject.
 export const inject = ['slots', 'locale', 'remote', 'settingsScope']
+
+/** Cordis service key the Gateway publishes one Remote namespace under. */
+const CATALOG_NAMESPACE_KEY = 'remote.banboAgentsCatalog'
 
 type Disposer = () => void | Promise<void>
 
@@ -53,9 +64,22 @@ export async function apply(ctx: ClientContext): Promise<void> {
     const unmount = await ctx.remote.$mount(TYPERT_REMOTE)
     rollback.push(unmount)
 
-    const response = await ctx.remote.banboAgentsCatalog.list()
+    const catalog = ctx.get(CATALOG_NAMESPACE_KEY) as {
+      list: () => Promise<
+        | { ok: true, value: AgentCatalogView }
+        | { ok: false, error: { message: string, code: string } }
+      >
+    } | undefined
+    if (catalog === undefined) {
+      throw new Error(
+        `banbo-agents: the Gateway did not publish ${CATALOG_NAMESPACE_KEY} after mounting this plugin's Remote; `
+        + 'the settings card needs the Host catalog to render',
+      )
+    }
+
+    const response = await catalog.list()
     if (!response.ok) {
-      throw new Error(`banbo-agents: catalog list failed: ${response.error.message} (${response.error.code})`)
+      throw new Error(`banbo-agents: catalog list failed: ${response.error?.message} (${response.error?.code})`)
     }
 
     const scope = ctx.settingsScope.bind({ namespace: 'banbo-agents', decode: decodeAgentSettings })

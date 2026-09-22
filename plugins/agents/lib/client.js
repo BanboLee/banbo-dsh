@@ -6094,6 +6094,8 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"remote",
 			"settingsScope"
 		];
+		/** Cordis service key the Gateway publishes one Remote namespace under. */
+		const CATALOG_NAMESPACE_KEY = "remote.banboAgentsCatalog";
 		function controllerFace(controller) {
 			return {
 				hooks: { agentsSettings: controller },
@@ -6122,8 +6124,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				rollback.push(installClientStyle());
 				const unmount = await ctx.remote.$mount(TYPERT_REMOTE);
 				rollback.push(unmount);
-				const response = await ctx.remote.banboAgentsCatalog.list();
-				if (!response.ok) throw new Error(`banbo-agents: catalog list failed: ${response.error.message} (${response.error.code})`);
+				const catalog = ctx.get(CATALOG_NAMESPACE_KEY);
+				if (catalog === void 0) throw new Error(`banbo-agents: the Gateway did not publish ${CATALOG_NAMESPACE_KEY} after mounting this plugin's Remote; the settings card needs the Host catalog to render`);
+				const response = await catalog.list();
+				if (!response.ok) throw new Error(`banbo-agents: catalog list failed: ${response.error?.message} (${response.error?.code})`);
 				const controller = new AgentsSettingsController(ctx.settingsScope.bind({
 					namespace: "banbo-agents",
 					decode: decodeAgentSettings

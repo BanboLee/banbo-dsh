@@ -67,7 +67,12 @@ describe('agents client artifact', () => {
       throw new Error(`undeclared external: ${specifier}`)
     })
 
-    expect(exports).toMatchObject({ apply: expect.any(Function), inject: ['slots', 'locale', 'remote', 'settingsScope'] })
+    expect(exports).toMatchObject({
+      apply: expect.any(Function),
+      // `remote` only: the catalog namespace is created by this plugin's own
+      // `$mount`, so injecting `remote.banboAgentsCatalog` would deadlock.
+      inject: ['slots', 'locale', 'remote', 'settingsScope'],
+    })
     expect(new Set(required)).toEqual(new Set(['react', 'react/jsx-runtime']))
     expect(required).not.toContain('@banbolee/dsh-agents/remote')
     expect(required).not.toContain('zod')

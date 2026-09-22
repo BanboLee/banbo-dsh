@@ -132,6 +132,12 @@ function clientContext(catalog = { generation: 'gate-e', agents: [] }) {
     unset: vi.fn(),
   }
   const ctx = {
+    // The catalog namespace is created by this plugin's own `$mount`, so it is
+    // resolved with `ctx.get` (root service store) rather than injected or read
+    // as `ctx.remote.<ns>` — see the client inject contract in
+    // tests/client-copy.spec.ts.
+    get: vi.fn((key: string) =>
+      (key === 'remote.banboAgentsCatalog' ? { list: vi.fn(async () => ({ ok: true, value: catalog })) } : undefined)),
     remote: {
       $mount: vi.fn(async (contribution) => {
         expect(contribution).toMatchObject({
@@ -141,7 +147,6 @@ function clientContext(catalog = { generation: 'gate-e', agents: [] }) {
         mounts += 1
         return () => { mounts -= 1 }
       }),
-      banboAgentsCatalog: { list: vi.fn(async () => ({ ok: true, value: catalog })) },
     },
     settingsScope: { bind: vi.fn(() => scope) },
     locale: {
