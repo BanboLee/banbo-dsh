@@ -32,13 +32,79 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The composition suite boots real isolated DSH profiles, so the dsh
-      # CLI (and its bundled @deepseek-ai package tree) must be on PATH.
+      # CLI (and its bundled @deepseek-ai package tree) must be on PATH. The
+      # version must match the plugin dependency family (AGENTS.md).
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.1.5-rc.1
+        run: npm install -g @deepseek-ai/dsh@0.1.5-rc.2
 
       # fish-shell bundle composition tests execute the real fish binary.
       - name: Install fish
         run: sudo apt-get update && sudo apt-get install -y fish
 
+      # The agents Host Remote / Typert descriptors / Web client are build
+      # outputs (docs/agents-plugin-plan.md §17). Build before the gates lane,
+      # whose packed test asserts the published tarball and pure-ESM imports.
+      - name: Build agents bundle artifacts
+        run: pnpm build:agents
+
       - name: Run test suite
         run: pnpm test
+
+      # Gate green is its own lane: it must not be inferred from an overall
+      # green unit run (docs/agents-plugin-plan.md §15).
+      - name: Run agents platform gates
+        run: pnpm test:agents:gates
+
+      # The real install/uninstall cycle is opt-in inside the suite (it shells
+      # out to the `dsh` CLI), so CI enables it explicitly. This is what makes
+      # the §18 install/uninstall claim enforced rather than remembered.
+      - name: Run agents install/uninstall lane
+        env:
+          BANBO_REAL_INSTALL: '1'
+        run: >-
+          npx vitest run --config vitest.gates.config.ts
+          plugins/agents/tests/gates/gate-f-install.spec.ts
+
+  # docs/agents-plugin-plan.md §8.7 requires the generated-preset pointer
+  # mechanism to be verified on Windows: a directory symlink needs Developer
+  # Mode or elevation there, so the junction fallback is the branch that
+  # actually runs in production. The full repository suite is POSIX-only (fish,
+  # pty, rtk tmpdir normalisation), so this job runs the agents bundle.
+  #
+  # Gate B is deliberately NOT part of this job: it boots real isolated DSH
+  # profiles through the `dsh` CLI, and its Windows behaviour is not yet
+  # established. That remains a documented gap, not a silent pass.
+  agents-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.3.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build agents bundle artifacts
+        run: pnpm build:agents
+
+      # Includes the Windows-only pointer probe in
+      # plugins/agents/tests/preset-compiler.spec.ts, which is skipped on POSIX.
+      - name: Run agents unit suite
+        run: npx vitest run plugins/agents/tests
+
+      - name: Run platform gates that need no real profile
+        run: >-
+          npx vitest run --config vitest.gates.config.ts
+          plugins/agents/tests/gates/gate-a-target.spec.ts
+          plugins/agents/tests/gates/gate-c-scope-depth.spec.ts
+          plugins/agents/tests/gates/gate-d-lifecycle.spec.ts
+          plugins/agents/tests/gates/gate-e-settings-web.spec.ts

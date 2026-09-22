@@ -1,0 +1,17 @@
+# Executor — runs commands and verifies them (§5.1 / §5.2).
+#
+# `optional` continuation: foreground calls stay one-shot, background calls keep
+# a resumable session the parent can address with `send_message`.
+
+id: executor
+displayName: Executor
+description: 执行命令、跑验证、做明确的小范围机械修改。
+allowedChildren: [research, explorer, implement, review]
+
+child:
+  model:
+    default: true
+  persona: prompts/executor-child.md
+  guidance: 当任务需要实际运行命令或做小范围机械改动时使用；不要使用它承担需要设计判断的实现。
+  tools: [read, search, web, exec, write, edit, skill, todo, jobs, agent-control]
+  continuation: optional

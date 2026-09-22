@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "lib",
+    "declarationDir": "lib/types"
+  },
+  "include": ["src/catalog-remote.ts"]
+}

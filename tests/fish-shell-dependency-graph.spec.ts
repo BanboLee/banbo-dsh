@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const DSH_VERSION = '0.1.5-rc.1'
+const DSH_VERSION = '0.1.5-rc.2'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -33,7 +33,7 @@ function collectDshVersions(value: unknown, result = new Map<string, Set<string>
 }
 
 describe('fish-shell installed dependency graph', () => {
-  it('resolves sandbox and LLM packages from the coherent 0.1.5-rc.1 family', () => {
+  it('resolves sandbox and LLM packages from the coherent 0.1.5-rc.2 family', () => {
     // Given the real installed dependency chain rooted at @banbolee/dsh-fish-shell
     const listed = spawnSync('pnpm', ['list', '--filter', '@banbolee/dsh-fish-shell', '--depth=8', '--json'], {
       cwd: repoRoot,

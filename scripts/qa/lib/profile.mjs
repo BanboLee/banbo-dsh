@@ -8,6 +8,7 @@ export const BUNDLES = [
   ['plugins/codegraph-mcp', '@banbolee/dsh-codegraph-mcp'],
   ['plugins/dsh-llm-pi-ai-with-session', '@banbolee/dsh-llm-pi-ai-with-session'],
   ['plugins/dsh-lsp-diagnostics', '@banbolee/dsh-lsp-diagnostics'],
+  ['plugins/agents', '@banbolee/dsh-agents'],
 ]
 
 export function writeToolWrappers(layout, tools) {

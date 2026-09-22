@@ -1,0 +1,60 @@
+# @banbolee/dsh-agents bundle patch (docs/agents-plugin-plan.md §8.4).
+#
+# Two changes, and nothing else.
+#
+# 1. OWN the profile's preset-roster seat. DSH Web names it `agent-presets`;
+#    dsh-tui 0.10.2 names it `dsh-tui-agent-presets`. Include patches skip a
+#    missing id, so both targets appear below and exactly one warns in either
+#    profile. Their complete config has one YAML anchor source to prevent drift.
+#    The roster reads its roots once at construction, and re-scans them on every
+#    `list()`/`resolve()` — so the matching row names two stable directories:
+#
+#      - the presets this package ships (built-in main agents, trust: system);
+#      - `$DSH_HOME/banbo-agents/.generated/current/presets`, the controlled
+#        compile output for user-authored main agents, also trust: system
+#        because the content is generated from validated YAML rather than
+#        hand-authored — a `user` root would let the official authoring API pick
+#        it as its writable target and write into a generation directory that is
+#        supposed to be immutable.
+#
+#    The `current` component is a symlink swapped atomically by the compiler
+#    (index.js + preset-compiler.js). The string below never changes and needs
+#    no restart, so a freshly compiled generation is live on the very next
+#    roster scan.
+#
+#    Cordis replaces a patched config object wholesale rather than deep-merging
+#    it, so the four official fields are restated here in full, and any other
+#    bundle patching this same row must merge these two roots by hand instead of
+#    removing them. `index.js` verifies at startup that both roots really are
+#    mounted and fails loudly when they are not.
+#
+#    `new URL(…, baseUrl)` resolves against the composition that loaded this
+#    row, which is the installed profile. `dshHomePath` is provided by the
+#    harness host (`@deepseek-ai/dsh-home-paths`); both are the documented
+#    public bindings for a patch expression, not a runtime path rewrite.
+#
+# 2. Mount the Host half of this bundle. It reads and validates the catalog,
+#    compiles the generation and publishes it as the `banboAgents` service —
+#    all before the Host reports ready, so a bad definition file fails startup
+#    with the previous generation still active. The per-preset runtimes
+#    (`@banbolee/dsh-agents/main-runtime` and `/delegation`) are NOT mounted
+#    here: they belong to the preset compositions under `presets/`.
+- id: agent-presets
+  name: '@deepseek-ai/dsh-agent-presets'
+  config: &banbo-agent-presets-config
+    default: standard
+    includeShippedRoot: true
+    includeUserRoot: true
+    roots:
+      - path: !!js process.getBuiltinModule('node:url').fileURLToPath(new URL('node_modules/@banbolee/dsh-agents/presets/', baseUrl))
+        trust: system
+      - path: !!js dshHomePath('banbo-agents', '.generated', 'current', 'presets')
+        trust: system
+
+- id: dsh-tui-agent-presets
+  name: '@deepseek-ai/dsh-agent-presets'
+  config: *banbo-agent-presets-config
+
+- insert:
+    - id: banbo-agents
+      name: '@banbolee/dsh-agents'

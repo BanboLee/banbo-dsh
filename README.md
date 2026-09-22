@@ -4,11 +4,11 @@
 
 **中文** | [English](./README.en.md)
 
-DeepSeek Harness（DSH）插件集合：5 个开箱即用的插件，全部发布在 npm（`@banbolee/dsh-*`），一条命令即可安装到任意 DSH profile，无需 clone 本仓库。MIT 协议开源。
+DeepSeek Harness（DSH）插件集合：6 个开箱即用的插件，全部发布在 npm（`@banbolee/dsh-*`），一条命令即可安装到任意 DSH profile，无需 clone 本仓库。MIT 协议开源。
 
 ## 快速安装（用户）
 
-前置条件：已安装 `dsh`（0.1.5-rc.1 族）、Node.js ≥ 22、pnpm 9.x。
+前置条件：已安装 `dsh`（0.1.5-rc.2 族）、Node.js ≥ 22、pnpm 9.x。
 
 想装哪个装哪个：
 
@@ -18,6 +18,7 @@ dsh plugin --profile <profile> add @banbolee/dsh-codegraph-mcp
 dsh plugin --profile <profile> add @banbolee/dsh-fish-shell
 dsh plugin --profile <profile> add @banbolee/dsh-lsp-diagnostics
 dsh plugin --profile <profile> add @banbolee/dsh-llm-pi-ai-with-session
+dsh plugin --profile <profile> add @banbolee/dsh-agents
 ```
 
 ## 插件总览
@@ -29,6 +30,7 @@ dsh plugin --profile <profile> add @banbolee/dsh-llm-pi-ai-with-session
 | [`@banbolee/dsh-fish-shell`](plugins/fish-shell/README.md) | 用 fish 替代 bash：沙箱/本地两种执行器 + 模型可调的 `fish` 工具 + 任意 agent preset 下用 fish 替换 bash 的 per-agent 策略 | fish |
 | [`@banbolee/dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | `write`/`edit`/`str_replace_editor` 改动落盘后，自动把 LSP 诊断结果附到下轮模型推理；另注册模型可调用的 `lsp_diagnostics(file_path)` 工具 | `typescript-language-server`、`gopls`（可选 `clangd`、`rust-analyzer`、`pyright-langserver`） |
 | [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md) | `llm-pi-ai` 的通用 session wrapper：注册显式 session provider 路由，每次 LLM 请求携带动态会话 header（默认 `x-session-id`） | 无（复用 `llm-pi-ai` provider） |
+| [`@banbolee/dsh-agents`](plugins/agents/README.md) | 用 YAML 定义自己的 Agent 团队：具名 `agent_<id>` 工具、每个 Agent 的 persona 与工具面、显式委派图、绝对深度/并发预算；接管官方 `agent-presets` roster 行 | 无 |
 
 `@banbolee/dsh-llm-pi-ai-with-session` 是 `llm-pi-ai` 的一个通用 session wrapper：按配置显式注册 session provider 路由，复用 pi-ai 的 openai-completions 实现并在每次请求里带上可配置的会话 header（默认 `x-session-id`）；网关、凭据、模型、推理档位全部从 source provider 继承，无需重复配置。详见 [plugins/dsh-llm-pi-ai-with-session/README.md](plugins/dsh-llm-pi-ai-with-session/README.md)。
 
@@ -53,7 +55,10 @@ dsh plugin --profile <profile> remove @banbolee/dsh-codegraph-mcp
 dsh plugin --profile <profile> remove @banbolee/dsh-fish-shell
 dsh plugin --profile <profile> remove @banbolee/dsh-lsp-diagnostics
 dsh plugin --profile <profile> remove @banbolee/dsh-llm-pi-ai-with-session
+dsh plugin --profile <profile> remove @banbolee/dsh-agents
 ```
+
+>`@banbolee/dsh-agents` 的普通卸载**保留**用户数据（`$DSH_HOME/banbo-agents/`：YAML 定义、persona、generated presets、ABI manifest），重装后即可恢复；它只是不再挂载到运行时。彻底清除是显式的破坏性操作，见 [plugins/agents/README.md](plugins/agents/README.md)。
 
 ## 本地开发 / 从源码安装（贡献者）
 
@@ -70,6 +75,7 @@ dsh plugin --profile <profile> add -w ./plugins/rtk
 dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp
 dsh plugin --profile <profile> add -w ./plugins/dsh-llm-pi-ai-with-session
 dsh plugin --profile <profile> add -w ./plugins/dsh-lsp-diagnostics
+dsh plugin --profile <profile> add -w ./plugins/agents
 dsh plugin --profile <profile> add ./plugins/fish-shell
 ```
 

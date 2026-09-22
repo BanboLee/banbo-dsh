@@ -1,0 +1,17 @@
+# Review — risk, correctness and coverage review (§5.1 / §5.2).
+#
+# It keeps `exec` so it can run the tests it is judging. That is exactly why the
+# plugin's copy must never call it "read-only": it can execute code.
+
+id: review
+displayName: Review
+description: 审查风险、正确性、测试覆盖和设计缺口；默认不抢实现。
+allowedChildren: [research, explorer]
+
+child:
+  model:
+    default: true
+  persona: prompts/review-child.md
+  guidance: 当任务需要独立审查一段改动、结论或方案时使用；不要使用它代替负责修改的 Implement。
+  tools: [read, search, exec, skill, todo, jobs, agent-control]
+  continuation: optional

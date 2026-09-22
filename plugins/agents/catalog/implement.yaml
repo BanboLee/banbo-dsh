@@ -1,0 +1,14 @@
+# Implement — focused code changes (§5.1 / §5.2).
+
+id: implement
+displayName: Implement
+description: 做聚焦的代码修改，不擅自扩大范围。
+allowedChildren: [research, explorer]
+
+child:
+  model:
+    default: true
+  persona: prompts/implement-child.md
+  guidance: 当任务需要按明确范围修改代码时使用；不要使用它顺手重构无关范围。
+  tools: [read, search, web, exec, write, edit, skill, todo, jobs, agent-control]
+  continuation: optional

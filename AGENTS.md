@@ -38,7 +38,7 @@
 
 ## 其它约定
 
-- 依赖族固定在 `@deepseek-ai/* ^0.1.5-rc.1`（与 dsh 0.1.5-rc.1 对齐）；升级依赖族时同步更新测试断言与文档。
+- 依赖族固定在 `@deepseek-ai/* ^0.1.5-rc.2`（与 dsh 0.1.5-rc.2 对齐）；升级依赖族时同步更新测试断言与文档。
 - 插件核心约束：不修改 deepseek-harness 内核、不 monkey-patch 官方对象、只通过公开扩展点（`ctx.llm.registerAdapter`、`tools/post-execute` 等）工作；确定性测试不得依赖网络/真实二进制（可选真实 lane 用环境变量显式开启）。
 - `.omo/`、`research/`、`dist/`、`node_modules/` 为本地证据/草稿/产物，永不提交。
 - 测试统一用 `env NODE_ENV=development pnpm test`（`NODE_ENV=production` 时 pnpm 会跳过 devDependencies，导致安装不全、`pnpm list` 隐藏依赖图）。

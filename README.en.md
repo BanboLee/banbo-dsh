@@ -10,7 +10,7 @@ command — no need to clone this repository. MIT licensed.
 
 ## Quick install (users)
 
-Prerequisites: `dsh` (0.1.5-rc.1 family), Node.js >= 22, pnpm 9.x.
+Prerequisites: `dsh` (0.1.5-rc.2 family), Node.js >= 22, pnpm 9.x.
 
 Install whichever bundles you need:
 

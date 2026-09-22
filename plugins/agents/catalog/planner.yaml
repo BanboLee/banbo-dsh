@@ -1,0 +1,24 @@
+# Planner — both shapes (§5.1).
+#
+# As a main agent its depth cap is 1, so it may delegate exactly one level. As a
+# child it keeps the narrower surface below; the authorisation graph is shared
+# between the two so they cannot drift apart.
+
+id: planner
+displayName: Planner
+description: 拆解任务、识别风险、给出执行计划；也可作为长期协调的子 Agent。
+allowedChildren: [research, explorer, review]
+
+main:
+  presetId: planner
+  persona: prompts/planner-main.md
+  tools: [read, search, web, skill, todo, jobs, ask-user, goal, present, agent-control]
+  maxDepth: 1
+
+child:
+  model:
+    default: true
+  persona: prompts/planner-child.md
+  guidance: 当任务需要先拆解成计划、或需要持续协调一个子项目时使用；不要使用它直接做大规模代码修改。
+  tools: [read, search, web, skill, todo, jobs, agent-control]
+  continuation: optional

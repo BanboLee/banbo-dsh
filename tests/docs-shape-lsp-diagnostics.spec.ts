@@ -407,8 +407,8 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
   }
 
   // rc.1 and dsh-tools peer boundary.
-  if (!sentencesContaining(f, '0.1.5-rc.1').some((s) => s.includes('^0.1.5-rc.1'))) {
-    failures.push('the peer range ^0.1.5-rc.1 must be documented')
+  if (!sentencesContaining(f, '0.1.5-rc.2').some((s) => s.includes('^0.1.5-rc.2'))) {
+    failures.push('the peer range ^0.1.5-rc.2 must be documented')
   }
   if (!f.includes('@deepseek-ai/dsh-tools')) {
     failures.push('@deepseek-ai/dsh-tools must be named in the peer boundary')
@@ -561,8 +561,8 @@ describe('@banbolee/dsh-lsp-diagnostics README shape', () => {
   })
 
   it('documents the rc.1 and dsh-tools peer boundary', () => {
-    expect(README).toContain('0.1.5-rc.1')
-    expect(README).toContain('^0.1.5-rc.1')
+    expect(README).toContain('0.1.5-rc.2')
+    expect(README).toContain('^0.1.5-rc.2')
     expect(README).toContain('@deepseek-ai/dsh-tools')
   })
 
@@ -646,7 +646,7 @@ describe('@banbolee/dsh-lsp-diagnostics README shape', () => {
   })
 
   it('rejects a README that restores the old dsh peer family (mutation regression)', () => {
-    const mutated = README.split('^0.1.5-rc.1').join('>=0.1.4-rc.2 <0.1.5-0')
+    const mutated = README.split('^0.1.5-rc.2').join('>=0.1.4-rc.2 <0.1.5-0')
     expect(mutated).not.toEqual(README)
     expect(validateLspDiagnosticsReadmeContract(mutated)).not.toEqual([])
   })

@@ -1,0 +1,17 @@
+# Explorer — local codebase reading (§5.1 / §5.2).
+#
+# Fixed `one-shot` and the narrowest surface in the default team: it reads and
+# searches, and has neither `web` nor any shell.
+
+id: explorer
+displayName: Explorer
+description: 阅读和搜索本地代码结构；不修改文件、不运行命令。
+allowedChildren: []
+
+child:
+  model:
+    default: true
+  persona: prompts/explorer-child.md
+  guidance: 当任务需要快速摸清本地代码结构或定位实现位置时使用；不要使用它运行命令或修改文件。
+  tools: [read, search, skill, todo]
+  continuation: one-shot

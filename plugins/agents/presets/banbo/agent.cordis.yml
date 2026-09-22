@@ -1,0 +1,195 @@
+# banbo-agents composition template.
+#
+# AGENT-PLANE composition, mounted once per process by the roster under a
+# standing scope; every session naming the preset joins by scope parentage.
+#
+# This file is the SINGLE SOURCE for three artifacts:
+#   - `presets/<id>/agent.cordis.yml` for each built-in main agent (checked
+#     byte-for-byte against this template with the `<agentId>` placeholder
+#     substituted — never a hand-edited copy);
+#   - the `agent.cordis.yml` the preset compiler writes for a user main agent.
+# Editing a shipped preset directly is therefore a defect: change the template.
+#
+# Relationship to the official `standard` preset (docs/agents-plugin-plan.md
+# §8.3): this is a full copy, deliberately, because the harness has no
+# "inherit a preset and patch it" syntax. Two differences:
+#
+#   1. The official general-purpose delegation entry points are REMOVED —
+#      `subagent`, `subagent_fork`, `workflow`, `ralph`, and the codex /
+#      claude-code provider rows. A banbo agent reaches other agents only
+#      through the named `agent_<id>` tools this bundle registers, so the
+#      model cannot route around the authorisation graph. `tool-subagent-control`
+#      and `list-agents` stay: they provide `send_message` / `interrupt_agent` /
+#      `list_agents`, which address children that already exist.
+#   2. Two rows are ADDED: `main-runtime` (the pre-first-turn activation gate
+#      and per-agent tool surface) and `delegation` (the named tools, the depth
+#      budget, the width budget, and the holder registry).
+#
+# Contract check: `tests/preset-compiler.spec.ts` re-derives the digest of the
+# installed official `standard` composition and compares it with
+# `templates/dsh-standard-inventory.json`. A harness upgrade that changes
+# `standard` therefore fails CI until someone reviews the difference and
+# updates the inventory — the copy cannot rot silently.
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+# `prefix` is a REQUIRED field of the official schema (`z.string().required()`),
+# so it must be present even though this bundle supplies the identity line from
+# `main-runtime` under its own never-shadowed `banbo:identity` section instead.
+# An empty string satisfies the schema and contributes no text, so the identity
+# line appears exactly once. Omitting the key entirely is NOT an option: the
+# whole preset then fails to mount with
+#   `$.prefix missing required value (at prefix)`
+# which is exactly what a real profile reported before this was fixed.
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: ''
+    suffix: Your working directory is {{cwd}}.
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── background jobs ────────────────────────────────────────────────────────
+
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── goals ───────────────────────────────────────────────────────────────────
+
+- id: command-goal
+  name: '@deepseek-ai/dsh-command-goal'
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# ── plan mode ───────────────────────────────────────────────────────────────
+
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+              The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+              Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+              Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+              When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── agent control (addresses existing children only) ────────────────────────
+
+# The official general-purpose creation entry points are deliberately absent
+# from this composition. What remains is the machinery for talking to children
+# that the named tools already established.
+- id: delegation-control
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+# ── banbo-agents runtime ────────────────────────────────────────────────────
+
+# `main-runtime` owns the pre-first-turn activation gate for this preset's
+# top-level agent: it resolves the effective definition by id, refuses a
+# disabled / missing / retired main agent before the first model request, and
+# installs the main persona plus the ordinary-tool allowlist.
+- id: banbo-main-runtime
+  name: '@banbolee/dsh-agents/main-runtime'
+  config:
+    agentId: banbo
+
+# `delegation` owns everything that reaches another agent: the stable named
+# `agent_<id>` tools, `delegate_batch`, the absolute depth cap, the root-session
+# concurrency budget, and the holder registry that keeps timed-out work owned.
+- id: banbo-delegation
+  name: '@banbolee/dsh-agents/delegation'
+  config:
+    agentId: banbo
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+
+- id: present
+  name: '@deepseek-ai/dsh-tool-present'

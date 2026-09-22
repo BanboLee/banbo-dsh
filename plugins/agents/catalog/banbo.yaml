@@ -1,0 +1,16 @@
+# Banbo — the default coordinating main agent (§5.1).
+#
+# Main-only: it is picked from the roster and never delegated to. Its `maxDepth`
+# of 2 is the absolute cap for the whole tree below it, so Banbo → Executor →
+# Implement is legal while Implement cannot delegate a third level.
+
+id: banbo
+displayName: Banbo
+description: 默认总协调 Agent：理解任务、分派给合适的专家、合并结果。
+allowedChildren: [planner, research, explorer, implement, review, executor]
+
+main:
+  presetId: banbo
+  persona: prompts/banbo-main.md
+  tools: [read, search, web, exec, write, edit, skill, todo, jobs, ask-user, goal, present, agent-control]
+  maxDepth: 2

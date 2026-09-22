@@ -1,0 +1,19 @@
+# Research — external information gathering (§5.1 / §5.2).
+#
+# Fixed `one-shot`: no shell, no write, no edit, and no `agent-control`, so it
+# cannot continue a conversation or manage children even if it wanted to. The
+# plan calls this **tool-limited**, never "sandboxed" — the allowlist narrows
+# what the model can reach, it does not confine the process.
+
+id: research
+displayName: Research
+description: 查资料、外部信息和方案背景；不改本地代码。
+allowedChildren: []
+
+child:
+  model:
+    default: true
+  persona: prompts/research-child.md
+  guidance: 当任务需要检索和归纳外部或资料性信息、且不需要修改代码时使用；不要使用它修改或执行本地代码。
+  tools: [read, search, web, skill, todo]
+  continuation: one-shot
