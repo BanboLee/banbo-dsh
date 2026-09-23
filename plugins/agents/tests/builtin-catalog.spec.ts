@@ -273,6 +273,72 @@ describe('built-in personas follow the §5.3 skeleton', () => {
     }
   })
 
+  it('gives every delegating persona the full delegation discipline (§5.4)', () => {
+    // A real session showed a coordinator delegating correctly and then doing
+    // the same work itself, polling with `list_agents`, and interrupting the
+    // reviewer because "it ran too long" — while a child that had DIED on a
+    // provider error sat at `ready` unnoticed. Every rule below exists because
+    // that session violated it, so each one is pinned to the personas that can
+    // delegate. Keep the list mechanical: these are the load-bearing clauses.
+    const { definitions } = loadBuiltin()
+    const required = [
+      // 1A/1C — one owner per piece of work.
+      /不许既派出去、又自己再做一遍/,
+      // 2A — background needs an unrelated reason, not "I'll do it too".
+      /不算并行的理由/,
+      // 2C — a background child must be harvested before the turn ends.
+      /结束本轮前收割/,
+      // 3A — no status polling.
+      /不是进度轮询工具/,
+      // 4A — `ready` means the turn ended, NOT that the work is done.
+      /没收到它的结论，这件事就算没完成/,
+      // 5A — duration is not a reason; reviews legitimately take a while.
+      /"跑得久"本身不是理由/,
+      /数分钟到十几分钟/,
+      // 5B — ask, and WAIT for the reply, before interrupting.
+      /并等它回复/,
+      /不算问过/,
+      // 5C — say what was left unverified.
+      /哪部分没查完/,
+    ]
+    let checked = 0
+    for (const definition of definitions.values()) {
+      if (definition.allowedChildren.length === 0) continue
+      for (const profile of [definition.main, definition.child]) {
+        if (profile === undefined) continue
+        const text = readFileSync(join(pluginRoot, profile.persona), 'utf8')
+        for (const pattern of required) {
+          expect(pattern.test(text), `${definition.id} (${profile.persona}) is missing ${String(pattern)}`).toBe(true)
+        }
+        checked += 1
+      }
+    }
+    // Seven of the eight shipped personas delegate; a drop means this gate went
+    // vacuous rather than that the team got simpler.
+    expect(checked, 'the delegating personas must stay covered').toBeGreaterThanOrEqual(6)
+  })
+
+  it('tells every reviewer-delegating persona not to feed its own conclusions (§5.4)', () => {
+    // The rubber stamp: the coordinator handed the reviewer its own findings
+    // (a)–(f), and the report came back "no additional findings — beyond your
+    // (a)–(f)". Feeding conclusions makes independent review impossible, so it
+    // is forbidden exactly where `agent_review` is reachable.
+    const { definitions } = loadBuiltin()
+    let checked = 0
+    for (const definition of definitions.values()) {
+      if (!definition.allowedChildren.includes('review')) continue
+      for (const profile of [definition.main, definition.child]) {
+        if (profile === undefined) continue
+        const text = readFileSync(join(pluginRoot, profile.persona), 'utf8')
+        expect(text, `${definition.id} (${profile.persona}) must forbid feeding conclusions to review`)
+          .toMatch(/不要把你自己的结论写进 prompt/)
+        checked += 1
+      }
+    }
+    // banbo(main) + planner(main+child) + executor(child)
+    expect(checked, 'review-delegating personas must stay covered').toBe(4)
+  })
+
   it('gives the one-shot agents no continuation vocabulary (§5.3)', () => {
     for (const name of ['research-child.md', 'explorer-child.md']) {
       const text = readFileSync(join(pluginRoot, 'prompts', name), 'utf8')

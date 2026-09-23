@@ -572,8 +572,31 @@ prompts/
 4. 合并多 Agent 结果时按 childId 去重 direct message 与 settlement notice，不重复行动；
 5. 并发超限时减少 batch、复用已有 child 或向用户解释下一步，不静默排队。
 
-子 Agent persona 最小职责边界：
+### 5.4 委派纪律（每一份能委派的 persona 都必须写）
 
+§5.1 里**七个 Agent 中有五个能委派**，对应 **6 份 persona**：`banbo-main`、`planner-main`、`planner-child`、`executor-child`、`implement-child`、`review-child`。它们除了"找谁"，还必须写清"怎么派"。这些条款来自一次真实会话的失败复盘（§16.9）：协调者委派之后**自己把同一件事又做了一遍**、用 `list_agents` 盯梢、因为"跑太久"中断审查者，而一个因 provider 过载**已经死掉**的子 Agent 在 `ready` 状态上被忽略。
+
+| 规则 | 内容 | 出处 |
+|---|---|---|
+| **D1 一事一主** | **同一件事只有一种做法：要么自己做完，要么派出去——不许既派出去、又自己再做一遍。** 派出去之后你的工作只剩：写清 prompt、等结果、判断、合并、汇报 | §16.9 现象 ① |
+| **D2 本职定义** | 你的本职是子 Agent 做不了的事：跨结果判断、取舍、与用户沟通、给出最终结论 | 同上 |
+| **D3 后台门槛** | `run_in_background: true` 的**唯一**理由是"我接下来要做的事与它完全无关"；**"我自己也把它做一遍"不算并行的理由** | §16.9 现象 ② |
+| **D4 后台必须收割** | 用后台就必须在结束本轮前拿到结论，或明确说明为什么没拿到 | 同上 |
+| **D5 禁止盯梢** | `list_agents` 只在"要复用某个 child 的上下文"时查一次，**不是进度轮询工具** | §16.9 现象 ③ |
+| **D6 `ready` 语义** | `ready` 只说明对方本轮已结束——**可能成功、也可能失败或被中断**；**没收到结论就算没完成**：去要结果、重新委派，或明确说明没拿到。**不许静默跳过** | §16.9 现象 ④ |
+| **D7 中断门槛** | 只有它明显跑偏、在重复无效操作、你已从别处拿到足够结论，或用户/父 Agent 要求停止时才中断；`interrupt_agent` 只是请求，**不当作硬杀** | §16.9 现象 ⑤ |
+| **D8 时长不是理由** | **"跑得久"本身不是理由**：审查类任务通常需要**数分钟到十几分钟**，这是正常的 | 同上 |
+| **D9 先问后断** | 中断前先 `send_message` 要一份"基于你已有证据的结论"，**并等它回复**；确认不需要了再中断。**发完消息等几秒、它还没回就中断，不算问过** | 同上 |
+| **D10 中断要交代** | 中断之后必须说明哪部分没查完 | 同上 |
+| **D11 不喂结论** | 委派给 `agent_review` 时**不要把自己的结论写进 prompt**；让它从原始材料（diff、文件、命令输出）独立判断；要验证假设就写成**待验证的问题**，而不是"我已确认 X"。喂结论只会换来一个橡皮图章 | §16.9 现象 ⑥ |
+
+**适用范围**：D1–D10 对**所有** 6 份可委派 persona 生效（措辞按主/子调整：主 Agent 对用户负责，子 Agent 把结论写进最终回答交给父 Agent）。**D11 只对能委派 `agent_review` 的 4 份生效**（`banbo-main`、`planner-main`、`planner-child`、`executor-child`）——`implement` 与 `review` 的 `allowedChildren` 里没有 review。
+
+**D5–D10 在四份 continuable 子 persona 中必须是逐字节一致的共享段落**（各自只保留一句角色相关的 lead-in），由既有测试锁住，避免只改一份而让某个 Agent 学到不同协议。
+
+**lint**：`builtin-catalog.spec.ts` 逐条断言上述关键词出现在每一份适用 persona 中，并断言覆盖面（≥6 份、D11 恰好 4 份）。规则被删掉会红，不会静默消失。
+
+子 Agent persona 最小职责边界：
 | Agent | persona 边界 |
 |---|---|
 | Planner（child） | 拆解任务、识别风险、给执行计划；不直接大规模改代码 |
@@ -2381,6 +2404,28 @@ CI 提供单独的 `agents:gates` lane，不能把 Gate 混在普通单测中靠
 **真实端到端验证**：在真实 dsh-tui 里给 Banbo 一个纯审查任务（"审查 `namedTool` 的 description 拼接"）——它**调用 `agent_review`**，session 日志出现 `depth=1 origin=subagent` 的 review 子会话，由子 Agent 实际跑测试并给出结论；Banbo 汇总后主动说"要不要我把 minor 落实成改动？**那属于改代码，我会交给 implement**"。路由策略端到端生效。
 
 **测试网补强**：`delegation-composition.spec.ts` 新增断言——**每个** shipped 定义的 `child.guidance` 都必须出现在对应具名工具的描述里（变异验证：去掉渲染即报 `executor: its guidance must be in the tool description`）。
+
+### 16.9 委派纪律缺失（真实会话复盘，已修）
+
+**来源**：用户导出的一次真实会话（`another_spice`，任务"新建个worktree，review 下 MR 2385"，20 分钟，133 次工具调用）。用户怀疑协调者"催促、提前中断、不挂起等待、自己干活"——**全部成立**，且比预期更严重。
+
+**实测数据**：委派 **2 次**（`agent_executor`、`agent_review`，**都用了 `run_in_background: true`**），协调者**自己**跑了 `fish` 74 + `read` 17 + `grep` 13 + `write` 8 = **112 次**；`list_agents` 轮询 **5 次**；`interrupt_agent` **1 次**；`send_message` **1 次**。
+
+| # | 现象 | 证据 |
+|---|---|---|
+| ① | **自己把派出去的活干了** | 中断后发给 review 的上下文写着 "Context so I don't duplicate: **I already established in-house that (a)…(d)…**"；review 的最终报告开头是 "**no additional findings. Beyond your (a)–(f)**"——子 Agent 沦为橡皮图章。最后协调者**自己**用 `fish` 发了 MR 评论 |
+| ② | **委派了却不等** | 两次委派都是后台；前台等待一次没用；随后 620 秒里一直在做**同一件事**的分析 |
+| ③ | **盯梢轮询** | 5 次 `list_agents`；根因是旧措辞"用 `list_agents` 查找可继续的 idle child"读起来就像进度查询工具 |
+| ④ | **子 Agent 死了没人管** | `agent_executor` 因 provider 过载 **89 秒就 `PI_AI_ERROR` 结束**；协调者 5 次看到 `[ready]` 却从未要结果、未重新委派、未告知用户——**前端验证这件事从头到尾没有结论** |
+| ⑤ | **因"跑太久"中断** | +1051s 中断 review，消息自述 **"I interrupted your turn because it ran too long, not because your work was wrong"**——明知不是质量问题仍然中断 |
+| ⑥ | **给审查者喂结论** | 中断后 `send_message` 把自己已得的 (a)–(f) 结论喂给 review，review 只能同意 |
+
+**注意**：该会话录于 §16.8 修复**之前**（system prompt 里没有路由表、工具描述里没有 guidance）。§16.8 修的是"找谁"，**本次修的是"怎么派"**——两件事互不覆盖。
+
+**修复**：新增 §5.4 委派纪律（D1–D11），写进全部 6 份可委派 persona；`builtin-catalog.spec.ts` 增加两条 lint（逐条关键词 + 覆盖面），并把四份 continuable 子 persona 的 D5–D10 统一为**逐字节一致的共享段落**。**变异验证**：删掉 D8 立即报 `banbo (prompts/banbo-main.md) is missing /"跑得久"本身不是理由/`。
+
+**未做**：没有机制层的强制（例如禁止协调者在委派后写同一范围的文件）——`list_agents`/`send_message`/`interrupt_agent` 是官方工具，其描述不归本插件；本插件的强制手段只有自己的工具描述与 persona。是否需要在插件层加运行时护栏（例如检测"派出去的范围内自己又写了文件"）留待观察真实效果后再决定。
+
 
 **记录一处自查纠正**：§16.7 的 C6 行最初写的是"未在真实运行中强制触发——模型自行判断不需要联网研究"。**那句话是错的**：C6 当时**根本没有跑过**（无任何 C6 转写），"模型自行判断"是编造的原因。补跑后 C6 通过（见上表）。教训与 §16.5 的 N3 同源：**没有证据就不要写原因**；reviewer 只能核对文档的"形式"（是否有一行、是否标了 ⚠️），无法核对行内那句**事实断言**。
 
