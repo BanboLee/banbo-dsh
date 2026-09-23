@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { RootBudgetRegistry } from '../budget.js'
 import {
+  DELEGATION_PROVIDER,
   delegateOne,
   releaseContinuableLease,
 } from '../delegation.js'
@@ -25,12 +26,16 @@ afterEach(() => {
   while (scratch.length > 0) rmSync(scratch.pop()!, { recursive: true, force: true })
 })
 
-function state(continuation: 'one-shot' | 'optional' = 'one-shot') {
+function state(
+  continuation: 'one-shot' | 'optional' = 'one-shot',
+  writeScope?: string,
+) {
   const rootDir = mkdtempSync(join(tmpdir(), 'banbo-delegate-one-'))
   scratch.push(rootDir)
   const definitions = new Map([
     ['lead', {
       id: 'lead',
+      displayName: 'Lead',
       allowedChildren: ['worker'],
       main: {
         presetId: 'lead-preset', persona: 'lead.md', tools: ['read'], maxDepth: 2,
@@ -46,10 +51,12 @@ function state(continuation: 'one-shot' | 'optional' = 'one-shot') {
     }],
     ['worker', {
       id: 'worker',
+      displayName: 'Worker',
       allowedChildren: [],
       child: {
         model: { default: true }, persona: 'worker.md', guidance: 'Do work.',
         tools: ['read'], continuation,
+        ...(writeScope === undefined ? {} : { writeScope }),
       },
     }],
   ])
@@ -97,11 +104,13 @@ function runFixture() {
 
 function runtime(options: {
   continuation?: 'one-shot' | 'optional'
+  /** A child-form `writeScope` to declare on the `worker` target (§16.12). */
+  writeScope?: string
   run?: ReturnType<typeof runFixture>
   delay?: (ms: number) => Promise<void>
   jobs?: any
 } = {}) {
-  const service = state(options.continuation)
+  const service = state(options.continuation, options.writeScope)
   const fixture = options.run ?? runFixture()
   const budgets = new RootBudgetRegistry()
   const holders = new HolderRegistry({ delay: options.delay })
@@ -114,6 +123,10 @@ function runtime(options: {
       return { childId: spec.childId, messageId: 'message-1' }
     }),
   }
+  // The delegation runtime looks a continuable child's live Agent up here to
+  // install the child form's `writeScope` guard (§16.12); `undefined` means the
+  // child is not local, which must stay a supported no-op.
+  const agents = { get: vi.fn(() => undefined) }
   return {
     service,
     fixture,
@@ -123,6 +136,7 @@ function runtime(options: {
     continuableLeases,
     observations: new Map(),
     subagents,
+    agents,
     jobs: options.jobs,
     configuredMainAgentId: 'lead',
     composedPreset: 'lead-preset',
@@ -147,6 +161,10 @@ describe('foreground one-shot', () => {
     const rt = runtime()
     const pending = call(rt)
     await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    // The subagent list renders the target's display name, never the raw id.
+    expect(rt.subagents.start).toHaveBeenCalledWith(DELEGATION_PROVIDER, expect.objectContaining({
+      label: 'Worker: bounded task',
+    }))
     expect(rt.holders.size).toBe(1)
     expect(rt.budgets.running('root-session')).toBe(1)
     expect(rt.liveIdentities.get('child-one')).toMatchObject({ agentId: 'worker', rootSessionId: 'root-session' })
@@ -247,6 +265,9 @@ describe('optional background → continuable', () => {
     })
     expect(rt.subagents.start).not.toHaveBeenCalled()
     expect(rt.subagents.startContinuable).toHaveBeenCalledTimes(1)
+    expect(rt.subagents.startContinuable).toHaveBeenCalledWith(expect.objectContaining({
+      label: 'Worker: bounded task',
+    }))
     expect(readChildIdentity(rt.service.rootDir, 'reserved-child')).toMatchObject({
       agentId: 'worker', mainAgentId: 'lead', rootSessionId: 'root-session',
     })
@@ -287,6 +308,10 @@ describe('one-shot background job', () => {
     const jobs = {
       start: vi.fn((spec) => {
         expect(spec.owner.id).toBe('root-session')
+        // The background-jobs panel and the subagent list must not disagree on
+        // casing: this label is built at a second site from the same
+        // displayName, and is display-only either way (§11.1.1).
+        expect(spec.label).toBe('Worker: bounded task')
         hooks = spec.run()
         return 'subagent-1'
       }),
@@ -374,5 +399,75 @@ describe('one-shot background job', () => {
     expect(rt.holders.size).toBe(1)
     expect(rt.budgets.running('root-session')).toBe(0)
     expect(rt.liveIdentities.size).toBe(1)
+  })
+})
+
+/* ------------------------------------------------- child writeScope (§16.12) --- */
+
+describe('a scoped child form confines its own writes', () => {
+  const SCOPE = '.banbo-dsh/plans'
+  const workspace = () => mkdtempSync(join(tmpdir(), 'banbo-child-scope-'))
+
+  /** A local child Agent whose tool layer records the guard it is given. */
+  function localChild(guards: Array<(execution: unknown) => string | undefined>) {
+    return {
+      ctx: {
+        tools: {
+          guard: vi.fn((fn: (execution: unknown) => string | undefined) => {
+            guards.push(fn)
+            return () => {}
+          }),
+        },
+      },
+    }
+  }
+
+  function execution(cwd: string, tool: string, filePath: string) {
+    return { name: tool, arguments: { file_path: filePath }, agent: { session: { header: { cwd } } } }
+  }
+
+  it('installs the child form scope on a foreground one-shot child and denies an escape', async () => {
+    const rt = runtime({ writeScope: SCOPE })
+    const guards: Array<(execution: unknown) => string | undefined> = []
+    rt.fixture.run.localAgent = localChild(guards) as never
+
+    await call(rt)
+    await vi.waitFor(() => expect(guards).toHaveLength(1))
+
+    const cwd = workspace()
+    expect(guards[0]!(execution(cwd, 'write', `${SCOPE}/plan.md`))).toBeUndefined()
+    expect(guards[0]!(execution(cwd, 'write', 'src/index.ts'))).toMatch(/may only write under/)
+    // Reads are never restricted — this is a write-path policy, not a jail.
+    expect(guards[0]!(execution(cwd, 'read', 'src/index.ts'))).toBeUndefined()
+  })
+
+  it('installs the child form scope on a continuable child resolved from the registry', async () => {
+    const rt = runtime({ continuation: 'optional', writeScope: SCOPE })
+    const guards: Array<(execution: unknown) => string | undefined> = []
+    rt.agents.get = vi.fn(() => localChild(guards)) as never
+
+    await call(rt, true)
+    await vi.waitFor(() => expect(guards).toHaveLength(1))
+    expect(rt.agents.get).toHaveBeenCalledWith(expect.any(String))
+
+    const cwd = workspace()
+    expect(guards[0]!(execution(cwd, 'edit', `${SCOPE}/plan.md`))).toBeUndefined()
+    expect(guards[0]!(execution(cwd, 'edit', '../outside.md'))).toMatch(/may only write under/)
+  })
+
+  it('registers nothing when the form declares no scope', async () => {
+    const rt = runtime()
+    const guards: Array<(execution: unknown) => string | undefined> = []
+    rt.fixture.run.localAgent = localChild(guards) as never
+
+    await call(rt)
+    expect(guards).toHaveLength(0)
+  })
+
+  it('registers nothing for a non-local run, which must stay a supported no-op', async () => {
+    const rt = runtime({ writeScope: SCOPE })
+    rt.fixture.run.localAgent = undefined
+
+    await expect(call(rt)).resolves.toMatchObject({ kind: 'foreground' })
   })
 })

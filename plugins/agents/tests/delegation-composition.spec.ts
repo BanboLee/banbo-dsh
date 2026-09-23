@@ -160,6 +160,7 @@ describe('a child capability resolves against the composition, not the caller fi
       }))
       host.ctx.provide('banboAgents', service)
       host.ctx.provide('subagents', { start })
+      host.ctx.provide('agents', { get: () => undefined })
       host.ctx.provide('jobs', { start: vi.fn() })
 
       let currentPreset = 'banbo'
@@ -285,6 +286,7 @@ describe('a child capability resolves against the composition, not the caller fi
       }
       host.ctx.provide('banboAgents', service)
       host.ctx.provide('subagents', { start: vi.fn() })
+      host.ctx.provide('agents', { get: () => undefined })
       host.ctx.provide('jobs', { start: vi.fn() })
       host.ctx.provide('agentPresets', { composedPreset: () => 'planner' })
 
@@ -349,6 +351,7 @@ describe('the delegation runtime plugin still mounts with a real registry', () =
       })
       host.ctx.provide('agentPresets', { composedPreset: () => undefined })
       host.ctx.provide('subagents', { start: vi.fn() })
+      host.ctx.provide('agents', { get: () => undefined })
       host.ctx.provide('jobs', { start: vi.fn() })
 
       await host.ctx.plugin(delegationRuntime, { agentId: 'banbo' })

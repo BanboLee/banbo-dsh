@@ -43,6 +43,7 @@ function service(root = rootDir()) {
   const definitions = new Map([
     ['lead', {
       id: 'lead',
+      displayName: 'Lead',
       allowedChildren: ['worker', 'leaf', 'disabled'],
       main: {
         presetId: 'lead-preset',
@@ -54,6 +55,7 @@ function service(root = rootDir()) {
     }],
     ['worker', {
       id: 'worker',
+      displayName: 'Worker',
       allowedChildren: ['leaf'],
       child: {
         model: { provider: 'deepseek', model: 'fast', reasoningEffort: 'high' },
@@ -65,6 +67,7 @@ function service(root = rootDir()) {
     }],
     ['leaf', {
       id: 'leaf',
+      displayName: 'Leaf',
       allowedChildren: [],
       child: {
         model: { default: true },
@@ -76,6 +79,7 @@ function service(root = rootDir()) {
     }],
     ['disabled', {
       id: 'disabled',
+      displayName: 'Disabled',
       allowedChildren: [],
       child: {
         model: { default: true },
@@ -358,11 +362,10 @@ describe('prepareDelegation — current authorization and absolute depth', () =>
 })
 
 describe('buildDelegationRequest', () => {
-  it('builds the exact official one-shot request without encoding identity in label', () => {
-    const state = service()
+  function requestFor(state: ReturnType<typeof service>, targetAgentId = 'worker') {
     const prepared = prepareDelegation({
       parent: parent() as never,
-      targetAgentId: 'worker',
+      targetAgentId,
       service: state as never,
       configuredMainAgentId: 'lead',
       composedPreset: 'lead-preset',
@@ -376,8 +379,13 @@ describe('buildDelegationRequest', () => {
       description: 'parser implementation',
       signal,
     })
+    return { prepared, request, signal }
+  }
+
+  it('builds the exact official one-shot request without encoding identity in label', () => {
+    const { prepared, request, signal } = requestFor(service())
     expect(request).toMatchObject({
-      label: 'worker: parser implementation',
+      label: 'Worker: parser implementation',
       prompt: [{ type: 'text', text: 'Implement the parser.' }],
       signal,
       maxDepth: 2,
@@ -387,5 +395,21 @@ describe('buildDelegationRequest', () => {
     })
     expect(request.label).not.toContain('root-session')
     expect(request.label).not.toContain('current-generation')
+  })
+
+  it('prefixes the label with the target displayName, never the raw id', () => {
+    const { prepared, request } = requestFor(service())
+    expect(prepared.targetDefinition.displayName).toBe('Worker')
+    expect(request.label.startsWith(`${prepared.targetDefinition.displayName}: `)).toBe(true)
+    expect(request.label).toBe('Worker: parser implementation')
+    expect(request.label.startsWith(`${prepared.targetAgentId}: `)).toBe(false)
+  })
+
+  it('falls back to the raw id when the definition has no displayName', () => {
+    const state = service()
+    delete (state.definitions.get('worker') as { displayName?: string }).displayName
+    const { prepared, request } = requestFor(state)
+    expect(prepared.targetDefinition.displayName).toBeUndefined()
+    expect(request.label).toBe('worker: parser implementation')
   })
 })

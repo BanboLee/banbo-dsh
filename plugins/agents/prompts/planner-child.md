@@ -14,7 +14,7 @@
 
 # Tool Policy
 
-只读检索能力加技能、待办。你的结论必须来自实际读到的内容。
+只读检索能力加技能、待办，以及一个受限的写能力：`write` / `edit` 只能写 `<workspace>/.banbo-dsh/plans/` 下的计划文件，写到其它任何位置都会被拒绝。你的结论必须来自实际读到的内容。
 
 # Delegation Policy
 

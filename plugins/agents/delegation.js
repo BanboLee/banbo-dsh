@@ -23,12 +23,13 @@ import {
   writeChildIdentity,
 } from './identity.js'
 import { AGENT_ID_PATTERN, deriveToolName } from './schema.js'
+import { writeScopeGuardReason } from './path-policy.js'
 import { compileAllowlist } from './tool-surface.js'
 
 /** Stable in-process provider installed by the official base composition. */
 export const DELEGATION_PROVIDER = 'spawn'
 export const name = 'banbo-delegation'
-export const inject = ['banboAgents', 'subagents', 'jobs', 'tools', 'agentPresets']
+export const inject = ['banboAgents', 'subagents', 'jobs', 'tools', 'agentPresets', 'agents']
 
 export const Config = {
   '~standard': {
@@ -362,10 +363,16 @@ export function prepareDelegation(options) {
   })
 }
 
-/** Build the public official one-shot request from prepared immutable policy. */
+/**
+ * Build the public official one-shot request from prepared immutable policy.
+ *
+ * The label is display-only (§11.1.1): it carries the target's `displayName`
+ * for the subagent list, falling back to the raw id, and is never parsed for
+ * identity.
+ */
 export function buildDelegationRequest(prepared, options) {
   return Object.freeze({
-    label: `${prepared.targetAgentId}: ${options.description}`,
+    label: `${prepared.targetDefinition.displayName ?? prepared.targetAgentId}: ${options.description}`,
     prompt: Object.freeze([{ type: 'text', text: options.prompt }]),
     parent: options.parent,
     signal: options.signal,
@@ -492,6 +499,27 @@ function cleanupOneShotOnSettlement(runtime, holder, childId, lease) {
   return settlement
 }
 
+/**
+ * Enforce a scoped child form's `writeScope` on the CHILD's own tool layer
+ * (§16.12).
+ *
+ * The main-runtime guard only covers the main Agent, and a child's definition
+ * cannot be recovered from its session header — the header carries the CALLER's
+ * preset, not the child's agent id — so it must come from the `prepared` record
+ * this delegation already holds. Identity is never guessed from a label, a
+ * persona or a tool set (§11.1.1).
+ *
+ * Registration is skipped when the child Agent is not local (a remote run's
+ * tools are not ours to guard) or when the form declares no scope. The guard
+ * lives on the child's own context, so it disappears with the child; a
+ * continuable child keeps it for as long as it is resumable.
+ */
+function guardChildWriteScope(prepared, child) {
+  const form = prepared.targetDefinition.child
+  if (child === undefined || form?.writeScope === undefined) return
+  child.ctx.tools.guard((execution) => writeScopeGuardReason(form, execution))
+}
+
 /** Start one published one-shot run inside an already-owned holder. */
 async function startOneShot(runtime, prepared, options, holder, lease) {
   const request = buildDelegationRequest(prepared, {
@@ -511,6 +539,7 @@ async function startOneShot(runtime, prepared, options, holder, lease) {
     lease.release()
     throw error
   }
+  guardChildWriteScope(prepared, run.localAgent)
   runtime.liveIdentities.set(run.id, childIdentity(prepared, runtime.service))
   logDelegationStart(runtime, prepared, run.id, 'one-shot', options.runInBackground === true)
   return run
@@ -649,6 +678,7 @@ async function startContinuable(runtime, prepared, options, lease) {
       signal: options.signal,
     })
     runtime.continuableLeases.set(started.childId, lease)
+    guardChildWriteScope(prepared, runtime.agents.get(started.childId))
     logDelegationStart(runtime, prepared, started.childId, 'continuable', true)
     return {
       kind: 'continuable',
@@ -712,7 +742,10 @@ async function delegateOneImpl(runtime, options) {
     return startContinuable(runtime, prepared, options, lease)
   }
 
-  const label = `${prepared.targetAgentId}: ${options.description}`
+  // Same display-only label shape as `buildDelegationRequest`, so the subagent
+  // list and the background-jobs panel never disagree on casing. The id is
+  // still the identity; this string is never parsed for one (§11.1.1).
+  const label = `${prepared.targetDefinition.displayName ?? prepared.targetAgentId}: ${options.description}`
   const holder = runtime.holders.reserve(label)
   if (!backgroundOneShot) return runForeground(runtime, prepared, options, holder, lease, budget)
 
@@ -997,6 +1030,7 @@ function runtimeForCall(ctx, shared, configuredMainAgentId, parent) {
   return {
     service: ctx.banboAgents,
     subagents: ctx.subagents,
+    agents: ctx.agents,
     jobs: ctx.jobs,
     budgets: shared.budgets,
     holders: shared.holders,

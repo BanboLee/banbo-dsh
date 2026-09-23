@@ -339,6 +339,7 @@ interface MainProfile {
   persona: PromptRef
   tools: readonly ToolCapability[]
   extraTools?: readonly string[] // 第三方 runtime tool name，精确授权
+  writeScope?: string // 相对工作区的目录；只把本形态的 write/edit 限制在其中（§5.2、§16.12）
   maxDepth: number // 从这个主 Agent 开始计算的官方绝对深度上限
   budget?: Partial<MainSessionBudget>
 }
@@ -349,6 +350,7 @@ interface ChildProfile {
   guidance: string
   tools: readonly ToolCapability[]
   extraTools?: readonly string[] // 第三方 runtime tool name，精确授权
+  writeScope?: string // 同上；main 与 child 各自声明、互不继承（§5.2、§16.12）
   continuation: 'one-shot' | 'optional'
 }
 
@@ -424,13 +426,14 @@ RetiredToolShell                    standing scope 里的空壳工具描述，�
 10. ToolCapability 能映射到目标 DSH 版本的真实工具；映射缺失时 fail-loud；
 11. `extraTools` 中每个名字非空、不是保留的 `run_code` / `delegate_batch` / `agent_*`，也不在唯一 `FORBIDDEN_DELEGATION_TOOLS` 清单内，并且在目标 standing composition 中是可 restrict 的 global/ancestor tool；缺失时主 Agent 创建回滚；
 12. preset id 不得与 shipped、官方 user root、包内其他 preset 或另一用户 Agent 冲突；
-13. 内置 preset id 不可覆盖；用户 Agent 的已发布 preset id、toolName、已发布 main/child 形态和 child.continuation 写入 ABI manifest 后按兼容规则保护：允许新增缺失形态，禁止在文件仍存在时删除已发布形态或改变生命周期语义，破坏性修改必须换新 id；**整个定义文件被删除是唯一例外**，按 6.3 的删除语义处理（转 `RetiredToolShell` + 移除 generated preset）。
+13. 内置 preset id 不可覆盖；用户 Agent 的已发布 preset id、toolName、已发布 main/child 形态和 child.continuation 写入 ABI manifest 后按兼容规则保护：允许新增缺失形态，禁止在文件仍存在时删除已发布形态或改变生命周期语义，破坏性修改必须换新 id；**整个定义文件被删除是唯一例外**，按 6.3 的删除语义处理（转 `RetiredToolShell` + 移除 generated preset）；
+14. `main.writeScope` / `child.writeScope` 若存在，必须是非空字符串且是**纯相对路径**：不得是绝对路径（POSIX 或 Windows）、不得含 `\` 或 NUL、规范化后不得为空、`.` 或以 `..` 开头；违反时以 `bad-write-scope`（非字符串或空串为 `missing-field`）让 Host 启动失败，不做静默截断。这里只做词法校验——本模块没有工作区、也不碰文件系统；真正的包含关系与软链接判定在执行期由 `path-policy.js` 完成（§5.2、§16.12）。
 
 运行时 `enabled` 不参与图结构校验。被禁用 Agent 的稳定工具仍保留，调用时明确拒绝；这样重新启用不需要重启，也不会破坏旧 descriptor。
 
 #### 4.4.1 资源上限（`CATALOG_LIMITS`）
 
-上面 13 条是**语义**校验。语义全部合法、但规模失控的配置同样会让 Host 起不来，因此另有独立的资源上限。**超限一律让 Host 启动失败并指出文件与字段，不做截断**——截断会让用户以为配置生效了。
+上面 14 条是**语义**校验。语义全部合法、但规模失控的配置同样会让 Host 起不来，因此另有独立的资源上限。**超限一律让 Host 启动失败并指出文件与字段，不做截断**——截断会让用户以为配置生效了。
 
 ```ts
 const CATALOG_LIMITS = {
@@ -490,11 +493,19 @@ const CATALOG_LIMITS = {
 
 这只是 **tool-surface control**，不是全局安全沙箱：如果某个主/子 Agent 被授予 `exec`、`web`、MCP 或第三方 `extraTools`，这些能力本身可能访问外部系统或启动别的进程。本插件不承诺阻止所有进程级、网络级或第三方工具级绕过；这些风险由普通工具白名单、profile sandbox、MCP 配置和用户信任边界承担。
 
+定义里另有可选的 `writeScope`（§4.1、§4.4 第 14 条）：它把**某一个运行形态**的 `write` / `edit` 限制在工作区下的一个相对目录里。Planner 的 main 与 child 两处都声明 `writeScope: .banbo-dsh/plans`，因此它只能写 `<workspace>/.banbo-dsh/plans/` 下的计划文件，写到别处一律拒绝；其余形态没有这个字段，写入范围与今天完全一致。规则：
+
+- 只约束 `write` / `edit` 这两个工具名；`read`、`search`、`web`、`present` 等一概不受影响，**读权限从不受限**；
+- 相对路径按 `exec.agent.session.header.cwd`（当前 session 的工作区）解析；绝对路径（POSIX 或 Windows）、含 `\` 或 NUL、`..` 逃逸、以及解析后落在 scope 之外的目标全部拒绝；
+- 写入前还要解析目标"最近的已存在祖先"与 scope 目录的**真实路径**（`realpathSync`，目标不存在时逐级上溯），要求真实目标祖先落在真实 scope 内——这是防 scope 内软链接指向外面的那一层；解析失败同样拒绝（fail closed）；
+- **它不是 sandbox**：这是"路径级写入策略"，不限制进程、网络，也不覆盖 `extraTools` 引入的第三方工具（含 MCP 写工具）——那些工具不叫 `write` / `edit`，guard 根本看不见；
+- **它只在被约束的形态没有 shell 时才成立**：`exec` 写文件（`echo x > /etc/y`）完全不经过 `write` / `edit`，任何 tool-surface guard 都拦不住。内置 Planner 两种形态都**没有** `exec`，这是这条策略的前提而不是巧合——给带 `writeScope` 的形态加 shell 之前必须先换机制。
+
 子 Agent 使用显式 allowlist。建议基线：
 
 | Agent | 普通工具能力 |
 |---|---|
-| Planner（子） | read、search、web、skill、todo、jobs、agent-control |
+| Planner（子） | read、search、web、write、edit、skill、todo、jobs、agent-control |
 | Executor | read、search、web、exec、write、edit、skill、todo、jobs、agent-control |
 | Implement | read、search、web、exec、write、edit、skill、todo、jobs、agent-control |
 | Review | read、search、exec、skill、todo、jobs、agent-control |
@@ -511,7 +522,8 @@ const CATALOG_LIMITS = {
 - `exec` 在目标 profile 中解析为实际可见 shell：优先 fish，否则 bash，否则 pwsh（Windows）；**恰好授予一个**（profile 同时注册多个 shell 不会因此放宽工具面）；一个都没有时，依赖它的 Agent 装配失败；
 - allowlist 编译为真实 runtime tool names；新增 Host 工具不会自动获得授权；
 - 高级用户可用 `extraTools` 精确授予 codegraph、MCP 等第三方最终 runtime tool name；只接受精确字符串，不支持 glob/前缀/别名；不得授予 `FORBIDDEN_DELEGATION_TOOLS` 中的 DSH 通用委派入口；按 profile 在主 Agent 创建时解析，缺失就回滚，不静默忽略；第三方工具后装或改名需要重启，第三方 schema、安全边界和外部副作用不属于本插件保证；
-- PTC 的 `run_code` 是保留传输名，不直接进入 filter；过滤它调用的最终能力工具。
+- PTC 的 `run_code` 是保留传输名，不直接进入 filter；过滤它调用的最终能力工具；
+- `writeScope` 是路径级写入策略（§16.12）：只对声明它的那个形态的 `write` / `edit` 生效，`read` 与其它工具完全不受影响；它不是 sandbox，而且在同一个形态拿到 `exec` 之后就不再成立。
 
 `allowedChildren` 是显式能力委派。子 Agent 的工具面由自己的定义决定，不是简单继承父 Agent 的 persona 或工具表。高级用户可以给 one-shot 自定义 Agent 显式加入 agent-control，但这不会把它变成 continuable；它仍然在本轮结束后 dispose，`send_message` 只能用于其可见的其他 continuable 关系。
 
@@ -2490,6 +2502,40 @@ CI 提供单独的 `agents:gates` lane，不能把 Gate 混在普通单测中靠
   4. 最终回答：*"**delegation.js 全文审查：未完成**，中断在它看到约 600-930 行那一段前后，文件其余部分未被覆盖。**可用证据**：只有那 3 条 major…**未经我独立复核**"*
 
   **D9 实质通过、D10 通过**。一处如实记录的偏差：child 收到消息后 **26 秒即被中断、没来得及回复**，所以"等它回复"严格讲未做到。但父 Agent 在中断**之前**已经从 child 的笔记里取到了部分结论——**工作没有丢失**，这正是 D9 要防的事。考虑到 child 当时正在长 turn 中（`send_message` 只能排到它下一轮）、而用户已下令停止，"读它的在途产出再停"比"阻塞等 30 分钟"更符合 D9 的意图。**这条偏差作为已知行为记录，不再收紧措辞**——继续收紧会与用户的停止指令直接冲突。
+
+### 16.12 路径级写权限：Planner 只能写计划目录
+
+**背景**：用户要求 Planner 能把产出的计划**落盘**，但**不能改任何别的东西**。在此之前 Planner 的两种形态都没有 `write` / `edit`，计划只能停留在回答正文里。
+
+**做法**：
+
+1. 定义新增可选字段 `writeScope`（§4.1、§4.4 第 14 条），Planner 的 `main` 与 `child` 两处都写 `.banbo-dsh/plans`，并各自把 `write` / `edit` 加进 `tools`；
+2. 新模块 `path-policy.js` 提供 `writeScopeGuardReason(definition, execution)`，形状与 `delegationGuardReason` 一致：同步、单调、返回拒绝理由或 `undefined`；
+3. `main-runtime.js` 在注册委派 guard 的同一处，按**该 Agent 本次实际挂载的形态**（`requireMain` 刚解析出的 definition）注册它——不读缓存副本，也不按 agent id 硬编码。
+
+**精确规则**（只对 `execution.name` 为 `write` / `edit`、且该形态声明了 `writeScope` 时生效；其它工具、其它形态一律直接放行）：
+
+1. `arguments.file_path` 不是非空字符串 → 拒绝（fail closed）；
+2. 含 `\` 或 NUL、或是绝对路径（POSIX 或 Windows）→ 拒绝；
+3. `posix.normalize` 后以 `..` 开头（逃逸工作区）→ 拒绝；
+4. 按 `execution.agent.session.header.cwd` 解析成绝对路径，必须等于 scope 目录或严格位于其下（比较时带 `sep`，所以 `.banbo-dsh/plans-evil` 这类同前缀兄弟目录会被拒），否则拒绝；session 没有 `cwd` 也拒绝；
+5. **软链接防御**：解析目标"最近的已存在祖先"与 scope 目录的 `realpathSync`（目标还不存在时逐级上溯；`ENOENT`/`ENOTDIR` 继续上溯，其它错误直接拒绝），要求真实目标祖先落在真实 scope 内；不一致或任何解析失败 → 拒绝；
+6. 其余放行。
+
+拒绝信息固定一句话并点名允许的目录，例如：`banbo-agents: "write" refused for "src/a.ts", which is outside the write scope; this Agent may only write under ".banbo-dsh/plans" relative to the session workspace`。
+
+**为什么"没有 shell"是前提**：guard 只看得到工具名。`exec` 写文件（`echo x > /etc/y`）根本不经过 `write` / `edit`，任何 tool-surface guard 都拦不住。Planner 两种形态都**没有** `exec`（`catalog/planner.yaml` 里刻意不写），这就是这条策略能成立的原因；将来若给它加 shell，必须先换机制，而不是顺手加一个 `exec`。
+
+**已知残余风险**（如实记录，不把它包装成 sandbox）：
+
+- ~~**child 形态的注册点**~~ **（已接上）**：guard 在 `main-runtime` 按主形态注册；child 的身份在 preset scope 上不可观测——child session header 只有 `agentPreset` / `origin` / `delegationDepth`，没有 agent id，`liveIdentities` 又只存在于 delegation runtime 内部，而"用工具面反推定义"正是 §11.1.1 明令禁止的身份猜测。因此 child 形态的注册放在**挂载 child 的那一层**：`delegation.js` 的 `guardChildWriteScope(prepared, child)` 用 `prepared.targetDefinition.child` 注册 `child.ctx.tools.guard((execution) => writeScopeGuardReason(form, execution))`，两个调用点是 `startOneShot` 后的 `run.localAgent` 与 `startContinuable` 后的 `runtime.agents.get(started.childId)`（`delegation.js` 的 inject 因此新增 `agents`）。远端 child（`localAgent === undefined`）或未声明 `writeScope` 的形态不注册，保持 no-op；guard 挂在 child 自己的 ctx 上，随 child 生命周期消失，continuable child 只要可恢复就一直带着它。
+- ~~**软链接的 scope 根**~~ **（已关闭）**：原实现以"声明的 scope 的真实路径"为准，把 `<workspace>/.banbo-dsh` 做成指向工作区外的软链接就会把整个 scope 放大到链接目标。现在多一条检查：**scope 根自身的真实路径也必须落在工作区的真实路径内**，否则拒绝（`"write scope ... itself resolves outside the session workspace"`）。`write-scope.spec.ts` 用一条具名用例钉住新行为；
+- **TOCTOU**：guard 在工具体之前同步判定，判定与真正落盘之间仍有一个窗口——工作区里另一个有写权限的进程/Agent 可以在这个窗口里把某个还不存在的路径段换成软链接。这是"执行前路径 guard"的固有边界，只有把限制下推到文件系统层（sandbox / `openat` 语义）才能关掉；
+- **非 `write`/`edit` 的写入口**：`extraTools` 引入的第三方工具（含 MCP 写工具）不叫这两个名字，guard 完全看不见；Planner 当前没有任何 `extraTools`；
+- **解析基准**：guard 用 `header.cwd`；`dsh-tool-fs` 在挂了 sandbox policy 的部署里会改用 `sandboxPolicy.workspaceRoot` 解析。两者不一致时，guard 判定基准与工具实际落盘位置会分叉。当前 composition 不挂 sandbox policy，所以两者一致；
+- 读权限完全不受影响：`writeScope` 不是保密边界，Planner 依然能读工作区里的任何文件。
+
+**测试**：`plugins/agents/tests/write-scope.spec.ts` 覆盖允许（scope 内、不存在的嵌套子目录、scope 目录本身、`edit` 与 `write` 等价）、拒绝（同前缀兄弟目录、工作区根、无关目录、`../` 逃逸、绝对路径、非法 `file_path`、无 `cwd`、scope 根指向工作区外）、非 `write`/`edit` 工具不受影响、无 `writeScope` 不受限、软链接内/外两种情形，以及 schema 对绝对路径 / `..` / 空值 / 反斜杠的拒绝。child 侧注册由 `delegate-one.spec.ts` 的四条用例覆盖：前台 one-shot 经 `run.localAgent` 注册并拒绝逃逸、continuable 经 `agents.get(childId)` 注册并拒绝 `../`、未声明 scope 不注册、远端 child（`localAgent === undefined`）保持 no-op。
 
 ---
 

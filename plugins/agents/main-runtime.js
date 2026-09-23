@@ -3,11 +3,13 @@
  *
  * The Host preloads every byte this module consumes. The `agent/created`
  * listener is deliberately synchronous: it either installs persona, exact tool
- * restriction and the monotonic delegation guard before `agent/session-start`,
- * or throws so the official creation chain rolls the temporary Agent back.
+ * restriction and the monotonic delegation / write-scope guards before
+ * `agent/session-start`, or throws so the official creation chain rolls the
+ * temporary Agent back.
  */
 
 import { AGENT_ID_PATTERN, deriveToolName } from './schema.js'
+import { writeScopeGuardReason } from './path-policy.js'
 import { assertToolSurface, compileAllowlist } from './tool-surface.js'
 
 export const name = 'banbo-main-runtime'
@@ -222,6 +224,17 @@ export function activateMainAgent(options) {
     }))
     disposers.push(agent.ctx.tools.restrict({ allow }))
     disposers.push(agent.ctx.tools.guard((execution) => delegationGuardReason(service, configuredAgentId, execution)))
+    // The path-scoped write guard (§5.2, §16.12). It is registered per agent and
+    // reads the definition resolved above — the form this Agent actually runs —
+    // so a `writeScope` on `main` confines this Agent's `write`/`edit` to one
+    // directory under its session workspace. The child form is scoped where the
+    // child is mounted: a delegated child's identity is not observable from the
+    // preset scope, so its own activation site owns that registration.
+    //
+    // Soundness depends on the scoped Agent having NO shell: `exec` would write
+    // files without ever calling `write`/`edit`, and no tool-surface guard can
+    // see that. Never grant `exec` to a form carrying a `writeScope`.
+    disposers.push(agent.ctx.tools.guard((execution) => writeScopeGuardReason(definition.main, execution)))
 
     const visible = agent.ctx.tools.schemas(agent).map((schema) => schema.name)
     assertToolSurface({ visible, allow })

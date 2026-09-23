@@ -68,6 +68,9 @@ function fakeContext() {
   const ctx = {
     banboAgents: service(),
     subagents: { start: vi.fn(), startContinuable: vi.fn() },
+    // The delegation runtime resolves a continuable child's live Agent from this
+    // registry to install the child form's `writeScope` guard (§16.12).
+    agents: { get: vi.fn(() => undefined) },
     jobs: { start: vi.fn() },
     tools: {
       register: vi.fn((tool) => {

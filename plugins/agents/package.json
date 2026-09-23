@@ -40,6 +40,7 @@
     "prompt-loader.js",
     "preset-compiler.js",
     "tool-surface.js",
+    "path-policy.js",
     "settings-policy.js",
     "main-runtime.js",
     "delegation.js",

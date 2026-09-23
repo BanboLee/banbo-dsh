@@ -10,32 +10,36 @@
  */
 
 import { readFileSync, statSync } from 'node:fs'
+import { posix, win32 } from 'node:path'
 import { parseDocument } from 'yaml'
 
 /* ------------------------------------------------------------- typedefs --- */
 
 /**
  * One main-agent form: the preset it mounts, its persona, its ordinary tool
- * surface, the absolute depth cap for the whole tree below it, and the
- * per-root-session budget.
+ * surface, the absolute depth cap for the whole tree below it, the optional
+ * path scope for its write/edit tools, and the per-root-session budget.
  * @typedef {object} MainProfile
  * @property {string} presetId
  * @property {string} persona
  * @property {string[]} tools
  * @property {string[]} [extraTools]
+ * @property {string} [writeScope] relative directory `write`/`edit` are confined to
  * @property {number} maxDepth
  * @property {Record<string, number>} budget
  */
 
 /**
  * One child-agent form: the route used only when delegated to, its persona and
- * usage guidance, its allowlist, and whether it may keep a resumable session.
+ * usage guidance, its allowlist, the optional path scope for its write/edit
+ * tools, and whether it may keep a resumable session.
  * @typedef {object} ChildProfile
  * @property {{ default?: true, provider?: string, model?: string, reasoningEffort?: string }} model
  * @property {string} persona
  * @property {string} guidance
  * @property {string[]} tools
  * @property {string[]} [extraTools]
+ * @property {string} [writeScope] relative directory `write`/`edit` are confined to
  * @property {'one-shot' | 'optional'} continuation
  */
 
@@ -112,8 +116,8 @@ const BUDGET_FIELDS = Object.freeze({
 /** Recognised keys per object level; anything else is a hard error (§6.1.1). */
 const KNOWN_KEYS = Object.freeze({
   '': ['id', 'displayName', 'description', 'allowedChildren', 'main', 'child'],
-  main: ['presetId', 'persona', 'tools', 'extraTools', 'maxDepth', 'budget'],
-  child: ['model', 'persona', 'guidance', 'tools', 'extraTools', 'continuation'],
+  main: ['presetId', 'persona', 'tools', 'extraTools', 'writeScope', 'maxDepth', 'budget'],
+  child: ['model', 'persona', 'guidance', 'tools', 'extraTools', 'writeScope', 'continuation'],
   model: ['default', 'provider', 'model', 'reasoningEffort'],
   budget: Object.keys(BUDGET_FIELDS),
 })
@@ -427,6 +431,42 @@ function validateTools(form, path, file) {
   })
 }
 
+/**
+ * Validate one optional `writeScope` and return its canonical relative form.
+ *
+ * The field confines the `write` / `edit` tools of ONE mounted form to one
+ * directory under the session workspace (docs/agents-plugin-plan.md §5.2,
+ * §16.12). Validation is deliberately fail-closed and lexical: this module has
+ * no workspace and no filesystem, so it can only prove the declared value is a
+ * plain relative path. Containment against the live workspace — including the
+ * symlink defence — belongs to `path-policy.js`, which runs at execution time.
+ *
+ * Rejected here: a non-string or empty value, a NUL byte, any backslash (a
+ * Windows separator would make the POSIX resolution in `path-policy.js`
+ * disagree with the filesystem), a POSIX or Windows absolute path, and any
+ * value whose normalised form is empty, `.`, or escapes upward through `..`.
+ *
+ * @param value - the raw `main.writeScope` / `child.writeScope`.
+ * @param field - the field path for diagnostics (`main.writeScope`, …).
+ * @param file - the source file label for diagnostics.
+ * @returns the canonical relative path, or `undefined` when absent.
+ * @throws {CatalogError} `missing-field` or `bad-write-scope`.
+ */
+function validateWriteScope(value, field, file) {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value === '') {
+    fail('missing-field', `${field} must be a non-empty string`, { file, field })
+  }
+  const reject = (reason) => fail('bad-write-scope', `${field} ${reason} (got ${JSON.stringify(value)})`, { file, field })
+  if (value.includes('\0')) reject('must not contain a NUL byte')
+  if (value.includes('\\')) reject('must use "/" separators, not "\\"')
+  if (posix.isAbsolute(value) || win32.isAbsolute(value)) reject('must be a relative path, not an absolute one')
+  const normalised = posix.normalize(value).replace(/\/+$/, '')
+  if (normalised === '' || normalised === '.') reject('must name a directory below the workspace root')
+  if (normalised === '..' || normalised.startsWith('../')) reject('must not escape the workspace root with ".."')
+  return normalised
+}
+
 /** Validate a `model` object: either the inherit sentinel or a whole route. */
 function validateModel(model, path, file) {
   if (!isRecord(model)) fail('bad-model', `${path} must be an object`, { file, field: path })
@@ -568,6 +608,7 @@ export function validateAgentDefinition(raw, options = {}) {
       persona,
       tools: [...main.tools],
       ...main.extraTools === undefined ? {} : { extraTools: [...main.extraTools] },
+      ...main.writeScope === undefined ? {} : { writeScope: validateWriteScope(main.writeScope, 'main.writeScope', file) },
       maxDepth,
       budget: validateBudget(main.budget, ctx),
     }
@@ -590,6 +631,7 @@ export function validateAgentDefinition(raw, options = {}) {
       guidance,
       tools: [...child.tools],
       ...child.extraTools === undefined ? {} : { extraTools: [...child.extraTools] },
+      ...child.writeScope === undefined ? {} : { writeScope: validateWriteScope(child.writeScope, 'child.writeScope', file) },
       continuation: child.continuation,
     }
   }
