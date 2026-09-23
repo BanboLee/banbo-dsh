@@ -283,7 +283,9 @@ describe('validateBudget — §4.4 rule 6', () => {
     expect(def.main!.budget).toEqual({
       maxConcurrentChildren: 6,
       maxBatchWidth: 4,
-      foregroundDeadlineMs: 900_000,
+      // 30 minutes: a real full-file review exhausted the old 15-minute cap with
+      // no output at all, so the run was wasted. See `BUDGET_FIELDS`.
+      foregroundDeadlineMs: 1_800_000,
       backgroundDeadlineMs: 1_800_000,
       batchDeadlineMs: 600_000,
       drainGraceMs: 30_000,

@@ -69,7 +69,7 @@
 - 递归采用**每个主 preset 固定的绝对深度上限**，授权图禁止环；深度只管高度不管宽度，因此每个 root Session 另有一份共享的**并发**上限（`maxConcurrentChildren`，默认 6，clamp `[1, 32]`），防止整棵 Agent 树 fan-out 失控；
 - Research / Explorer 固定 one-shot；其他子 Agent 可按调用选择 one-shot 或 continuable；
 - `delegate_batch` 只接受 one-shot 子 Agent，在唯一 deadline 内并行等待 `run.result`，到期返回 `partial_timeout`；未在 drain grace 内收束的 holder 所有权移交 cleanup registry（10.8），绝不产生无人持有的 run；continuable 批量委派留待 v1.1；
-- 前台单个委派也有 deadline（默认 15 分钟）：到期发协作式 cancel，drain grace 内收束就返回带标注的部分结果，否则把 holder 交给 cleanup registry 并标注 `cleanup_deferred`；后台 one-shot 同样有 deadline（默认 30 分钟）。**不存在没有 deadline 的委派路径**——那会让一个挂死的 run 永久占住并发槽；
+- 前台单个委派也有 deadline（默认 30 分钟）：到期发协作式 cancel，drain grace 内收束就返回带标注的部分结果，否则把 holder 交给 cleanup registry 并标注 `cleanup_deferred`；后台 one-shot 同样有 deadline（默认 30 分钟）。**不存在没有 deadline 的委派路径**——那会让一个挂死的 run 永久占住并发槽；
 - `send_message`、`list_agents`、`interrupt_agent` 保留；persona 禁止把 `send_message` 当轮询或催促工具；
 - settings 不重装正在运行的 Agent，只影响后续动作；
 - picker 不因 settings 启停而运行时增删；禁用项若仍显示，选择或调用时明确拒绝；
@@ -328,7 +328,7 @@ type ToolCapability =
 interface MainSessionBudget {
   maxConcurrentChildren: number       // 默认 6，clamp [1, 32]；按 root Session 整棵树统计同时运行的 child 轮次
   maxBatchWidth: number               // 默认 4，绝对上限 6；单次 delegate_batch 的 one-shot 上限
-  foregroundDeadlineMs: number        // 默认 900000（15 分钟），clamp [60000, 3600000]；单个前台委派的等待边界
+  foregroundDeadlineMs: number        // 默认 1800000（30 分钟），clamp [60000, 3600000]；单个前台委派的等待边界。§16.10：真实会话里"全文审查"跑满旧的 15 分钟上限且**零产出**，整轮作废，故与后台对齐到 30 分钟
   backgroundDeadlineMs: number        // 默认 1800000（30 分钟），clamp [60000, 7200000]；后台 one-shot 的等待边界
   batchDeadlineMs: number             // 默认 600000（10 分钟），clamp [60000, 1800000]；delegate_batch 的等待边界
   drainGraceMs: number                // 默认 30000，clamp [1000, 300000]；取消后等待收束、再移交 cleanup registry 的宽限
@@ -1282,7 +1282,7 @@ Research、Explorer 的 `continuation` 固定 one-shot。Planner、Executor、Im
 
 **前台 deadline（新增，与 batch 同源）**：前台 one-shot 不能无限期挂起父工具调用，规则与 10.7 完全一致：
 
-1. `foregroundDeadlineMs` 来自 main preset budget，默认 900000（15 分钟），clamp 到 `[60000, 3600000]`；
+1. `foregroundDeadlineMs` 来自 main preset budget，默认 1800000（30 分钟），clamp 到 `[60000, 3600000]`；
 2. 到期后 wrapper 对 run 发 cancel，并给 `drainGraceMs`（默认 30000）等待 `run.dispose()` 收束；
 3. grace 内收束：返回已获得的部分输出，并明确标注本次调用为 `cancel_requested`，**不得**把部分输出当作完整结果；
 4. grace 用尽仍未收束：holder 所有权移交 cleanup registry（10.8），返回状态标注 `cleanup_deferred`，不谎称资源已释放。

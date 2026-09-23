@@ -96,7 +96,14 @@ const RESERVED_EXTRA_TOOLS = Object.freeze(['run_code', 'delegate_batch'])
 const BUDGET_FIELDS = Object.freeze({
   maxConcurrentChildren: { min: 1, max: 32, default: 6 },
   maxBatchWidth: { min: 1, max: 6, default: 4 },
-  foregroundDeadlineMs: { min: 60_000, max: 3_600_000, default: 900_000 },
+  // 30 minutes, raised from 15 after a real session: a full-file review of a
+  // 1184-line module (plus its spec and supporting modules) ran the 15-minute
+  // foreground deadline to exhaustion with NO output at all — the child was
+  // still reading and had not written a word — so the whole run was wasted and
+  // had to be redone in the background. The background deadline was already 30
+  // minutes, so the foreground path gets the same room for the shipped `review`
+  // agent's normal workload.
+  foregroundDeadlineMs: { min: 60_000, max: 3_600_000, default: 1_800_000 },
   backgroundDeadlineMs: { min: 60_000, max: 7_200_000, default: 1_800_000 },
   batchDeadlineMs: { min: 60_000, max: 1_800_000, default: 600_000 },
   drainGraceMs: { min: 1_000, max: 300_000, default: 30_000 },
