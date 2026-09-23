@@ -8,7 +8,7 @@
  * temporary Agent back.
  */
 
-import { AGENT_ID_PATTERN, deriveToolName } from './schema.js'
+import { AGENT_ID_PATTERN, deriveToolName, hasWriteScope } from './schema.js'
 import { readChildIdentity } from './identity.js'
 import { writeScopeGuardReason } from './path-policy.js'
 import { assertToolSurface, compileAllowlist } from './tool-surface.js'
@@ -296,16 +296,17 @@ export function installIdentitySection(ctx) {
  * continuable child always has one, which is what makes this path work after the
  * harness disposes and rebuilds it.
  *
- * A child that cannot be identified, or whose Agent has no scope, is left alone
- * rather than failing the resume: this listener must never make a child
- * un-resumable. The failure is loud only for a scope that exists but cannot be
- * installed, which is a harness-shape change rather than a data condition.
+ * A child that cannot be identified, or whose form declares no usable scope, is
+ * left alone rather than failing the resume: a bad sidecar must never make a
+ * child un-resumable. That is a statement about DATA conditions only — a
+ * throwing `tools.guard` is a harness-shape change, and it propagates out of
+ * this listener, which vetoes publication on purpose.
  */
 function guardResumedChildScope(agent, service) {
   const identity = readChildIdentity(service.rootDir, agent.id)
   if (identity === undefined) return
   const form = service.definitions.get(identity.agentId)?.child
-  if (form?.writeScope === undefined) return
+  if (!hasWriteScope(form)) return
   agent.ctx.tools.guard((execution) => writeScopeGuardReason(form, execution))
 }
 

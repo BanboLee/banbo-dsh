@@ -25,7 +25,7 @@ import { loadCatalog, mergeDefinition } from '../catalog.js'
 import { writeChildIdentity } from '../identity.js'
 import mainRuntime, { activateMainAgent } from '../main-runtime.js'
 import { WRITE_TOOLS, writeScopeGuardReason } from '../path-policy.js'
-import { CatalogError, parseAgentYaml, validateAgentDefinition } from '../schema.js'
+import { CatalogError, hasWriteScope, parseAgentYaml, validateAgentDefinition } from '../schema.js'
 import { CAPABILITY_TOOLS } from '../tool-surface.js'
 
 const scratch: string[] = []
@@ -293,6 +293,23 @@ describe('writeScopeGuardReason — symlink defence', () => {
     symlinkSync(outside, join(workspace, '.banbo-dsh'), 'dir')
     const reason = writeScopeGuardReason(SCOPE, execution(workspace, 'write', '.banbo-dsh/plans/plan.md') as never)
     expect(reason).toMatch(/write scope "\.banbo-dsh\/plans" itself resolves outside/)
+  })
+
+  it.skipIf(!SYMLINKS)('documents that an IN-workspace scope-root symlink widens the scope', () => {
+    // The residual §16.12 records, pinned so the doc cannot drift from the code:
+    // the scope root's real path only has to stay INSIDE the workspace, so a
+    // symlink that redirects it to another in-workspace directory is accepted
+    // and moves the effective scope there. It is not a workspace escape, and the
+    // Planner cannot create symlinks (no `exec`), which is why this is accepted
+    // rather than denied.
+    const workspace = scratchDir()
+    mkdirSync(join(workspace, 'elsewhere'), { recursive: true })
+    symlinkSync(join(workspace, 'elsewhere'), join(workspace, '.banbo-dsh'), 'dir')
+    expect(writeScopeGuardReason(SCOPE, execution(workspace, 'write', '.banbo-dsh/plans/plan.md') as never))
+      .toBeUndefined()
+    // …and it really does land outside the declared directory, still inside the
+    // workspace: that is the widening this case documents.
+    expect(realpathSync(join(workspace, '.banbo-dsh'))).toBe(realpathSync(join(workspace, 'elsewhere')))
   })
 
   it.skipIf(!SYMLINKS)('denies when the real path cannot be resolved at all', () => {
@@ -796,7 +813,12 @@ describe('main-runtime wiring — the mounted definition is what is enforced', (
     await expect(call(agent, 'write', 'src/index.ts')).resolves.toMatchObject({ isError: false })
   })
 
-  it('never makes a child un-resumable when its sidecar names an unknown agent', async () => {
+  it('pins the fail-open residual when the sidecar names an agent with no scope', async () => {
+    // DOCUMENTS A RESIDUAL, NOT A DESIRED OUTCOME. The guard comes from the
+    // CURRENT definition while the tool filter is frozen at creation, so a
+    // durable scoped child resumed after its definition loses the child form —
+    // or the whole file is deleted, a supported action (§6.3) — comes back with
+    // write/edit and no guard. Recorded in §16.12 with the two ways to close it.
     const { agent } = await resumeHarness({ scope: '.banbo-dsh/plans', agentId: 'deleted-agent' })
     await expect(call(agent, 'write', 'src/index.ts')).resolves.toMatchObject({ isError: false })
   })
@@ -833,17 +855,54 @@ describe('an inherited writeScope can be cancelled explicitly', () => {
     expect('writeScope' in (merged.main ?? {})).toBe(false)
   })
 
+  it('cancels the shipped Planner scope through the REAL loader', () => {
+    // The regression this pins: `loadCatalog` runs `validateAgentDefinition` on
+    // every layer BEFORE merging, so a cancel that normalisation drops can never
+    // reach `mergeDefinition`. Every other case here calls `mergeDefinition`
+    // with a raw override the loader never produces, which is exactly how a
+    // green suite can hide a dead feature.
+    const root = scratchDir('banbo-write-scope-cancel-')
+    mkdirSync(join(root, 'agents'), { recursive: true })
+    writeFileSync(join(root, 'agents', 'planner.yaml'), [
+      'id: planner',
+      'displayName: Planner',
+      'description: planner without a write scope',
+      'allowedChildren: []',
+      'main:',
+      '  presetId: planner',
+      '  persona: prompts/planner-main.md',
+      '  tools: [read, write, edit]',
+      '  writeScope: false',
+      '  maxDepth: 1',
+      '',
+    ].join('\n'))
+
+    const catalog = loadCatalog({
+      rootDir: root,
+      builtinDir: join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'catalog'),
+    })
+    const planner = catalog.definitions.get('planner') as { main?: { writeScope?: unknown }, child?: { writeScope?: unknown } }
+    expect(planner.main?.writeScope, 'the cancel must survive the loader').toBeUndefined()
+    expect(hasWriteScope(planner.main), 'and must leave the form unrestricted').toBe(false)
+    // The child form was never overridden, so it keeps the built-in scope.
+    expect(planner.child?.writeScope).toBe('.banbo-dsh/plans')
+  })
+
   it('keeps the scope when the override simply omits the field', () => {
     const merged = mergeDefinition(scopedBase() as never, { id: 'planner', main: {} } as never)
     expect(merged.main?.writeScope).toBe('.banbo-dsh/plans')
   })
 
-  it('normalises a cancel on a standalone definition to no field at all', () => {
+  it('normalises a cancel on a standalone definition to the cancel sentinel', () => {
+    // `false` is deliberately CARRIED through normalisation rather than dropped:
+    // the loader validates each layer before merging, so dropping it here would
+    // erase the user's intent before the merge could act on it. Everything
+    // downstream reads it as "no policy" (see `hasWriteScope` and the guard).
     const raw = scopedBase()
     const withoutScope = { ...raw, main: { ...raw.main, writeScope: false } }
     const definition = validateAgentDefinition(withoutScope as never, { file: 'planner.yaml' })
-    expect(definition.main?.writeScope).toBeUndefined()
-    expect('writeScope' in (definition.main ?? {})).toBe(false)
+    expect(definition.main?.writeScope).toBe(false)
+    expect(hasWriteScope(definition.main)).toBe(false)
   })
 
   it('lets a cancelled form carry a shell, because the precondition no longer applies', () => {

@@ -491,20 +491,35 @@ function validateWriteScope(value, field, file) {
 /**
  * The `writeScope` field to spread into a normalised form.
  *
- * Absent and cancelled both produce NO field, because both mean "unrestricted"
- * to everything downstream — the guard, `assertWriteScopeEnforceable`, and the
- * compiler. Only the merge needs the difference, and it reads the raw override
- * before normalisation for exactly that reason.
+ * A cancel is carried through normalisation as `false` rather than dropped,
+ * because the merge is the thing that must honour it and `loadCatalog` validates
+ * each layer BEFORE merging — dropping it here would erase the user's intent
+ * before anything could act on it. Everything downstream treats `false` as "no
+ * policy": the guard ignores a non-string scope, and both registration sites
+ * test for a usable path rather than mere presence.
  *
  * @param value - the raw field.
  * @param field - the dotted field name used in errors.
  * @param file - the definition file, when known.
- * @returns `{}` when the form is unrestricted, else `{ writeScope }`.
+ * @returns `{}` when the field is absent, else `{ writeScope }`.
  */
 function writeScopeField(value, field, file) {
   if (value === undefined) return {}
-  const scope = validateWriteScope(value, field, file)
-  return scope === false ? {} : { writeScope: scope }
+  return { writeScope: validateWriteScope(value, field, file) }
+}
+
+/**
+ * Whether a form actually confines its writes.
+ *
+ * The single predicate both registration sites use, so "declares a scope",
+ * "declares a cancel" and "declares nothing" cannot drift apart between them.
+ *
+ * @param form - a `MainProfile` / `ChildProfile`, or anything shaped like one.
+ * @returns true only for a usable relative directory.
+ */
+export function hasWriteScope(form) {
+  const scope = form?.writeScope
+  return typeof scope === 'string' && scope !== ''
 }
 
 /**

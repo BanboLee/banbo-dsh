@@ -22,7 +22,7 @@ import {
   rollbackChildIdentity,
   writeChildIdentity,
 } from './identity.js'
-import { AGENT_ID_PATTERN, deriveToolName } from './schema.js'
+import { AGENT_ID_PATTERN, deriveToolName, hasWriteScope } from './schema.js'
 import { writeScopeGuardReason } from './path-policy.js'
 import { compileAllowlist } from './tool-surface.js'
 
@@ -521,7 +521,7 @@ function cleanupOneShotOnSettlement(runtime, holder, childId, lease) {
  */
 function guardChildWriteScope(prepared, child) {
   const form = prepared.targetDefinition.child
-  if (child === undefined || form?.writeScope === undefined) return
+  if (child === undefined || !hasWriteScope(form)) return
   child.ctx.tools.guard((execution) => writeScopeGuardReason(form, execution))
 }
 
@@ -537,16 +537,39 @@ async function startOneShot(runtime, prepared, options, holder, lease) {
   try {
     holder.beginStart()
     run = await runtime.subagents.start(DELEGATION_PROVIDER, request)
-    // Before `holder.attach`, so a throw here still runs `failStart` + `settle` +
-    // `lease.release` rather than leaking the reserved holder and the slot.
-    guardChildWriteScope(prepared, run.localAgent)
-    holder.attach(run)
   } catch (error) {
     holder.failStart(error)
     await holder.settle()
     lease.release()
     throw error
   }
+  // Installed AFTER the run is published but OUTSIDE the try above, and that
+  // placement is load-bearing in both directions. Inside the try it would take
+  // the "creation failed" path, whose `settle()` disposes a holder that never
+  // attached and therefore leaks the live child. After `holder.attach` it would
+  // be worse still: `failStart` throws once a run is attached, so the cleanup
+  // below could never run. A throw here is a harness-shape change rather than a
+  // data condition, and the run is already live, so it must be disposed by hand
+  // — the holder cannot do it.
+  try {
+    guardChildWriteScope(prepared, run.localAgent)
+  } catch (error) {
+    // `failStart` first: the holder is still start-pending, and only that (or
+    // `attach`) resolves its publication — without it `settle()` waits forever.
+    // It is legal here precisely because the run was never attached.
+    holder.failStart(error)
+    try {
+      await run.dispose()
+    } catch {
+      // The run is already live; a failing dispose must not mask the original
+      // guard error, and the holder cannot retry it (it never attached).
+    }
+    runtime.liveIdentities.delete(run.id)
+    await holder.settle()
+    lease.release()
+    throw error
+  }
+  holder.attach(run)
   runtime.liveIdentities.set(run.id, childIdentity(prepared, runtime.service))
   logDelegationStart(runtime, prepared, run.id, 'one-shot', options.runInBackground === true)
   return run

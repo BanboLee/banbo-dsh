@@ -100,7 +100,13 @@ export function writeScopeGuardReason(definition, execution) {
   const tool = execution?.name
   if (!WRITE_TOOLS.includes(tool)) return undefined
   const scope = definition?.writeScope
-  if (scope === undefined) return undefined
+  // This module is the fail-closed layer, so it decides on the VALUE, not on
+  // presence: `false` (an explicit cancel), `null`, `''`, `0` and any other
+  // non-path must all mean "no policy". Treating `''` as a path would resolve
+  // the scope to the workspace root and silently widen the policy to the whole
+  // workspace; treating `false` as a path would throw out of the denial builder
+  // instead of denying.
+  if (typeof scope !== 'string' || scope === '') return undefined
 
   /**
    * The one denial constructor. Every refusal in this function goes through it,

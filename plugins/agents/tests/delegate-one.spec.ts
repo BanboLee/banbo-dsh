@@ -472,4 +472,21 @@ describe('a scoped child form confines its own writes', () => {
 
     await expect(call(rt)).resolves.toMatchObject({ kind: 'foreground' })
   })
+
+  it('disposes an already-published run when installing the guard throws', async () => {
+    // A throw here is a harness-shape change, not a data condition, and the run
+    // is already live by then — the holder cannot clean it up because `settle()`
+    // only disposes an ATTACHED run. It must therefore be disposed by hand, and
+    // the reserved holder and the concurrency slot must still be released.
+    const rt = runtime({ writeScope: SCOPE })
+    rt.fixture.run.localAgent = {
+      ctx: { tools: { guard: () => { throw new Error('harness shape changed') } } },
+    } as never
+
+    await expect(call(rt)).rejects.toThrow(/harness shape changed/)
+    expect(rt.fixture.dispose).toHaveBeenCalledTimes(1)
+    expect(rt.holders.size).toBe(0)
+    expect(rt.budgets.running('root-session')).toBe(0)
+    expect(rt.liveIdentities.size).toBe(0)
+  })
 })
