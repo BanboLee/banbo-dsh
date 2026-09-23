@@ -339,7 +339,7 @@ interface MainProfile {
   persona: PromptRef
   tools: readonly ToolCapability[]
   extraTools?: readonly string[] // 第三方 runtime tool name，精确授权
-  writeScope?: string // 相对工作区的目录；只把本形态的 write/edit 限制在其中（§5.2、§16.12）
+  writeScope?: string | false // 相对工作区的目录；只把本形态的 write/edit 限制在其中。`false` = 显式取消继承来的 scope（§5.2、§16.12）
   maxDepth: number // 从这个主 Agent 开始计算的官方绝对深度上限
   budget?: Partial<MainSessionBudget>
 }
@@ -350,7 +350,7 @@ interface ChildProfile {
   guidance: string
   tools: readonly ToolCapability[]
   extraTools?: readonly string[] // 第三方 runtime tool name，精确授权
-  writeScope?: string // 同上；main 与 child 各自声明、互不继承（§5.2、§16.12）
+  writeScope?: string | false // 同上；main 与 child 各自声明、互不继承。`false` = 显式取消（§5.2、§16.12）
   continuation: 'one-shot' | 'optional'
 }
 
@@ -427,7 +427,7 @@ RetiredToolShell                    standing scope 里的空壳工具描述，�
 11. `extraTools` 中每个名字非空、不是保留的 `run_code` / `delegate_batch` / `agent_*`，也不在唯一 `FORBIDDEN_DELEGATION_TOOLS` 清单内，并且在目标 standing composition 中是可 restrict 的 global/ancestor tool；缺失时主 Agent 创建回滚；
 12. preset id 不得与 shipped、官方 user root、包内其他 preset 或另一用户 Agent 冲突；
 13. 内置 preset id 不可覆盖；用户 Agent 的已发布 preset id、toolName、已发布 main/child 形态和 child.continuation 写入 ABI manifest 后按兼容规则保护：允许新增缺失形态，禁止在文件仍存在时删除已发布形态或改变生命周期语义，破坏性修改必须换新 id；**整个定义文件被删除是唯一例外**，按 6.3 的删除语义处理（转 `RetiredToolShell` + 移除 generated preset）；
-14. `main.writeScope` / `child.writeScope` 若存在，必须是非空字符串且是**纯相对路径**：不得是绝对路径（POSIX 或 Windows）、不得含 `\` 或 NUL、规范化后不得为空、`.` 或以 `..` 开头；违反时以 `bad-write-scope`（非字符串或空串为 `missing-field`）让 Host 启动失败，不做静默截断。这里只做词法校验——本模块没有工作区、也不碰文件系统；真正的包含关系与软链接判定在执行期由 `path-policy.js` 完成（§5.2、§16.12）；
+14. `main.writeScope` / `child.writeScope` 若是字符串，必须非空且是**纯相对路径**：不得是绝对路径（POSIX 或 Windows）、不得含 `\` 或 NUL、规范化后不得为空、`.` 或以 `..` 开头；违反时以 `bad-write-scope`（非字符串或空串为 `missing-field`）让 Host 启动失败，不做静默截断。这里只做词法校验——本模块没有工作区、也不碰文件系统；真正的包含关系与软链接判定在执行期由 `path-policy.js` 完成（§5.2、§16.12）。**唯一接受的非路径值是 `false`：它显式取消从内置定义继承来的 scope**（省略 = 继承；`null`——YAML 里写空 `writeScope:` 解析出来的东西——**仍然报错**，所以手滑留空绝不会悄悄解除策略）。合并必须在归一化**之前**读原始 override，因为"省略"和"取消"归一化后都是"没有这个字段"；
 15. **同一个形态不得同时声明 `writeScope` 与 shell**：`writeScope` 的全部效力建立在"被约束形态没有 shell"之上——shell 可以 `echo x > /etc/y`，完全不经过 `write`/`edit`。因此 `tools` 里出现 `exec`、或 `extraTools` 里出现具体 shell 工具名（`fish` / `bash` / `pwsh`，与 `tool-surface.js` 的 `exec.prefer` 共用同一份 `SHELL_TOOL_NAMES`，避免两处漂移）时，以 `write-scope-with-shell` 让 Host 启动失败。**校验跑在合并后的形态上**，所以用户层只重述 `tools` 而内置仍带 `writeScope` 的情况同样被拒——这正是静默失效最容易发生的地方。`tools` 是封闭的能力集，那里唯一可达的 shell 就是 `exec`（写具体工具名本来就是 `unknown-tool-capability`）；`extraTools` 接受任意运行期工具名并原样授予，所以必须单独查。
 
 运行时 `enabled` 不参与图结构校验。被禁用 Agent 的稳定工具仍保留，调用时明确拒绝；这样重新启用不需要重启，也不会破坏旧 descriptor。
@@ -494,7 +494,7 @@ const CATALOG_LIMITS = {
 
 这只是 **tool-surface control**，不是全局安全沙箱：如果某个主/子 Agent 被授予 `exec`、`web`、MCP 或第三方 `extraTools`，这些能力本身可能访问外部系统或启动别的进程。本插件不承诺阻止所有进程级、网络级或第三方工具级绕过；这些风险由普通工具白名单、profile sandbox、MCP 配置和用户信任边界承担。
 
-定义里另有可选的 `writeScope`（§4.1、§4.4 第 14 条）：它把**某一个运行形态**的 `write` / `edit` 限制在工作区下的一个相对目录里。Planner 的 main 与 child 两处都声明 `writeScope: .banbo-dsh/plans`，因此它只能写 `<workspace>/.banbo-dsh/plans/` 下的计划文件，写到别处一律拒绝；其余形态没有这个字段，写入范围与今天完全一致。规则：
+定义里另有可选的 `writeScope`（§4.1、§4.4 第 14 条）：它把**某一个运行形态**的 `write` / `edit` 限制在工作区下的一个相对目录里。Planner 的 main 与 child 两处都声明 `writeScope: .banbo-dsh/plans`，因此它只能写 `<workspace>/.banbo-dsh/plans/` 下的计划文件，写到别处一律拒绝；其余形态没有这个字段，写入范围与今天完全一致。**用户可以在自己的 YAML 里写 `writeScope: false` 显式取消这个继承**（例如想要一个不受限的同名 Planner）；省略是继承，写空值是报错。规则：
 
 - 只约束 `write` / `edit` 这两个工具名；`read`、`search`、`web`、`present` 等一概不受影响，**读权限从不受限**；
 - 相对路径按 `exec.agent.session.header.cwd`（当前 session 的工作区）解析；绝对路径（POSIX 或 Windows）、含 `\` 或 NUL、`..` 逃逸、以及解析后落在 scope 之外的目标全部拒绝；

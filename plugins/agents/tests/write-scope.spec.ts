@@ -801,3 +801,79 @@ describe('main-runtime wiring — the mounted definition is what is enforced', (
     await expect(call(agent, 'write', 'src/index.ts')).resolves.toMatchObject({ isError: false })
   })
 })
+
+/* ------------------------------------------------------ cancelling a scope --- */
+
+describe('an inherited writeScope can be cancelled explicitly', () => {
+  /** The shipped shape: a scoped form, as `planner.yaml` declares it. */
+  function scopedBase() {
+    return {
+      id: 'planner',
+      displayName: 'Planner',
+      description: 'planner',
+      allowedChildren: [],
+      main: {
+        presetId: 'planner',
+        persona: 'prompts/planner-main.md',
+        tools: ['read', 'write', 'edit'],
+        writeScope: '.banbo-dsh/plans',
+        maxDepth: 0,
+      },
+    }
+  }
+
+  const override = (writeScope: unknown) => ({
+    id: 'planner',
+    main: { writeScope } as never,
+  })
+
+  it('cancels an inherited scope so the merged form is unrestricted', () => {
+    const merged = mergeDefinition(scopedBase() as never, override(false) as never)
+    expect(merged.main?.writeScope).toBeUndefined()
+    expect('writeScope' in (merged.main ?? {})).toBe(false)
+  })
+
+  it('keeps the scope when the override simply omits the field', () => {
+    const merged = mergeDefinition(scopedBase() as never, { id: 'planner', main: {} } as never)
+    expect(merged.main?.writeScope).toBe('.banbo-dsh/plans')
+  })
+
+  it('normalises a cancel on a standalone definition to no field at all', () => {
+    const raw = scopedBase()
+    const withoutScope = { ...raw, main: { ...raw.main, writeScope: false } }
+    const definition = validateAgentDefinition(withoutScope as never, { file: 'planner.yaml' })
+    expect(definition.main?.writeScope).toBeUndefined()
+    expect('writeScope' in (definition.main ?? {})).toBe(false)
+  })
+
+  it('lets a cancelled form carry a shell, because the precondition no longer applies', () => {
+    const raw = scopedBase()
+    const withShell = { ...raw, main: { ...raw.main, writeScope: false, tools: ['read', 'exec', 'write', 'edit'] } }
+    expect(() => validateAgentDefinition(withShell as never, { file: 'planner.yaml' })).not.toThrow()
+  })
+
+  it('still rejects null, which is what an accidentally-empty line parses to', () => {
+    // This is the whole reason the cancel spelling is `false` and not `null`:
+    // a blank `writeScope:` must fail closed rather than silently lift the
+    // policy. `mergeDefinition` only re-checks the scope/shell invariant, so the
+    // full validation is the entry point that owns the field's own rules.
+    const raw = scopedBase()
+    const merged = mergeDefinition(raw as never, override(null) as never)
+    expect(merged.main?.writeScope).toBeNull()
+    expect(() => validateAgentDefinition(merged as never, { file: 'planner.yaml' }))
+      .toThrow(/non-empty string|writeScope/i)
+  })
+
+  it('still rejects an empty string', () => {
+    const raw = scopedBase()
+    const merged = mergeDefinition(raw as never, override('') as never)
+    expect(() => validateAgentDefinition(merged as never, { file: 'planner.yaml' }))
+      .toThrow(/non-empty string/i)
+  })
+
+  it('still rejects an inherited scope paired with a shell added by the override', () => {
+    const withShell = { id: 'planner', main: { tools: ['read', 'exec', 'write', 'edit'] } }
+    expect(() => mergeDefinition(scopedBase() as never, withShell as never))
+      .toThrow(/write-scope-with-shell|unenforceable/i)
+  })
+})

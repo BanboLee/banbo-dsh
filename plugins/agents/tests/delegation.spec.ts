@@ -405,7 +405,13 @@ describe('buildDelegationRequest', () => {
     expect(request.label.startsWith(`${prepared.targetAgentId}: `)).toBe(false)
   })
 
-  it('falls back to the raw id when the definition has no displayName', () => {
+  it('keeps a display-layer fallback for a definition that bypassed validation', () => {
+    // DEFENSIVE ONLY, and deliberately so. `displayName` is required and
+    // non-empty by `validateAgentDefinition`, and `catalog.js` is the only
+    // production constructor — so no shipped or user definition can reach this
+    // branch. It exists so a future schema relaxation degrades to the raw id
+    // instead of rendering `undefined: …` in the subagent list, and this case
+    // pins that fallback rather than claiming a production path.
     const state = service()
     delete (state.definitions.get('worker') as { displayName?: string }).displayName
     const { prepared, request } = requestFor(state)

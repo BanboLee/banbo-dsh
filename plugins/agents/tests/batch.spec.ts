@@ -30,6 +30,10 @@ function service() {
     child: {
       model: { default: true }, persona: `${id}.md`, guidance: `${id} guidance`,
       tools: ['read'], continuation,
+      // `delegate_batch` executes every item through `startOneShot`, which is
+      // the same path a foreground single delegation takes — so a scoped target
+      // must get its child-form guard here too (§16.12).
+      ...(id === 'a' ? { writeScope: '.banbo-dsh/plans' } : {}),
     },
   })
   const definitions = new Map<string, any>([
@@ -94,7 +98,7 @@ function runFixture(id: string) {
   }
 }
 
-function runtime(fixtures: Fixture[], delay?: (ms: number) => Promise<void>) {
+function runtime(fixtures: Fixture[], delay?: (ms: number) => Promise<void>, localAgent?: () => unknown) {
   const state = service()
   const budgets = new RootBudgetRegistry()
   const holders = new HolderRegistry({ delay })
@@ -105,7 +109,7 @@ function runtime(fixtures: Fixture[], delay?: (ms: number) => Promise<void>) {
       const fixture = fixtures[index++]
       fixture.run = {
         id: fixture.id,
-        localAgent: undefined,
+        localAgent: localAgent === undefined ? undefined : localAgent(),
         result: fixture.result.promise,
         dispose: fixture.dispose,
       }
@@ -413,5 +417,35 @@ describe('deadline, abort, and cleanup handoff', () => {
         { agentId: 'b', status: 'cancel_requested' },
       ],
     })
+  })
+})
+
+describe('a scoped batch target is guarded like any other one-shot child (§16.12)', () => {
+  const execution = (cwd: string, tool: string, filePath: string) =>
+    ({ name: tool, arguments: { file_path: filePath }, agent: { session: { header: { cwd } } } })
+
+  it('installs the scope on exactly the batch items whose target declares one', async () => {
+    const guards: Array<(e: unknown) => string | undefined> = []
+    const a = runFixture('a-1')
+    const b = runFixture('b-1')
+    // `delegate_batch` runs every item through `startOneShot` — the same path a
+    // foreground single delegation takes — so a scoped target must be guarded
+    // here too. Only `a` declares a scope in the fixture.
+    const rt = runtime([a, b], undefined, () => ({
+      ctx: { tools: { guard: (fn: never) => { guards.push(fn); return () => {} } } },
+    }))
+
+    const pending = call(rt)
+    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(2))
+    expect(guards).toHaveLength(1)
+
+    const cwd = mkdtempSync(join(tmpdir(), 'banbo-batch-scope-'))
+    scratch.push(cwd)
+    expect(guards[0]!(execution(cwd, 'write', '.banbo-dsh/plans/plan.md'))).toBeUndefined()
+    expect(guards[0]!(execution(cwd, 'write', 'src/index.ts'))).toMatch(/may only write under/)
+
+    a.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'A' }] })
+    b.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'B' }] })
+    await pending
   })
 })

@@ -101,12 +101,23 @@ export function mergeDefinition(base, override, options = {}) {
         )
       }
       merged[form] = structuredClone(patch)
+      // Nothing to cancel on a form the built-in never had, but a stray `false`
+      // must not reach the compiler as a path value.
+      if (merged[form].writeScope === false) delete merged[form].writeScope
       assertWriteScopeEnforceable(merged[form], { path: form, file: options?.file })
       continue
     }
 
     const next = { ...base[form] }
+    // `writeScope: false` is the only way a YAML layer can CANCEL an inherited
+    // scope. It must be read from the RAW override, before the generic copy:
+    // "absent" and "cancelled" both normalise to a form with no `writeScope` at
+    // all, so the merged shape alone cannot tell them apart. `null` — what an
+    // accidentally-empty `writeScope:` line parses to — deliberately stays an
+    // error, so leaving the value blank can never disable the policy.
+    if (patch.writeScope === false) delete next.writeScope
     for (const [key, value] of Object.entries(patch)) {
+      if (key === 'writeScope' && value === false) continue
       next[key] = value === undefined ? undefined : structuredClone(value)
       if (value === undefined) delete next[key]
     }

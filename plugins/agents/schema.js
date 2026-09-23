@@ -462,15 +462,21 @@ function validateTools(form, path, file) {
  * here: silently mapping an unexpected `undefined` to "no scope" would disable
  * the policy instead of failing closed.
  *
+ * `false` is the one accepted non-path value: it CANCELS a scope the layer would
+ * otherwise inherit. It is spelled `false` rather than `null` on purpose —
+ * `null` is what an accidentally-empty `writeScope:` line parses to, and leaving
+ * the value blank must never silently disable the policy.
+ *
  * @param value - the raw `main.writeScope` / `child.writeScope`.
  * @param field - the field path for diagnostics (`main.writeScope`, …).
  * @param file - the source file label for diagnostics.
- * @returns the canonical relative path.
+ * @returns the canonical relative path, or `false` for an explicit cancel.
  * @throws {CatalogError} `missing-field` or `bad-write-scope`.
  */
 function validateWriteScope(value, field, file) {
+  if (value === false) return false
   if (typeof value !== 'string' || value === '') {
-    fail('missing-field', `${field} must be a non-empty string`, { file, field })
+    fail('missing-field', `${field} must be a non-empty string, or false to cancel an inherited scope`, { file, field })
   }
   const reject = (reason) => fail('bad-write-scope', `${field} ${reason} (got ${JSON.stringify(value)})`, { file, field })
   if (value.includes('\0')) reject('must not contain a NUL byte')
@@ -480,6 +486,25 @@ function validateWriteScope(value, field, file) {
   if (normalised === '' || normalised === '.') reject('must name a directory below the workspace root')
   if (normalised === '..' || normalised.startsWith('../')) reject('must not escape the workspace root with ".."')
   return normalised
+}
+
+/**
+ * The `writeScope` field to spread into a normalised form.
+ *
+ * Absent and cancelled both produce NO field, because both mean "unrestricted"
+ * to everything downstream — the guard, `assertWriteScopeEnforceable`, and the
+ * compiler. Only the merge needs the difference, and it reads the raw override
+ * before normalisation for exactly that reason.
+ *
+ * @param value - the raw field.
+ * @param field - the dotted field name used in errors.
+ * @param file - the definition file, when known.
+ * @returns `{}` when the form is unrestricted, else `{ writeScope }`.
+ */
+function writeScopeField(value, field, file) {
+  if (value === undefined) return {}
+  const scope = validateWriteScope(value, field, file)
+  return scope === false ? {} : { writeScope: scope }
 }
 
 /**
@@ -504,7 +529,9 @@ function validateWriteScope(value, field, file) {
  * @throws {CatalogError} `write-scope-with-shell`.
  */
 export function assertWriteScopeEnforceable(form, options = {}) {
-  if (form?.writeScope === undefined) return
+  // `false` is an explicit cancel, so it means the same thing as absent here:
+  // there is no scope to void, and a shell is therefore allowed.
+  if (form?.writeScope === undefined || form.writeScope === false) return
   const path = options?.path === undefined || options.path === '' ? '' : `${options.path}.`
   const reason = 'a shell can write anywhere without calling "write" or "edit"'
   if (Array.isArray(form.tools) && form.tools.includes('exec')) {
@@ -666,7 +693,11 @@ export function validateAgentDefinition(raw, options = {}) {
       persona,
       tools: [...main.tools],
       ...main.extraTools === undefined ? {} : { extraTools: [...main.extraTools] },
-      ...main.writeScope === undefined ? {} : { writeScope: validateWriteScope(main.writeScope, 'main.writeScope', file) },
+      // A cancel (`false`) normalises to "no field at all", which is what the
+      // guard and `assertWriteScopeEnforceable` both read as "unrestricted".
+      // The merge consults the RAW override before this point, so it can still
+      // tell a cancel from an inheritance.
+      ...writeScopeField(main.writeScope, 'main.writeScope', file),
       maxDepth,
       budget: validateBudget(main.budget, ctx),
     }
@@ -690,7 +721,7 @@ export function validateAgentDefinition(raw, options = {}) {
       guidance,
       tools: [...child.tools],
       ...child.extraTools === undefined ? {} : { extraTools: [...child.extraTools] },
-      ...child.writeScope === undefined ? {} : { writeScope: validateWriteScope(child.writeScope, 'child.writeScope', file) },
+      ...writeScopeField(child.writeScope, 'child.writeScope', file),
       continuation: child.continuation,
     }
   }
