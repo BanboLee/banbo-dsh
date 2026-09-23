@@ -27,6 +27,7 @@ import { join } from 'node:path'
 import {
   CATALOG_LIMITS,
   CatalogError,
+  assertWriteScopeEnforceable,
   deriveToolName,
   parseAgentYaml,
   readAgentYamlSource,
@@ -57,12 +58,21 @@ const fail = (code, message, options) => {
  * appended, and `child.model` is replaced as a whole object so a partial route
  * cannot silently inherit half of the built-in's provider/model pair.
  *
+ * Because a merge can pair one layer's `writeScope` with the other layer's
+ * `tools`, every merged form is re-checked for the shell precondition
+ * ({@link assertWriteScopeEnforceable}, §5.2/§16.12): validating each file on
+ * its own is not enough when the scope and the shell arrive from different
+ * layers.
+ *
  * @param base - the built-in definition (not mutated).
  * @param override - the user's parsed definition for the same id.
+ * @param options - optional `file` label for the override, so a merge-level
+ *   rejection names the layer the user has to edit.
  * @returns a new merged definition.
- * @throws {CatalogError} `id-mismatch` or `incomplete-new-form`.
+ * @throws {CatalogError} `id-mismatch`, `incomplete-new-form`, or
+ *   `write-scope-with-shell` when the merged form would void its own scope.
  */
-export function mergeDefinition(base, override) {
+export function mergeDefinition(base, override, options = {}) {
   if (override.id !== undefined && override.id !== base.id) {
     fail('id-mismatch', `override declares id "${String(override.id)}" but is merging into "${base.id}"`)
   }
@@ -91,6 +101,7 @@ export function mergeDefinition(base, override) {
         )
       }
       merged[form] = structuredClone(patch)
+      assertWriteScopeEnforceable(merged[form], { path: form, file: options?.file })
       continue
     }
 
@@ -99,6 +110,7 @@ export function mergeDefinition(base, override) {
       next[key] = value === undefined ? undefined : structuredClone(value)
       if (value === undefined) delete next[key]
     }
+    assertWriteScopeEnforceable(next, { path: form, file: options?.file })
     merged[form] = next
   }
 
@@ -313,7 +325,7 @@ function loadLayer(dir) {
   for (const path of listYamlFiles(dir)) {
     const source = readAgentYamlSource(path)
     const raw = parseAgentYaml(source, { file: path })
-    loaded.push(validateAgentDefinition(raw, { file: path, source }))
+    loaded.push({ file: path, definition: validateAgentDefinition(raw, { file: path, source }) })
   }
   return loaded
 }
@@ -367,16 +379,18 @@ export function loadCatalog(options) {
   const builtin = builtinAgentsDir === null ? [] : loadLayer(builtinAgentsDir)
   const user = loadLayer(agentsDir)
 
-  const byId = new Map(builtin.map((definition) => [definition.id, definition]))
-  for (const definition of user) {
+  const byId = new Map(builtin.map(({ definition }) => [definition.id, definition]))
+  for (const { definition, file } of user) {
     const base = byId.get(definition.id)
-    byId.set(definition.id, base === undefined ? definition : mergeDefinition(base, definition))
+    // The override's own file label travels into the merge so a rejected merged
+    // form names the layer the user actually has to edit.
+    byId.set(definition.id, base === undefined ? definition : mergeDefinition(base, definition, { file }))
   }
 
   const definitions = [...byId.values()].sort((left, right) => left.id.localeCompare(right.id))
   validateGraph(definitions, { reservedPresetIds: options.reservedPresetIds })
   if (options.previous !== undefined) {
-    validateAbi(definitions, options.previous, { builtinIds: new Set(builtin.map((definition) => definition.id)) })
+    validateAbi(definitions, options.previous, { builtinIds: new Set(builtin.map(({ definition }) => definition.id)) })
   }
 
   const refs = new Set()
@@ -389,7 +403,7 @@ export function loadCatalog(options) {
 
   return {
     definitions: new Map(definitions.map((definition) => [definition.id, definition])),
-    builtinIds: new Set(builtin.map((definition) => definition.id)),
+    builtinIds: new Set(builtin.map(({ definition }) => definition.id)),
     personas,
     totalPersonaBytes: totalBytes,
   }

@@ -43,6 +43,20 @@ export const WRITE_TOOLS = Object.freeze(['write', 'edit'])
 const PREFIX = 'banbo-agents: '
 
 /**
+ * Longest path fragment echoed back into a denial, in UTF-16 code units.
+ *
+ * A denial is shown to the model and to the user, while `file_path` is
+ * caller-controlled: unbounded, a single call with a megabyte-long path would
+ * put a megabyte into the transcript. The bound applies to the ECHO only —
+ * every check below still runs against the full, untruncated value, so a path
+ * whose meaning lives past the bound can never be allowed by truncation.
+ */
+const MAX_ECHO = 200
+
+/** Bound one echoed path with a trailing ellipsis; never used for a decision. */
+const echo = (value) => (value.length <= MAX_ECHO ? value : `${value.slice(0, MAX_ECHO)}…`)
+
+/**
  * Real path of the nearest existing ancestor of `target`.
  *
  * A target that does not exist yet is the normal case — `dsh-fs-local` creates
@@ -88,23 +102,29 @@ export function writeScopeGuardReason(definition, execution) {
   const scope = definition?.writeScope
   if (scope === undefined) return undefined
 
-  /** One sentence, always naming the directory this Agent may write under. */
+  /**
+   * The one denial constructor. Every refusal in this function goes through it,
+   * so each message is a single sentence that starts with `PREFIX`, names the
+   * tool, and ends with the directory this Agent may write under. Both echoed
+   * paths — the offending `file_path` and the declared scope — are bounded by
+   * {@link echo}.
+   */
   const refuse = (detail) =>
-    `${PREFIX}"${tool}" refused ${detail}; this Agent may only write under "${scope}" relative to the session workspace`
+    `${PREFIX}"${tool}" refused ${detail}; this Agent may only write under "${echo(scope)}" relative to the session workspace`
 
   const filePath = execution?.arguments?.file_path
   if (typeof filePath !== 'string' || filePath === '') {
     return refuse('because file_path is missing or is not a non-empty string')
   }
   if (filePath.includes('\0') || filePath.includes('\\')) {
-    return refuse(`for "${filePath}", which is not a plain relative path`)
+    return refuse(`for "${echo(filePath)}", which is not a plain relative path`)
   }
   if (isAbsolute(filePath) || win32.isAbsolute(filePath)) {
-    return refuse(`for the absolute path "${filePath}"`)
+    return refuse(`for the absolute path "${echo(filePath)}"`)
   }
   const normalised = posix.normalize(filePath)
   if (normalised === '..' || normalised.startsWith('../')) {
-    return refuse(`for "${filePath}", which escapes the session workspace`)
+    return refuse(`for "${echo(filePath)}", which escapes the session workspace`)
   }
 
   const workspace = execution?.agent?.session?.header?.cwd
@@ -114,7 +134,7 @@ export function writeScopeGuardReason(definition, execution) {
   const scopeRoot = resolve(workspace, scope)
   const target = resolve(workspace, normalised)
   if (target !== scopeRoot && !target.startsWith(scopeRoot + sep)) {
-    return refuse(`for "${filePath}", which is outside the write scope`)
+    return refuse(`for "${echo(filePath)}", which is outside the write scope`)
   }
 
   // Lexical containment alone is not enough: `plans/link/file.md` is inside the
@@ -129,16 +149,16 @@ export function writeScopeGuardReason(definition, execution) {
     realScope = realpathOfNearestAncestor(scopeRoot)
     realTarget = realpathOfNearestAncestor(target)
   } catch {
-    return refuse(`for "${filePath}", whose real path could not be resolved`)
+    return refuse(`for "${echo(filePath)}", whose real path could not be resolved`)
   }
   // The scope ROOT must itself live inside the workspace. Without this, a
   // `.banbo-dsh` symlink pointing at `/etc` would make `/etc` the authoritative
   // scope and silently widen the policy to the whole target directory.
   if (realScope !== realWorkspace && !realScope.startsWith(realWorkspace + sep)) {
-    return refuse(`for "${filePath}", because the write scope "${scope}" itself resolves outside the session workspace`)
+    return refuse(`for "${echo(filePath)}", because the write scope "${echo(scope)}" itself resolves outside the session workspace`)
   }
   if (realTarget !== realScope && !realTarget.startsWith(realScope + sep)) {
-    return refuse(`for "${filePath}", whose real path lies outside the write scope through a symlink`)
+    return refuse(`for "${echo(filePath)}", whose real path lies outside the write scope through a symlink`)
   }
   return undefined
 }

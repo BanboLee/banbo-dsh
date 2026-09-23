@@ -21,7 +21,7 @@
  * @module @banbolee/dsh-agents/tool-surface
  */
 
-import { FORBIDDEN_DELEGATION_TOOLS } from './schema.js'
+import { FORBIDDEN_DELEGATION_TOOLS, SHELL_TOOL_NAMES } from './schema.js'
 
 /**
  * The single shared denylist of real runtime tool names, derived from the
@@ -64,8 +64,10 @@ export const CAPABILITY_TOOLS = Object.freeze({
   // §5.2: the shell the target profile actually registers — fish first (dsh-tui
   // replaces the official bash/pwsh rows with the fish-shell tool), else bash
   // (POSIX Web), else pwsh (Windows). Exactly one is granted, so a profile that
-  // happens to register several shells does not silently widen the surface.
-  exec: Object.freeze({ prefer: Object.freeze(['fish', 'bash', 'pwsh']) }),
+  // happens to register several shells does not silently widen the surface. The
+  // order lives in `SHELL_TOOL_NAMES` (schema.js) because the `writeScope`
+  // precondition check must recognise the very same shells (§16.12).
+  exec: Object.freeze({ prefer: SHELL_TOOL_NAMES }),
   write: Object.freeze({ all: Object.freeze(['write']) }),
   edit: Object.freeze({ all: Object.freeze(['edit']) }),
   skill: Object.freeze({ all: Object.freeze(['skill']) }),

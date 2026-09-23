@@ -29,7 +29,7 @@ import { compileAllowlist } from './tool-surface.js'
 /** Stable in-process provider installed by the official base composition. */
 export const DELEGATION_PROVIDER = 'spawn'
 export const name = 'banbo-delegation'
-export const inject = ['banboAgents', 'subagents', 'jobs', 'tools', 'agentPresets', 'agents']
+export const inject = ['banboAgents', 'subagents', 'jobs', 'tools', 'agentPresets']
 
 export const Config = {
   '~standard': {
@@ -503,16 +503,21 @@ function cleanupOneShotOnSettlement(runtime, holder, childId, lease) {
  * Enforce a scoped child form's `writeScope` on the CHILD's own tool layer
  * (§16.12).
  *
- * The main-runtime guard only covers the main Agent, and a child's definition
- * cannot be recovered from its session header — the header carries the CALLER's
- * preset, not the child's agent id — so it must come from the `prepared` record
- * this delegation already holds. Identity is never guessed from a label, a
- * persona or a tool set (§11.1.1).
+ * This covers the ONE-SHOT child, which never gets a sidecar and so cannot be
+ * re-identified later. A continuable child is covered by the `agent/created`
+ * listener in `main-runtime`, which reinstalls the guard on every
+ * materialization — including the rebuild that follows an idle continuable
+ * activation being disposed. Registering here as well is harmless (two guards,
+ * same rule) and keeps the one-shot path fail-closed even if that listener never
+ * sees the child.
  *
- * Registration is skipped when the child Agent is not local (a remote run's
- * tools are not ours to guard) or when the form declares no scope. The guard
- * lives on the child's own context, so it disappears with the child; a
- * continuable child keeps it for as long as it is resumable.
+ * A child's definition cannot be recovered from its session header — the header
+ * carries the CALLER's preset, not the child's agent id — so it comes from the
+ * `prepared` record this delegation already holds. Identity is never guessed
+ * from a label, a persona or a tool set (§11.1.1).
+ *
+ * Call it only where a throw unwinds correctly: never after publication outside
+ * the owning try, and never inside a catch that means "creation failed".
  */
 function guardChildWriteScope(prepared, child) {
   const form = prepared.targetDefinition.child
@@ -532,6 +537,9 @@ async function startOneShot(runtime, prepared, options, holder, lease) {
   try {
     holder.beginStart()
     run = await runtime.subagents.start(DELEGATION_PROVIDER, request)
+    // Before `holder.attach`, so a throw here still runs `failStart` + `settle` +
+    // `lease.release` rather than leaking the reserved holder and the slot.
+    guardChildWriteScope(prepared, run.localAgent)
     holder.attach(run)
   } catch (error) {
     holder.failStart(error)
@@ -539,7 +547,6 @@ async function startOneShot(runtime, prepared, options, holder, lease) {
     lease.release()
     throw error
   }
-  guardChildWriteScope(prepared, run.localAgent)
   runtime.liveIdentities.set(run.id, childIdentity(prepared, runtime.service))
   logDelegationStart(runtime, prepared, run.id, 'one-shot', options.runInBackground === true)
   return run
@@ -678,7 +685,12 @@ async function startContinuable(runtime, prepared, options, lease) {
       signal: options.signal,
     })
     runtime.continuableLeases.set(started.childId, lease)
-    guardChildWriteScope(prepared, runtime.agents.get(started.childId))
+    // No `guardChildWriteScope` here. A continuable child is guarded by the
+    // `agent/created` listener in `main-runtime`, which runs during the child's
+    // own registration — earlier than this line, and again on every later
+    // materialization. Registering here instead would sit inside the catch that
+    // means "creation failed", so a throw would delete a LIVE child's sidecar
+    // and release its lease while the child kept running unguarded.
     logDelegationStart(runtime, prepared, started.childId, 'continuable', true)
     return {
       kind: 'continuable',
@@ -871,7 +883,7 @@ async function runBatchItem(runtime, options, task, item, noOpLease) {
     return item.final
   }
 
-  const holder = runtime.holders.reserve(`${task.agentId}: ${task.description}`)
+  const holder = runtime.holders.reserve(`${prepared.targetDefinition.displayName ?? task.agentId}: ${task.description}`)
   item.holder = holder
   try {
     const run = await startOneShot(runtime, prepared, {
@@ -1030,7 +1042,6 @@ function runtimeForCall(ctx, shared, configuredMainAgentId, parent) {
   return {
     service: ctx.banboAgents,
     subagents: ctx.subagents,
-    agents: ctx.agents,
     jobs: ctx.jobs,
     budgets: shared.budgets,
     holders: shared.holders,

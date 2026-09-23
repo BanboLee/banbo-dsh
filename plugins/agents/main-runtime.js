@@ -9,6 +9,7 @@
  */
 
 import { AGENT_ID_PATTERN, deriveToolName } from './schema.js'
+import { readChildIdentity } from './identity.js'
 import { writeScopeGuardReason } from './path-policy.js'
 import { assertToolSurface, compileAllowlist } from './tool-surface.js'
 
@@ -287,11 +288,43 @@ export function installIdentitySection(ctx) {
   })
 }
 
+/**
+ * Re-install a resumed delegated child's `writeScope` guard (§16.12).
+ *
+ * A one-shot child never gets a sidecar, so this is a no-op for it — that child
+ * is guarded at delegation time, on the `SubagentRun`'s own local Agent. A
+ * continuable child always has one, which is what makes this path work after the
+ * harness disposes and rebuilds it.
+ *
+ * A child that cannot be identified, or whose Agent has no scope, is left alone
+ * rather than failing the resume: this listener must never make a child
+ * un-resumable. The failure is loud only for a scope that exists but cannot be
+ * installed, which is a harness-shape change rather than a data condition.
+ */
+function guardResumedChildScope(agent, service) {
+  const identity = readChildIdentity(service.rootDir, agent.id)
+  if (identity === undefined) return
+  const form = service.definitions.get(identity.agentId)?.child
+  if (form?.writeScope === undefined) return
+  agent.ctx.tools.guard((execution) => writeScopeGuardReason(form, execution))
+}
+
 /** Preset-standing plugin entry. */
 export default function apply(ctx, config) {
   installIdentitySection(ctx)
   ctx.on('agent/created', ({ agent }) => {
-    if (agent.session.header.origin === 'subagent') return
+    if (agent.session.header.origin === 'subagent') {
+      // §16.12: a delegated child must be guarded on EVERY materialization, not
+      // only when the delegation created it. The harness disposes an idle
+      // continuable activation and rebuilds the child from its persisted
+      // descriptor on the next `send_message`, and that rebuild re-applies only
+      // the persona and tool filter — so a guard installed at creation time is
+      // gone, leaving a durable child with `write`/`edit` and no scope. A child
+      // cannot be identified from its session header, so the sidecar written by
+      // the delegation runtime is the sanctioned source (§11.1.1).
+      guardResumedChildScope(agent, ctx.banboAgents)
+      return
+    }
     const composedPreset = ctx.agentPresets.composedPreset(agent.ctx)
     activateMainAgent({
       agent,

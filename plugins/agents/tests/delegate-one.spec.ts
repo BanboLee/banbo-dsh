@@ -441,18 +441,20 @@ describe('a scoped child form confines its own writes', () => {
     expect(guards[0]!(execution(cwd, 'read', 'src/index.ts'))).toBeUndefined()
   })
 
-  it('installs the child form scope on a continuable child resolved from the registry', async () => {
+  it('does NOT guard a continuable child here — the agent/created listener owns that', async () => {
+    // A continuable child is rebuilt from its persisted descriptor whenever the
+    // harness resumes it, so a guard installed only at creation time would be
+    // lost. It is installed by `main-runtime`'s `agent/created` listener instead
+    // (covered by write-scope.spec.ts), and this site must stay out of it: it
+    // sits inside the catch that means "creation failed", where a throw would
+    // delete a LIVE child's sidecar and release its lease.
     const rt = runtime({ continuation: 'optional', writeScope: SCOPE })
     const guards: Array<(execution: unknown) => string | undefined> = []
     rt.agents.get = vi.fn(() => localChild(guards)) as never
 
     await call(rt, true)
-    await vi.waitFor(() => expect(guards).toHaveLength(1))
-    expect(rt.agents.get).toHaveBeenCalledWith(expect.any(String))
-
-    const cwd = workspace()
-    expect(guards[0]!(execution(cwd, 'edit', `${SCOPE}/plan.md`))).toBeUndefined()
-    expect(guards[0]!(execution(cwd, 'edit', '../outside.md'))).toMatch(/may only write under/)
+    expect(guards).toHaveLength(0)
+    expect(rt.agents.get).not.toHaveBeenCalled()
   })
 
   it('registers nothing when the form declares no scope', async () => {

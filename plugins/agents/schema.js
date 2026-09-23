@@ -85,6 +85,17 @@ export const TOOL_CAPABILITIES = Object.freeze([
 ])
 
 /**
+ * The concrete shell tool names the `exec` capability can grant, in §5.2's
+ * preference order (fish first, else bash, else pwsh).
+ *
+ * It lives here, next to the validation that needs it, because the `writeScope`
+ * precondition below must know what a shell IS; `tool-surface.js` builds its
+ * `exec` surface from this same array, so the granted surface and the
+ * precondition check can never drift apart.
+ */
+export const SHELL_TOOL_NAMES = Object.freeze(['fish', 'bash', 'pwsh'])
+
+/**
  * The single shared denylist of official general-purpose delegation entry
  * points (§5.2). The catalog validator, the preset template, and `extraTools`
  * validation all read this one array — a second copy anywhere is a defect.
@@ -446,14 +457,18 @@ function validateTools(form, path, file) {
  * disagree with the filesystem), a POSIX or Windows absolute path, and any
  * value whose normalised form is empty, `.`, or escapes upward through `..`.
  *
+ * Presence is decided by the call sites, which omit the field entirely when it
+ * is absent — that is why there is deliberately no `undefined` early return
+ * here: silently mapping an unexpected `undefined` to "no scope" would disable
+ * the policy instead of failing closed.
+ *
  * @param value - the raw `main.writeScope` / `child.writeScope`.
  * @param field - the field path for diagnostics (`main.writeScope`, …).
  * @param file - the source file label for diagnostics.
- * @returns the canonical relative path, or `undefined` when absent.
+ * @returns the canonical relative path.
  * @throws {CatalogError} `missing-field` or `bad-write-scope`.
  */
 function validateWriteScope(value, field, file) {
-  if (value === undefined) return undefined
   if (typeof value !== 'string' || value === '') {
     fail('missing-field', `${field} must be a non-empty string`, { file, field })
   }
@@ -465,6 +480,48 @@ function validateWriteScope(value, field, file) {
   if (normalised === '' || normalised === '.') reject('must name a directory below the workspace root')
   if (normalised === '..' || normalised.startsWith('../')) reject('must not escape the workspace root with ".."')
   return normalised
+}
+
+/**
+ * Reject a form whose own `writeScope` a shell would silently void.
+ *
+ * `writeScope` is enforced by `path-policy.js` on the `write` / `edit` TOOL
+ * CALLS, so it is sound only while the form has no shell: `echo x > /etc/y`
+ * never calls `write`, and no tool-surface guard can see it. The combination is
+ * therefore a hard startup error rather than a documented warning, and it is
+ * judged on the RESOLVED tool surface — a user override may add the shell while
+ * the built-in definition carries the scope, which is why `mergeDefinition`
+ * re-checks the form it produced instead of trusting either layer alone.
+ *
+ * Two shapes can grant a shell: the `exec` capability in `tools` (the only
+ * shell reachable through the closed `TOOL_CAPABILITIES` set, whose concrete
+ * names `resolveCapability` picks from {@link SHELL_TOOL_NAMES}), and a
+ * concrete shell name in `extraTools`, which `compileAllowlist` grants verbatim
+ * once the live registry has it.
+ *
+ * @param form - a raw or merged `main` / `child` form.
+ * @param options - `path` (`main` / `child`) and `file` for diagnostics.
+ * @throws {CatalogError} `write-scope-with-shell`.
+ */
+export function assertWriteScopeEnforceable(form, options = {}) {
+  if (form?.writeScope === undefined) return
+  const path = options?.path === undefined || options.path === '' ? '' : `${options.path}.`
+  const reason = 'a shell can write anywhere without calling "write" or "edit"'
+  if (Array.isArray(form.tools) && form.tools.includes('exec')) {
+    fail(
+      'write-scope-with-shell',
+      `banbo-agents: ${path}writeScope is unenforceable while ${path}tools grants the shell capability "exec"; ${reason}`,
+      { file: options?.file, field: `${path}tools` },
+    )
+  }
+  const shell = (Array.isArray(form.extraTools) ? form.extraTools : []).find((name) => SHELL_TOOL_NAMES.includes(name))
+  if (shell !== undefined) {
+    fail(
+      'write-scope-with-shell',
+      `banbo-agents: ${path}writeScope is unenforceable while ${path}extraTools grants the shell tool ${JSON.stringify(shell)}; ${reason}`,
+      { file: options?.file, field: `${path}extraTools` },
+    )
+  }
 }
 
 /** Validate a `model` object: either the inherit sentinel or a whole route. */
@@ -603,6 +660,7 @@ export function validateAgentDefinition(raw, options = {}) {
       fail('bad-depth', `main.maxDepth must be a non-negative safe integer, got ${String(maxDepth)}`, { file, field: 'main.maxDepth' })
     }
     validateTools(main, 'main', file)
+    assertWriteScopeEnforceable(main, { path: 'main', file })
     definition.main = {
       presetId,
       persona,
@@ -625,6 +683,7 @@ export function validateAgentDefinition(raw, options = {}) {
     }
     assertKnownKeys(child.model, 'model', ctx)
     validateTools(child, 'child', file)
+    assertWriteScopeEnforceable(child, { path: 'child', file })
     definition.child = {
       model: validateModel(child.model, 'child.model', file),
       persona,

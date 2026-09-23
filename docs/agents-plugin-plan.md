@@ -427,7 +427,8 @@ RetiredToolShell                    standing scope 里的空壳工具描述，�
 11. `extraTools` 中每个名字非空、不是保留的 `run_code` / `delegate_batch` / `agent_*`，也不在唯一 `FORBIDDEN_DELEGATION_TOOLS` 清单内，并且在目标 standing composition 中是可 restrict 的 global/ancestor tool；缺失时主 Agent 创建回滚；
 12. preset id 不得与 shipped、官方 user root、包内其他 preset 或另一用户 Agent 冲突；
 13. 内置 preset id 不可覆盖；用户 Agent 的已发布 preset id、toolName、已发布 main/child 形态和 child.continuation 写入 ABI manifest 后按兼容规则保护：允许新增缺失形态，禁止在文件仍存在时删除已发布形态或改变生命周期语义，破坏性修改必须换新 id；**整个定义文件被删除是唯一例外**，按 6.3 的删除语义处理（转 `RetiredToolShell` + 移除 generated preset）；
-14. `main.writeScope` / `child.writeScope` 若存在，必须是非空字符串且是**纯相对路径**：不得是绝对路径（POSIX 或 Windows）、不得含 `\` 或 NUL、规范化后不得为空、`.` 或以 `..` 开头；违反时以 `bad-write-scope`（非字符串或空串为 `missing-field`）让 Host 启动失败，不做静默截断。这里只做词法校验——本模块没有工作区、也不碰文件系统；真正的包含关系与软链接判定在执行期由 `path-policy.js` 完成（§5.2、§16.12）。
+14. `main.writeScope` / `child.writeScope` 若存在，必须是非空字符串且是**纯相对路径**：不得是绝对路径（POSIX 或 Windows）、不得含 `\` 或 NUL、规范化后不得为空、`.` 或以 `..` 开头；违反时以 `bad-write-scope`（非字符串或空串为 `missing-field`）让 Host 启动失败，不做静默截断。这里只做词法校验——本模块没有工作区、也不碰文件系统；真正的包含关系与软链接判定在执行期由 `path-policy.js` 完成（§5.2、§16.12）；
+15. **同一个形态不得同时声明 `writeScope` 与 shell**：`writeScope` 的全部效力建立在"被约束形态没有 shell"之上——shell 可以 `echo x > /etc/y`，完全不经过 `write`/`edit`。因此 `tools` 里出现 `exec`、或 `extraTools` 里出现具体 shell 工具名（`fish` / `bash` / `pwsh`，与 `tool-surface.js` 的 `exec.prefer` 共用同一份 `SHELL_TOOL_NAMES`，避免两处漂移）时，以 `write-scope-with-shell` 让 Host 启动失败。**校验跑在合并后的形态上**，所以用户层只重述 `tools` 而内置仍带 `writeScope` 的情况同样被拒——这正是静默失效最容易发生的地方。`tools` 是封闭的能力集，那里唯一可达的 shell 就是 `exec`（写具体工具名本来就是 `unknown-tool-capability`）；`extraTools` 接受任意运行期工具名并原样授予，所以必须单独查。
 
 运行时 `enabled` 不参与图结构校验。被禁用 Agent 的稳定工具仍保留，调用时明确拒绝；这样重新启用不需要重启，也不会破坏旧 descriptor。
 
@@ -1449,7 +1450,7 @@ v1.1 若要做，必须先立最小设计：
 
 ```ts
 interface Holder {
-  readonly label: string          // '<agentId>: <description>'，仅用于诊断
+  readonly label: string          // '<displayName>: <description>'，仅用于展示与诊断；**绝不用于推断身份**（§11.1.1）
   cancel(reason: string): void    // 协作式取消，幂等
   settle(): Promise<void>         // 等到底层释放，可能永不 resolve
 }
@@ -2528,12 +2529,18 @@ CI 提供单独的 `agents:gates` lane，不能把 Gate 混在普通单测中靠
 
 **已知残余风险**（如实记录，不把它包装成 sandbox）：
 
-- ~~**child 形态的注册点**~~ **（已接上）**：guard 在 `main-runtime` 按主形态注册；child 的身份在 preset scope 上不可观测——child session header 只有 `agentPreset` / `origin` / `delegationDepth`，没有 agent id，`liveIdentities` 又只存在于 delegation runtime 内部，而"用工具面反推定义"正是 §11.1.1 明令禁止的身份猜测。因此 child 形态的注册放在**挂载 child 的那一层**：`delegation.js` 的 `guardChildWriteScope(prepared, child)` 用 `prepared.targetDefinition.child` 注册 `child.ctx.tools.guard((execution) => writeScopeGuardReason(form, execution))`，两个调用点是 `startOneShot` 后的 `run.localAgent` 与 `startContinuable` 后的 `runtime.agents.get(started.childId)`（`delegation.js` 的 inject 因此新增 `agents`）。远端 child（`localAgent === undefined`）或未声明 `writeScope` 的形态不注册，保持 no-op；guard 挂在 child 自己的 ctx 上，随 child 生命周期消失，continuable child 只要可恢复就一直带着它。
-- ~~**软链接的 scope 根**~~ **（已关闭）**：原实现以"声明的 scope 的真实路径"为准，把 `<workspace>/.banbo-dsh` 做成指向工作区外的软链接就会把整个 scope 放大到链接目标。现在多一条检查：**scope 根自身的真实路径也必须落在工作区的真实路径内**，否则拒绝（`"write scope ... itself resolves outside the session workspace"`）。`write-scope.spec.ts` 用一条具名用例钉住新行为；
+- ~~**child 形态的注册点**~~ **（已接上，且必须挂在 `agent/created` 上）**：child 的身份在 preset scope 上不可观测——child session header 只有 `agentPreset` / `origin` / `delegationDepth`，没有 agent id，`liveIdentities` 又只存在于 delegation runtime 内部，而"用工具面反推定义"正是 §11.1.1 明令禁止的身份猜测。因此识别来源只能是 delegation runtime 写的 **sidecar**（`readChildIdentity`）。
+  **注册点有两处，职责不同**：
+  1. **continuable child → `main-runtime` 的 `agent/created` 监听器**（`guardResumedChildScope`）。**这是必需的，不是冗余**：harness 会在 continuable child 空闲时 dispose 它的 activation，下一次 `send_message` 走 `coldResume` 从持久化 descriptor **重建** Agent，而重建只重新应用 persona 与 toolFilter——**创建时装的 guard 会丢**。只按创建时注册会让"被 resume 的持久 child 带着 `write`/`edit` 却没有任何 scope"，且重启后同样如此。挂在 `agent/created` 上则每次 materialize 都重新装，且发生在 child 被 prompt 之前。
+  2. **one-shot child → `delegation.js` 的 `guardChildWriteScope`**，用 `run.localAgent`。one-shot child **不写 sidecar**（不可恢复），listener 无法识别它，所以只能在委派时装。该调用点在 `try` 内、`holder.attach` 之前——放在 `try` 外会在抛错时泄漏已预留的 holder 与并发槽，放在 continuable 分支的 `catch` 里（其语义是"创建失败"）会**删掉一个活着的 child 的 sidecar** 并释放它的 lease。
+- **软链接的 scope 根**：scope 根自身的真实路径必须落在工作区的真实路径内，否则拒绝——**这条关掉的是"逃出工作区"**（`<ws>/.banbo-dsh -> /etc`）。但**工作区内部的**软链接仍会放大有效范围：`<ws>/.banbo-dsh -> <ws>` 会让 `.banbo-dsh/plans/x.md` 落到 `<ws>/plans/x.md`，`-> <ws>/src` 则落到 `<ws>/src/plans/x.md`。这**不是**工作区逃逸，且 Planner 自己没有创建软链接的能力（无 `exec`），所以按"声明的是目录、不是工作区内的位置约束"接受，`write-scope.spec.ts` 用两条具名用例钉住两种情形；
+- **通过副手绕过**：Planner 的 `agent-control` 让它能 `send_message` / 委派给 `review`、`executor`、`implement`——这些形态**没有** `writeScope`，因此 Planner 可以**通过委派实现越界写**（实测：Banbo 把"追加到 README.md"路由给 `implement`，后者成功写入）。这是**设计的委派行为，不是本策略的漏洞**，但必须清楚：`writeScope` 约束的是**该形态自己的工具调用**，不是"这次任务不会改到别的文件"；
 - **TOCTOU**：guard 在工具体之前同步判定，判定与真正落盘之间仍有一个窗口——工作区里另一个有写权限的进程/Agent 可以在这个窗口里把某个还不存在的路径段换成软链接。这是"执行前路径 guard"的固有边界，只有把限制下推到文件系统层（sandbox / `openat` 语义）才能关掉；
 - **非 `write`/`edit` 的写入口**：`extraTools` 引入的第三方工具（含 MCP 写工具）不叫这两个名字，guard 完全看不见；Planner 当前没有任何 `extraTools`；
-- **解析基准**：guard 用 `header.cwd`；`dsh-tool-fs` 在挂了 sandbox policy 的部署里会改用 `sandboxPolicy.workspaceRoot` 解析。两者不一致时，guard 判定基准与工具实际落盘位置会分叉。当前 composition 不挂 sandbox policy，所以两者一致；
+- **解析基准**：guard 用 `header.cwd`；`dsh-tool-fs` 在挂了 sandbox policy 的部署里会改用 `sandboxPolicy.workspaceRoot` 解析。已核对 `dsh-sandbox-policy.resolve()`：它取的是**同一个** session cwd 的 realpath，因此与 guard 的基准一致，实测不构成分叉；
 - 读权限完全不受影响：`writeScope` 不是保密边界，Planner 依然能读工作区里的任何文件。
+
+**"没有 shell" 这个前提由 schema 强制**：同时声明 `writeScope` 与 shell 的形态会被**拒绝挂载**（§4.4 规则 15，错误码 `write-scope-with-shell`），而不是静默失效——因为 shell 可以 `echo x > /etc/y`，完全不经过 `write`/`edit`。`tools` 里查 `exec`，`extraTools` 里查具体 shell 工具名；校验跑在合并后的形态上，所以"用户层重述 `tools` 而内置仍带 scope"这条最容易静默失效的路径会被拒。已核对 Planner 两种形态的工具面里没有别的写入口。
 
 **测试**：`plugins/agents/tests/write-scope.spec.ts` 覆盖允许（scope 内、不存在的嵌套子目录、scope 目录本身、`edit` 与 `write` 等价）、拒绝（同前缀兄弟目录、工作区根、无关目录、`../` 逃逸、绝对路径、非法 `file_path`、无 `cwd`、scope 根指向工作区外）、非 `write`/`edit` 工具不受影响、无 `writeScope` 不受限、软链接内/外两种情形，以及 schema 对绝对路径 / `..` / 空值 / 反斜杠的拒绝。child 侧注册由 `delegate-one.spec.ts` 的四条用例覆盖：前台 one-shot 经 `run.localAgent` 注册并拒绝逃逸、continuable 经 `agents.get(childId)` 注册并拒绝 `../`、未声明 scope 不注册、远端 child（`localAgent === undefined`）保持 no-op。
 
