@@ -12,7 +12,7 @@
 1. 用户从官方 Agent preset picker 选择一个主 Agent；
 2. 主 Agent 只能看见授权给它的具名子 Agent 工具；
 3. 每个子 Agent 有自己的 persona、默认模型、普通工具白名单和可调用子 Agent；
-4. 单个委派可前台等待或后台运行；`delegate_batch` 像一个轻量 workflow，只并行启动 **one-shot** 子 Agent 并等待它们的 `run.result`，或在唯一 deadline 到期时返回 `partial_timeout`（未收束的资源交给 cleanup registry，不留孤儿）；
+4. 单个委派可前台等待或后台运行；`delegate_batch` 像一个轻量 workflow，接受任意有 `child` 形态的目标、把每个 item 都按 **one-shot** 执行并等待它们的 `run.result`，或在唯一 deadline 到期时返回 `partial_timeout`（未收束的资源交给 cleanup registry，不留孤儿）；
 5. 用户既可以覆盖内置 Agent，也可以通过 YAML + Markdown 新增主 Agent、子 Agent 或两者兼具的 Agent；
 6. Web 第一版只编辑启停和**子 Agent 模型覆盖**；结构、persona、权限图等高级配置由文件管理，重启后生效。
 
@@ -35,8 +35,8 @@
 | 递归控制 | 绝对深度（官方 numeric cap 强制）+ root Session **并发**上限；深度管高度、并发管宽度；不做累计启动数 | 10.2 / 10.3 |
 | 单个前台委派 | 有 `foregroundDeadlineMs`；超时发协作式 cancel，grace 用尽把 holder 移交 registry | 10.5 |
 | 后台 one-shot | 同样有 `backgroundDeadlineMs`（30 分钟）；**没有任何一条委派路径缺少 deadline** | 10.5 |
-| `delegate_batch` | **只接受 one-shot**；单一 deadline；未在 grace 内收束的 holder 所有权移交 cleanup registry，绝不产生无人持有的 run | 10.7 |
-| continuable 批量委派 | v1 明确不做（continuable 没有 `SubagentRun`，barrier 与清理语义无法共用） | 10.7.1 |
+| `delegate_batch` | 接受任意有 `child` 形态的目标，**每个 item 一律 one-shot 执行**；单一 deadline；未在 grace 内收束的 holder 所有权移交 cleanup registry，绝不产生无人持有的 run | 10.7 |
+| continuable 执行模式的批量委派 | v1 明确不做（`subagent/end` + `interrupt` 与 `run.result` + `dispose` 两套生命周期无法共用同一个 waiter） | 10.7.1 |
 | `send_message` 并发计数 | **不精确计数**；只保证新建 child 精确计数，该限制写入 README | 10.3 |
 
 **身份、持久化与删除**
@@ -68,7 +68,7 @@
 - 主/子运行形态分开配置，共享授权图；v1 的模型覆盖只作用于子 Agent 委派，主 Agent 使用官方 Session 模型选择器；
 - 递归采用**每个主 preset 固定的绝对深度上限**，授权图禁止环；深度只管高度不管宽度，因此每个 root Session 另有一份共享的**并发**上限（`maxConcurrentChildren`，默认 6，clamp `[1, 32]`），防止整棵 Agent 树 fan-out 失控；
 - Research / Explorer 固定 one-shot；其他子 Agent 可按调用选择 one-shot 或 continuable；
-- `delegate_batch` 只接受 one-shot 子 Agent，在唯一 deadline 内并行等待 `run.result`，到期返回 `partial_timeout`；未在 drain grace 内收束的 holder 所有权移交 cleanup registry（10.8），绝不产生无人持有的 run；continuable 批量委派留待 v1.1；
+- `delegate_batch` 接受任意有 `child` 形态的 Agent，每个 item 一律以 one-shot 执行，在唯一 deadline 内并行等待 `run.result`，到期返回 `partial_timeout`；未在 drain grace 内收束的 holder 所有权移交 cleanup registry（10.8），绝不产生无人持有的 run；continuable 执行模式的批量委派留待 v1.1；
 - 前台单个委派也有 deadline（默认 30 分钟）：到期发协作式 cancel，drain grace 内收束就返回带标注的部分结果，否则把 holder 交给 cleanup registry 并标注 `cleanup_deferred`；后台 one-shot 同样有 deadline（默认 30 分钟）。**不存在没有 deadline 的委派路径**——那会让一个挂死的 run 永久占住并发槽；
 - `send_message`、`list_agents`、`interrupt_agent` 保留；persona 禁止把 `send_message` 当轮询或催促工具；
 - settings 不重装正在运行的 Agent，只影响后续动作；
@@ -83,7 +83,7 @@
 - 不修改 DSH 内核，不 monkey-patch 官方对象；
 - 不注册第二个 `ctx.agentPresets`、`ctx.subagents` 或 LLM registry；
 - **不新增任何私有 Session event**，也不改写、伪造或覆盖官方 `subagent/descriptor`：Gate A 已证明私有事件类型会让子 Session 在下次加载时被 persistence 拒绝（11.1.1），身份因此走插件侧 sidecar 文件；
-- v1 不做 continuable 批量委派：`delegate_batch` 只接受 one-shot，`keepSession` 参数整体移除，mixed batch 留待 v1.1（见 10.7.1）；
+- v1 不做 continuable 执行模式的批量委派：`delegate_batch` 的每个 item 都以 one-shot 执行（`optional` 目标也不例外），`keepSession` 参数整体移除，mixed batch 留待 v1.1（见 10.7.1）；
 - 不做 picker 层的已删除 Agent 占位（tombstone 灰条目）：删除一个主 Agent 后它的 preset 干净消失，旧 Session 走官方 preset 解析失败，不做"回退到默认 Agent"，也不伪造迁移；
 - 不实现完整 Web Agent Builder；
 - 不监听用户 Agent 目录做热更新；
@@ -568,7 +568,7 @@ prompts/
 
 1. 先理解任务，再决定自己做、单个委派、batch 并行或复用 continuable；
 2. 需要同一专家继续上下文时，先 `list_agents` 找 idle continuable child，再 `send_message`，不要重复新建；
-3. `delegate_batch` 只用于相互独立、可并行的 **one-shot** 任务，且其中的 Agent 不支持保留会话；deadline 到期后基于 partial result 继续，不把 `cancel_requested` / `cleanup_deferred` / timeout 当 completed；需要保留对话的委派一律用单个 `agent_<id>`；
+3. `delegate_batch` 只用于相互独立、可并行的任务，**其中的 item 一律以 one-shot 执行、不支持保留会话**；deadline 到期后基于 partial result 继续，不把 `cancel_requested` / `cleanup_deferred` / timeout 当 completed；需要保留对话的委派一律用单个 `agent_<id>`；
 4. 合并多 Agent 结果时按 childId 去重 direct message 与 settlement notice，不重复行动；
 5. 并发超限时减少 batch、复用已有 child 或向用户解释下一步，不静默排队。
 
@@ -1058,7 +1058,7 @@ MainRuntime（每个主 preset standing scope）
 DelegationRuntime（每个主 preset standing scope）
 ├── 稳定 agent_<id> 工具
 ├── delegateOne()
-├── delegate_batch（仅 one-shot）
+├── delegate_batch（item 一律 one-shot）
 ├── 固定绝对 maxDepth
 ├── child identity 读写（11.1.1：continuable 写 sidecar 文件 / one-shot 走 live map）
 ├── HolderRegistry（10.8：超时/取消后未收束资源的唯一 owner）
@@ -1311,13 +1311,13 @@ Research、Explorer 的 `continuation` 固定 one-shot。Planner、Executor、Im
 4. 后台后不轮询、不催促、不重复委派、不亲自做同一任务；
 5. 需要同一专家继续上下文时，先 `list_agents` 找已有 idle continuable child；能复用就用 `send_message`，不要重复新建；
 6. 父 Agent 的 `send_message` 只用于补充新信息、回答子 Agent 问题、纠正方向或追加新任务；子 Agent 可以用它发送提前发现、问题和最终结果；官方 settlement notice 仍可能再次携带 closing message，主 persona 必须按 childId 把两者视为同一次完成，不重复行动；
-7. 多个互不依赖的 one-shot 结果都返回后才能继续时，用 `delegate_batch`；需要保留对话的委派一律走单个 `agent_<id>`，batch 不接受 continuable。
+7. 多个互不依赖的结果都返回后才能继续时，用 `delegate_batch`（它的 item 一律 one-shot，跑完即终结）；需要保留对话的委派一律走单个 `agent_<id>`。
 
 代码无法可靠判断两段自然语言任务是否重复，所以“不要自己做同一任务”属于 persona 约束；权限、生命周期、batch 屏障和超时收束由代码强制。
 
 ### 10.7 delegate_batch
 
-**v1 边界：batch 只接受 one-shot 子 Agent。** continuable 的批量委派不在 v1 范围，理由和 v1.1 需要补什么见 10.7.1。
+**v1 边界：batch 接受任意有 `child` 形态的 Agent，每个 item 一律以 one-shot 执行。** 目标自己的 `continuation` 不进入 batch 契约：`delegateOne` 只在 `runInBackground === true && continuation === 'optional'` 时才走 continuable 路径，而 batch item 固定传 `runInBackground: false`，因此一个 `optional` 目标在 batch 里的执行与一次前台单个 `agent_<id>` 调用是同一条 `startOneShot` 路径。v1 不做的是**在 continuable 执行模式下混合批量**，理由和 v1.1 需要补什么见 10.7.1。
 
 参数：
 
@@ -1340,8 +1340,9 @@ interface BatchArgs {
 
 - 任务数必须在 `1..maxBatchWidth` 之间（默认 4，绝对上限 6；纯 schema 校验，与 `maxConcurrentChildren` 不是同一个量）；
 - 参数校验分**两级**，语义不同，不得混用（这是唯一的拒绝粒度规则）：
-  - **契约级 → 整个调用拒绝，不启动任何 child**：任务数不在 `[1, maxBatchWidth]`、`deadlineMs` 非法、item 指向 `continuation: optional` 的 Agent、item 引用了不存在或已退役的 agentId、item 缺必填字段。这些是"模型误解了工具契约"，必须整体拒绝才能教会它正确用法，部分执行只会掩盖误解；
+  - **契约级 → 整个调用拒绝，不启动任何 child**：任务数不在 `[1, maxBatchWidth]`、`deadlineMs` 非法、item 引用了不存在或已退役的 agentId、item 缺必填字段。这些是"模型误解了工具契约"，必须整体拒绝才能教会它正确用法，部分执行只会掩盖误解；
   - **授权级 → 该项失败，其他合法项继续**：item 指向的 Agent 不在调用者当前 `allowedChildren` 内。这是运行期动态判定，合法项没有理由陪葬，`Promise.allSettled` 会如实回报每一项；
+- `continuation` **不是** batch 的契约关注点：每个 item 都以 one-shot 执行，目标是否支持续聊不改变这次执行的任何一步，因此这里没有可拒绝的东西（早期版本曾整体拒绝 `optional` 目标，理由见 10.7.1 的纠正）；
 - 两个 `agentId` 是否合法（存在、未退役、有 `child` 形态）属于契约级；它是否**被授权给当前调用者**属于授权级。前者是定义事实，后者是调用上下文事实；
 - `deadlineMs` 是 batch 的**唯一等待边界**；0、负数、NaN、非数字、超上限一律拒绝整个调用，不做静默截断（调用方需要知道自己拿到的是什么语义）；
 - one-shot 使用 `ctx.subagents.start()`；每个 item 一个 holder，`run.dispose()` 在全路径恰好调用一次（由 batch 或 cleanup registry 之一完成，见 10.8）；
@@ -1381,6 +1382,8 @@ interface BatchResultItem {
 }
 ```
 
+**batch 的 child 一律一次性，`BatchResultItem` 刻意不带 `childId`。** batch 的语义是"本轮把 N 件独立的事跑完并拿到结果"，它不承诺留下任何可继续的会话；需要保留 child 做后续追问时，用**单个后台 `agent_<id>`**（后台 + `optional` → 持久 childId）。因此本节**不得**重新引入"batch 拒绝 continuable 目标"的守卫：那条守卫拒绝的是 **Agent 身份**，而真正成立的边界是"每个 item 都是 one-shot 执行"，它拦不住任何误用（batch 本来就不会走 continuable），只会切掉本来正确的用法。
+
 聚合规则（逐条实现，不靠推断）：
 
 | items 的实际状态 | `BatchResult.status` |
@@ -1410,15 +1413,16 @@ batch 不做"部分结果拼接"：`result` 只来自对应 holder 自己已结�
 
 若"不合作 provider 探针"这一条不成立，暂停实现并回到产品决策：那说明"到点返回"和"资源有主"无法同时满足，不得自动降级。
 
-### 10.7.1 v1.1 候选：continuable batch（v1 明确不做）
+### 10.7.1 v1.1 候选：continuable 执行模式的 batch（v1 明确不做）
 
-continuable 的批量委派（早期草案的 mixed batch）在 v1 移除。根因是 continuable child 没有 `SubagentRun`：
+**v1 只保留 one-shot 执行模式的 batch。** continuable 执行模式的批量委派（早期草案的 mixed batch）在 v1 移除，根因是**两套生命周期无法塞进同一个等待器**：
 
-- 它由官方 continuation manager 直接持有 Activation；
-- barrier 只能等配对的 `subagent/end`，而不是 `run.result`；
-- 清理只能走 `interrupt`（停止当前轮、保留可恢复 Session），没有对应的 `dispose`。
+- continuable child 由官方 continuation manager 直接持有 Activation，batch 若要在这个模式下等它，barrier 只能等配对的 `subagent/end`，而不是 `run.result`；
+- 清理也只能走 `interrupt`（停止当前轮、保留可恢复 Session），没有对应的 `dispose`。
 
-把这两种生命周期塞进同一个等待器，正是原方案 deadline 语义无法自洽的来源。v1 只保留单个 `agent_<id>` 的 continuable 委派（10.5），批量场景用多个 `agent_<id>` 调用或后台 one-shot 覆盖。
+一个 waiter 同时面对"会 `dispose` 的 run"和"只能 `interrupt` 的 Session"，deadline 语义必然自相矛盾。v1 只保留单个 `agent_<id>` 的 continuable 委派（10.5），批量场景用多个 `agent_<id>` 调用或后台 one-shot 覆盖。
+
+**纠正一句旧说法**：本节早期版本写的是"continuable child 没有 `SubagentRun`"——这句话**只对 continuable 执行路径成立**。一个 `continuation: optional` 的 Agent 经 `startOneShot` 执行时**有** `SubagentRun`，batch 因此能够、并且现在确实接受 `optional` 目标作为 one-shot item（见 10.7 与 16.10）。"没有 `SubagentRun`"不是拒绝某个目标的理由，只是"不能在同一等待器里混合两种收束方式"的理由。
 
 v1.1 若要做，必须先立最小设计：
 
@@ -1531,7 +1535,7 @@ $DSH_HOME/banbo-agents/.children/
 
 **写入时机**：
 
-1. **continuable**：`delegateOne` / `delegate_batch` 在调用 `startContinuable()` **之前**写 sidecar。写入失败 = 创建失败，不进入下一步；
+1. **continuable**：`delegateOne` 走 continuable 执行路径时，在调用 `startContinuable()` **之前**写 sidecar（batch item 永远是 one-shot，不写 sidecar）。写入失败 = 创建失败，不进入下一步；
 2. **one-shot**：**不落盘**。在 `await ctx.subagents.start()` 返回后，用 `run.id`（= 已发布的 child session id）作为键写入 live map。`start()` 返回时 child 的 `followup` 刚被提交、prompt 组装尚未完成，而身份只在 child 执行 `agent_*` 工具时才被读取——中间隔着至少一次模型往返，时序余量是 step 级而非微秒级；若 Gate A 探针发现该余量不足，改为在 child 的首次 `agent/pre-step` 上补齐；
 3. **live map 必须及时回收**：条目在该 child 的 run 结算时（与并发槽释放同一处、同一同步段）删除。map 的存活集合因此恒等于"当前活着的 one-shot child 集合"，不随会话历史增长。一个 root Session 生命周期内可以连续创建很多 one-shot；若不在结算时删除，条目会无界累积成内存泄漏。测试必须断言"全部 child 结算后 map.size === 0"；
 4. 身份（sidecar 或内存）可用是 child 后续可以继续发起 `agent_*` 委派的必要条件。
@@ -1801,11 +1805,11 @@ banbo-agents: <条件>（agent: <id>）；修复：<具体路径或动作>
 | child identity 写入失败（continuable） | child 创建整体回滚，不发布身份未知的持久 child；one-shot 的 live map 写入是同步内存操作，不引入失败路径 |
 | continuable child 的身份缺失 / 损坏 / 版本不支持 | 禁止该 Session 继续 `agent_*` 与 `delegate_batch`；普通工具和对话照常；错误提示恢复 YAML 或重建 child。one-shot 不走这条路径（无持久身份可缺失） |
 | child 身份有效但当前 `allowedChildren` 已删除该边 | 该次委派拒绝；不使用身份中的 generation 放宽权限 |
-| batch item 指向不存在或已退役的 agentId | **契约级**：整个调用拒绝，不启动任何 child |
-| batch item 指向 `continuation: optional` 的 Agent | **契约级**：整个调用拒绝，不启动任何 child；提示改用单个 `agent_<id>` |
+| batch item 指向不存在的 agentId（`batch-target-invalid`） | **契约级**：整个调用拒绝，不启动任何 child；文案按本节统一格式给出修复路径（换一个存在的 agentId，或把该任务交给单个 `agent_<id>`），不只陈述"目标无效" |
+| batch item 指向已退役的 agentId（`batch-target-retired`） | **契约级**：整个调用拒绝，不启动任何 child；文案指出定义已被删除、需恢复 YAML 后重启（同 11.2） |
 | batch item 目标不在调用者当前 `allowedChildren` 内 | **授权级**：该项失败并附原因，其他合法项继续；不启动被拒项 |
-| batch 超过当前 `maxBatchWidth` 或绝对上限 6 | **契约级**：整个调用拒绝，不启动任何 child |
-| batch `deadlineMs` 非法（0 / 负数 / NaN / 非数字 / 超上限） | **契约级**：整个调用拒绝，不做静默截断 |
+| batch 超过当前 `maxBatchWidth` 或绝对上限 6（`bad-batch-width`） | **契约级**：整个调用拒绝，不启动任何 child；文案给出当前上限，并指出修复路径（拆成多次调用，或复用已有 child） |
+| batch `deadlineMs` 非法（0 / 负数 / NaN / 非数字 / 超上限，`bad-batch-deadline`） | **契约级**：整个调用拒绝，不做静默截断；文案给出合法区间 `[60000, 1800000]`，而不是只说"非法" |
 | batch deadline 到期 | 返回 `partial_timeout`；未完成项记 `cancel_requested` 或 `cleanup_deferred`，明确提示"该子任务未返回结果，已请求取消" |
 | 后台 one-shot 超 `backgroundDeadlineMs` | 按 10.5 第 5 条收束：grace 内收束记 `killed`，否则记 `failed` + "清理已移交 registry"；并发槽在结算时释放，不永久占用 |
 | 前台委派超 `foregroundDeadlineMs` | 返回带标注的部分结果；grace 内收束记 `cancel_requested`，否则记 `cleanup_deferred`，不把部分输出当完整结果 |
@@ -1893,7 +1897,7 @@ v1 选择 Host logger。若未来需要把路由与成本数据**展示在 Web U
 7. ToolCapability / extraTools → runtime tool name 编译、精确名、profile 缺失、exec fish/bash 解析、strict allowlist；
 8. delegateOne 授权、禁用、model preflight、并发占用/释放、one-shot/continuable 选择；
 9. 后台 one-shot jobs Task 的单次通知、cancel/Host dispose、`backgroundDeadlineMs` 到期后的 cancel + grace + registry 交接、以及 finally run.dispose；Provider remove 阻止新 start，既有 run 由原 Task 收束；断言挂死的后台 run 不会永久占用并发槽；
-10. delegate_batch `maxBatchWidth`、对 `optional` Agent 的整体拒绝、root Session 并发超限、allSettled、以 `run.result` 为唯一 terminal、deadline、聚合状态真值表、取消和清理；
+10. delegate_batch `maxBatchWidth`、`optional` 目标按 one-shot 执行（不再整体拒绝，且返回值里没有 `childId`）、root Session 并发超限、allSettled、以 `run.result` 为唯一 terminal、deadline、聚合状态真值表、取消和清理；
 11. cleanup registry：`cancel()` 幂等、登记早于启动、正常路径自行注销、超时路径被接管、`drain()` 超时记录未收束清单、Host dispose 后无残留 holder；
 12. preset compiler：generation hash 稳定性（同输入同 hash、路径无关）、已存在 generation 复用不写盘、`complete` 标记缺失的目录永不激活、指针切换原子性、切换后旧 generation 不影响运行中的进程、清理保留 current + 最近 1 代、重复 id 检测（含 8.7 降级下的唯一例外）、**删除后 generated preset 不再出现在新 generation**、`RetiredToolShell` 空壳保留与执行报错、破坏性 ABI shape 修改拒绝；
 13. child identity：**continuable** 在调用 `startContinuable()` 之前把 sidecar 写到 `.children/<childId>.json`，写入原子（temp + rename）、失败导致创建整体回滚；文件缺失 / JSON 损坏 / `version` 不支持 → 身份未知；缺失或损坏的身份只禁止继续委派、不禁止普通工具；身份与官方 descriptor 字段不重复、不同步漂移；**one-shot 不写任何文件**（断言 `.children/` 不因 one-shot 增长），其身份只在 live map 中且 `start()` 返回后立即可查；**batch 并发启动 6 个 one-shot 时，每个 child 的 map 条目必须指向它自己的 agentId**（这是本项的核心回归断言）；**任何路径下断言 Session 日志中不含插件私有事件类型**（Gate A 证否的回归锁）；
@@ -1934,7 +1938,7 @@ dsh-tui 0.10.2 profile + @banbolee/dsh-agents
 6. child 严格 allowlist 生效，不能直接执行隐藏工具；extraTools 在不同 profile 精确解析；
 7. Banbo 深度 2 和 Planner 深度 1 被 wrapper 每次重算 + 官方 header/cap 双重强制；旧 descriptor 即使显示历史下一层工具，在降低 cap 后也执行拒绝；
 8. Research / Explorer one-shot 且默认不可见 agent-control；其他 optional Agent 后台 continuable 可 `send_message`；单个后台 one-shot 返回 jobId、只通知一次并总是 dispose；新建 child（含后台 one-shot）占用并发槽并在结算后幂等释放；前台单个委派超 `foregroundDeadlineMs`、后台 one-shot 超 `backgroundDeadlineMs` 时分别按 10.5 收束，都不无限期占用并发槽；
-9. `delegate_batch` 只接受 one-shot：并行、部分失败、`maxBatchWidth`、root Session 并发超限 fail-fast、deadline `partial_timeout`、聚合状态真值表逐条覆盖；对 `optional` Agent 的 batch item 在启动任何 child 前整体拒绝；
+9. `delegate_batch` 的 item 一律 one-shot（目标可以是任意有 `child` 形态的 Agent）：并行、部分失败、`maxBatchWidth`、root Session 并发超限 fail-fast、deadline `partial_timeout`、聚合状态真值表逐条覆盖；`optional` 目标作为 batch item 时走与前台单个 `agent_<id>` 相同的 one-shot 路径，且结果项不含 `childId`；
 10. cleanup registry：不合作 holder（忽略 abort 且 `dispose()` 不结算）在 grace 用尽后被接管、batch 按时返回 `cleanup_deferred`、Host dispose 时 registry drain 并记录未收束清单；`cancel()` 重复调用幂等；任何路径下 `run.dispose()` 恰好一次且无 orphan；
 11. settings 正常保存、revision 冲突和 owner validate 拒绝；外部坏配置只保留 last-good + Host warning；改模型后新委派生效，现有 continuable route 不变；
 12. 禁用不删除工具但调用拒绝；当前会话不被中断；both Agent 不支持分形态启停；
@@ -1953,7 +1957,7 @@ dsh-tui 0.10.2 profile + @banbolee/dsh-agents
 3. 新增一个 child Agent；
 4. 新增一个 main Agent 并在重启后从 picker 选择；
 5. 用 `includeDefaults: false` 只保留自己的团队；
-6. 看懂前台等待、后台 continuable、batch（仅 one-shot）、并发超限和 `send_message` 复用的区别；看懂"部分结果 / 已请求取消 / 清理已移交"三种终态的含义，不把后两者当成功；
+6. 看懂前台等待、后台 continuable、batch（item 一律 one-shot、不可续聊）、并发超限和 `send_message` 复用的区别；看懂"部分结果 / 已请求取消 / 清理已移交"三种终态的含义，不把后两者当成功；
 7. 看懂旧主 Session 重启后使用当前新配置继续运行，而旧 continuable child 保持创建时 descriptor；
 8. 看懂删除 Agent 的后果（主 Agent 连整棵子树失效、纯 child 只留空壳），知道想停用应该用 `enabled: false` 而不是删文件；并根据错误提示修复一个悬空授权、坏 persona 路径或并发超限。
 
@@ -2152,7 +2156,7 @@ CI 提供单独的 `agents:gates` lane，不能把 Gate 混在普通单测中靠
 |---|---|
 | `plugins/agents/tests/delegation.spec.ts` | 命名工具可见性、直接边 allowlist、统一 forbidden delegation denylist、`extraTools` 精确边界、remainingDepth 重算、continuable identity 缺失/有效两种冷恢复路径、one-shot live map 在并发 batch 下的正确归属 |
 | `plugins/agents/tests/budget.spec.ts` | 同步原子占位、幂等释放、并发超限 fail-fast 不排队、batch 一次性占满 N 槽 |
-| `plugins/agents/tests/batch.spec.ts` | 聚合状态真值表逐条、`optional` 目标整体拒绝、deadline `partial_timeout`、工具 `timeoutMs` 层级、registry 交接与 `cleanup_deferred`、不合作 holder 无 orphan |
+| `plugins/agents/tests/batch.spec.ts` | 聚合状态真值表逐条、`optional` 目标按 one-shot 执行且返回值无 `childId`、deadline `partial_timeout`、工具 `timeoutMs` 层级、registry 交接与 `cleanup_deferred`、不合作 holder 无 orphan |
 | `plugins/agents/tests/resume.spec.ts` | main current-policy resume、`RetiredToolShell` 让旧冻结 filter 通过 `restrict()`、退役目标执行拒绝、删除后 preset 不再出现在新 generation、continuable 身份 fail-closed 降级 |
 
 退出条件：
@@ -2429,6 +2433,52 @@ CI 提供单独的 `agents:gates` lane，不能把 Gate 混在普通单测中靠
 
 **记录一处自查纠正**：§16.7 的 C6 行最初写的是"未在真实运行中强制触发——模型自行判断不需要联网研究"。**那句话是错的**：C6 当时**根本没有跑过**（无任何 C6 转写），"模型自行判断"是编造的原因。补跑后 C6 通过（见上表）。教训与 §16.5 的 N3 同源：**没有证据就不要写原因**；reviewer 只能核对文档的"形式"（是否有一行、是否标了 ⚠️），无法核对行内那句**事实断言**。
 
+### 16.10 batch 接受 continuable 目标 + 决策点信息（真实会话复盘，已修）
+
+**来源**：委派纪律（§5.4，来自 §16.9 的复盘）的一次验收运行，3 个 case（T1/T2/T3）。T2 的任务是"两个互不依赖的任务并行跑"。模型先调 `delegate_batch`，被**拒了两次**：第一次是官方工具参数校验器——它不认识 `run_in_background` 这个 `BatchArgs` 里根本不存在的字段；第二次是本插件当时的 `batch-target-continuable`（两个目标都是 `executor`，`continuation: optional`）。被拒之后模型改用**两个后台**委派，随即结束本轮、没有任何结果，向用户汇报"两个后台 Agent 并行运行中…目前还没有拿到任何结果"。**同一个任务**在随后一次运行里换成**两个顺序的前台**委派，一次通过。
+
+**根因**：拒绝之后模型仍然需要并行，而当时剩下的唯一并行路径就是后台；`batch-target-continuable` 只说了"不行"，没说"那用什么"。真正的变量是**"还剩下多于一条可行路径，而报错没有指出是哪一条"**——于是同一个任务在两次运行里分裂成两种做法，其中一种（后台 + 本轮无结果）恰好违反 §5.4 的 D4。
+
+**修复**（四层，按模型看到信息的时刻排列）：
+
+1. **删掉过宽的守卫**：batch 接受任意有 `child` 形态的 Agent，每个 item 一律以 one-shot 执行（10.7）。旧守卫拒绝的是 **Agent 身份**，而 batch 从来不走 continuable 执行路径——它拦的不是执行模式，只会切掉本来正确的用法；
+2. **规则写进 `delegate_batch` 描述**：item 无论 `continuation` 为何都以 one-shot 运行；需要保留 child 就用后台 `agent_<id>`；返回值里每个 item 在本轮就是终态。这条防的是"第一次尝试就失败"；
+3. **规则写进 `run_in_background` 参数描述**：默认 false；只有"我接下来要做的事与它完全无关"才设 true，"我自己也把它做一遍"不算理由；需要结果来回答用户就留 false。参数描述在**设这个标志的那一刻**被读到，是 D3 最有效的落点；
+4. **剩余拒绝一律给出修复路径**：`batch-target-invalid`、`batch-target-retired` 与 `deadlineMs` 区间错误不再只陈述错误，而是在同一句里给出可执行的下一步（§13 的统一格式）。它们在**计划刚失败的那一秒**被读到。
+
+**原理一句话**：**模型的决策发生在哪一刻，信息就必须出现在哪一刻**——persona 在会话开头加载，离具体参数几十轮；工具描述在生成调用时可见；报错在计划刚失败的那一秒返回。同一条规则写在不同位置，命中率完全不同。
+
+**取舍**：batch 是纯增量能力（并行 + 本轮拿到全部终态），不删除任何现有组合——`optional` 目标既能走单个前台 `agent_<id>`，也能进 batch，只是后者不保留会话。代价是那一次调用的 child 不可续聊，而 `BatchResultItem` 里没有 `childId`，模型连误用的句柄都没有（10.7）。
+
+**未做**：没有把 §5.4 的 D3 改成决策树措辞。persona 已经很长，且它是最弱的一层（在会话开头加载、离决策点最远）；D3 保留一句原则，具体判断交给工具描述与报错。
+
+**同批发现（独立缺陷）**：`foregroundDeadlineMs` 从 15 分钟提到 **30 分钟**（默认 1800000，clamp `[60000, 3600000]`）。触发它的是一次真实全文审查：1184 行的模块加它的 spec 与支撑模块，跑满旧上限时**零产出**——child 还在读，一个字都没写，整轮作废，只能改到后台重做。该会话的复盘见 §16.9。前台与后台因此在 30 分钟上对齐。
+
+### 16.11 D9/D10 验收（T4）：中断纪律的真实表现与三处根因
+
+§16.9 的 D9（先问后断）与 D10（中断后交代）在前三个 case 里**从未被触发**——新纪律让模型倾向于不中断。为验证它们，构造了 T4：先委派 `review` 审查 1184 行全文，**5 分钟后用户发第二条消息要求停止**（这是 D7 允许的正当理由）。
+
+**结果：D9 未通过，D10 通过。**
+
+| 规则 | 实测 |
+|---|---|
+| **D9 先问后断** | ❌ `interrupt_agent` ×1，**`send_message` ×0**——没问就中断 |
+| **D10 中断后交代** | ✅ 最终回答明确写"**结果：没有拿到结论**"、把它中断前的最后一步标为"**未经验证的线索**、我不把它当作结论转述"、并主动提出"这个 child 上下文还在，可以重新唤醒继续跑" |
+
+**三处根因，没有一处是"模型不听话"**（推理原文为证）：
+
+1. **没有"等待 continuable child"的原语**。模型推理写着："I should not busy-poll… don't duplicate the running job's work… So I should just wait. **But how? There's no explicit wait tool for children.**" → 它发明了 `fish: sleep 300`。后果不止难看：**它把用户"停掉它"的指令延迟了 5 分钟**（用户 +300s 说停，它睡到 +373s 才处理）。
+2. **模型不知道前台 deadline 有多长**。它推理说 "Foreground is right"，紧接着 "**there's a risk of the foreground deadline returning cancel_requested**"——于是改传了 `run_in_background: true`（实测 child mode = `continuable`）。它只知道"有 deadline"，不知道是 30 分钟。
+3. **D9 的措辞压不过用户的直接命令**。收到"停掉它"后推理直接跳到 "I should interrupt it"，**完全没考虑先问 child 要结论**。D9 当时是长段落中段的一个子句。
+
+**修复**：
+
+- **F1（治根因 3）**：D9 重写为**先问后断、且置于最前**，并显式覆盖"用户/父 Agent 要求停止时也一样"。六份可委派 persona 全部更新，四份 continuable 子 persona 的共享段落仍逐字节一致。`builtin-catalog.spec.ts` 增加**位置断言**（`第一步永远是 send_message` 必须出现在 `允许中断的理由只有` 之前）——只断言"存在"不够，它当初就是"存在但被淹没"。
+- **F2（治根因 2）**：把**真实的前台 deadline 值**渲染进 `agent_<id>` 的工具描述（`A FOREGROUND call waits up to N minutes…`）。值从 preset budget 现读，不写死——budget 是按 preset 可配的。断言要求描述匹配 `/FOREGROUND call waits up to \d+ minutes/`。
+- **F3（治根因 1）**：工具描述明确"后台 child 的结局**以后续通知到达，没有 wait 调用，用 shell sleep 等待不算等待**；需要结果就留在前台"。
+
+**未做**：没有新增真正的"等待 child"工具。F2+F3 的目标是让模型**不需要**发明等待——知道 deadline 就能判断该不该前台，知道 sleep 无效就不会去睡。若真实使用中仍出现 `sleep`，再考虑加原语。
+
 ---
 
 ## 17. 仓库联动清单
@@ -2480,7 +2530,7 @@ tests/qa/pty.spec.ts                              Unix socket 重试（2 项）
 - strict tool policy、授权图、absolute depth、enabled 和 root Session 并发上限在运行时被强制；每次 continuable child 委派都按当前 catalog 的边授权判定，而非历史工具白名单；
 - README 如实声明 v1 的三条非承诺：不精确计数 `send_message` 复用轮次、并发计数不跨 Host 重启、删除主 Agent 会连带整棵子树失效；
 - 13.1 的六类结构事件已接入，且有一条自动化断言证明**日志中不含 prompt 正文、子 Agent 输出、persona 正文、凭据与绝对路径**；
-- `delegate_batch` 只接受 one-shot，deadline 到期返回 `partial_timeout`，不永久 pending；未在 grace 内收束的 holder 由 cleanup registry 接管，任何路径下都不存在无人持有的 run；
+- `delegate_batch` 的 item 一律 one-shot（接受任意有 `child` 形态的目标），deadline 到期返回 `partial_timeout`，不永久 pending；未在 grace 内收束的 holder 由 cleanup registry 接管，任何路径下都不存在无人持有的 run；
 - 前台单个委派受 `foregroundDeadlineMs`、后台 one-shot 受 `backgroundDeadlineMs`、batch 受 `batchDeadlineMs`；三条路径都不无限期挂起，且都不存在"无 deadline 的委派"；
 - 主 Agent 模型完全交给官方 Session 模型选择器；本插件只覆盖子 Agent 委派 route；
 - child identity 的写入（continuable 持久 / one-shot 内存）、冷恢复解析、缺失/损坏/未知版本的 fail-closed 降级都有 fixture；identity 只影响委派授权，不影响该 child 的普通工具；

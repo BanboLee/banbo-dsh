@@ -295,7 +295,13 @@ describe('built-in personas follow the §5.3 skeleton', () => {
       // 5A — duration is not a reason; reviews legitimately take a while.
       /"跑得久"本身不是理由/,
       /数分钟到十几分钟/,
-      // 5B — ask, and WAIT for the reply, before interrupting.
+      // 5B — ask, and WAIT for the reply, before interrupting. The ask must be
+      // the FIRST step and must survive an explicit stop order: a real session
+      // showed the model reading "stop it" as an immediate order and calling
+      // `interrupt_agent` without ever asking the child for what it had, so the
+      // clause is no longer allowed to sit mid-paragraph as a trailing detail.
+      /第一步永远是 `send_message`/,
+      /要求停止时也一样/,
       /并等它回复/,
       /不算问过/,
       // 5C — say what was left unverified.
@@ -310,6 +316,13 @@ describe('built-in personas follow the §5.3 skeleton', () => {
         for (const pattern of required) {
           expect(pattern.test(text), `${definition.id} (${profile.persona}) is missing ${String(pattern)}`).toBe(true)
         }
+        // Prominence, not just presence: the ask-first sentence must precede the
+        // list of legitimate interrupt reasons. Buried after it, it lost to a
+        // direct "stop it" instruction.
+        const askAt = text.indexOf('第一步永远是 `send_message`')
+        const reasonsAt = text.indexOf('允许中断的理由只有')
+        expect(askAt, `${definition.id} (${profile.persona}) must state ask-first before the reasons`).toBeGreaterThanOrEqual(0)
+        expect(reasonsAt, `${definition.id} (${profile.persona}) must list the interrupt reasons`).toBeGreaterThan(askAt)
         checked += 1
       }
     }

@@ -157,9 +157,8 @@ describe('contract preflight rejects the whole call before any start', () => {
     }
   })
 
-  it('rejects optional, unknown, retired and malformed items as contract errors', async () => {
+  it('rejects unknown, retired and malformed items as contract errors', async () => {
     const invalid = [
-      [{ agentId: 'optional', prompt: 'x', description: 'x' }],
       [{ agentId: 'unknown', prompt: 'x', description: 'x' }],
       [{ agentId: 'retired', prompt: 'x', description: 'x' }],
       [{ agentId: 'a', prompt: '', description: 'x' }],
@@ -173,6 +172,17 @@ describe('contract preflight rejects the whole call before any start', () => {
     }
   })
 
+  it('names the fix for an unknown target and for a retired definition', async () => {
+    const unknown = runtime([])
+    await expect(call(unknown, { tasks: [{ agentId: 'unknown', prompt: 'x', description: 'x' }] }))
+      .rejects.toThrow(/pick an Agent that has a child form/i)
+    const retired = runtime([])
+    await expect(call(retired, { tasks: [{ agentId: 'retired', prompt: 'x', description: 'x' }] }))
+      .rejects.toThrow(/restore its YAML and restart, or pick another Agent/i)
+    const deadline = runtime([])
+    await expect(call(deadline, { deadlineMs: 1 })).rejects.toThrow(/\[60000, 1800000\]/)
+  })
+
   it('reserves every batch slot atomically before the first start', async () => {
     const fixtures = [runFixture('a-1'), runFixture('b-1')]
     const rt = runtime(fixtures)
@@ -180,6 +190,34 @@ describe('contract preflight rejects the whole call before any start', () => {
     await expect(call(rt)).rejects.toThrow(/maxConcurrentChildren|exceed/i)
     expect(rt.subagents.start).not.toHaveBeenCalled()
     expect(rt.budgets.running('root')).toBe(2)
+  })
+})
+
+describe('a continuable (optional) target is a legal batch item', () => {
+  it('accepts it and runs it through the one-shot path, never startContinuable', async () => {
+    // Batch executes EVERY item with `startOneShot`, so a target's
+    // `continuation` never applies to this execution mode: an `optional` Agent
+    // runs exactly as it does on a foreground single call. The removed
+    // `batch-target-continuable` guard rejected the AGENT, not an execution mode.
+    const fixture = runFixture('optional-child')
+    const rt = runtime([fixture])
+    const startContinuable = vi.fn(async () => {
+      throw new Error('batch must never create a continuable child')
+    })
+    ;(rt.subagents as any).startContinuable = startContinuable
+    const pending = call(rt, { tasks: [{ agentId: 'optional', prompt: 'optional task', description: 'O' }] })
+    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    fixture.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'optional done' }] })
+    await expect(pending).resolves.toEqual({
+      status: 'completed',
+      deadlineMs: 150,
+      items: [{ agentId: 'optional', status: 'completed', result: 'optional done', stopReason: 'completed' }],
+    })
+    expect(rt.subagents.start, 'the optional target must reach a terminal state through the one-shot path')
+      .toHaveBeenCalledTimes(1)
+    expect(startContinuable, 'batch must never take the continuable path').not.toHaveBeenCalled()
+    expect(fixture.dispose).toHaveBeenCalledTimes(1)
+    expect(rt.budgets.running('root')).toBe(0)
   })
 })
 

@@ -768,7 +768,7 @@ function validateBatchContract(runtime, options, budget) {
   )) {
     throw new DelegationError(
       'bad-batch-deadline',
-      'banbo-agents: delegate_batch deadlineMs must be a safe integer in [60000, 1800000]',
+      'banbo-agents: delegate_batch deadlineMs must be a safe integer in the accepted range [60000, 1800000] milliseconds',
     )
   }
 
@@ -785,20 +785,20 @@ function validateBatchContract(runtime, options, budget) {
     const record = abiRecord(runtime.service, task.agentId)
     const definition = runtime.service.definitions.get(task.agentId)
     if (record?.retired === true) {
-      throw new DelegationError('batch-target-retired', `banbo-agents: delegate_batch target "${task.agentId}" is retired`, {
+      throw new DelegationError('batch-target-retired', `banbo-agents: delegate_batch target "${task.agentId}" is retired because its definition was deleted; restore its YAML and restart, or pick another Agent`, {
         targetAgentId: task.agentId,
       })
     }
     if (definition?.child === undefined) {
-      throw new DelegationError('batch-target-invalid', `banbo-agents: delegate_batch target "${task.agentId}" does not exist or has no child form`, {
+      throw new DelegationError('batch-target-invalid', `banbo-agents: delegate_batch target "${task.agentId}" does not exist or has no child form; pick an Agent that has a child form`, {
         targetAgentId: task.agentId,
       })
     }
-    if (definition.child.continuation !== 'one-shot') {
-      throw new DelegationError('batch-target-continuable', `banbo-agents: delegate_batch accepts one-shot targets only; "${task.agentId}" is optional/continuable`, {
-        targetAgentId: task.agentId,
-      })
-    }
+    // No `continuation` check here. Batch executes EVERY item through
+    // `startOneShot`, so a target's `continuation` never applies to this
+    // execution mode: an `optional` Agent runs exactly as it does on a
+    // foreground single call. The removed `batch-target-continuable` guard was
+    // over-broad — it rejected the AGENT, not an execution mode.
   }
 }
 
@@ -1057,11 +1057,19 @@ function namedTool(ctx, shared, configuredMainAgentId, record) {
   // calling `agent_review`. Read it from the live definition, not the ABI
   // record, which deliberately does not carry it.
   const guidance = ctx.banboAgents?.definitions?.get(record.id)?.child?.guidance
+  // §16.10: the caller cannot judge "will this fit in the foreground?" without
+  // knowing the actual deadline, and a real session chose background purely to
+  // dodge a deadline it could not see. Render the LIVE value, not a constant —
+  // the budget is per-preset configurable.
+  const foregroundMs = ctx.banboAgents?.definitions?.get(configuredMainAgentId)?.main?.budget?.foregroundDeadlineMs
+  const deadlineClause = typeof foregroundMs === 'number'
+    ? ` A FOREGROUND call waits up to ${Math.round(foregroundMs / 60_000)} minutes for the child to settle`
+    : ' A FOREGROUND call waits for the child to settle'
   return defineTool({
     name: record.toolName,
     description: record.retired === true
       ? `Retired Agent ${record.id}; calling this compatibility shell always fails until its definition is restored and the Host restarts.`
-      : `Delegate one bounded task to the "${record.id}" Agent.${typeof guidance === 'string' && guidance !== '' ? ` ${guidance}` : ''} A FOREGROUND call (the default) waits for the child to settle — or for the foreground deadline, after which it returns a cancel_requested or cleanup_deferred status — and is never resumable afterwards: the child ends with the call. Set run_in_background to true to keep it: a one-shot Agent then returns a job id, and an Agent whose continuation is optional returns a durable child id (reachable with send_message when you have agent-control).`,
+      : `Delegate one bounded task to the "${record.id}" Agent.${typeof guidance === 'string' && guidance !== '' ? ` ${guidance}` : ''}${deadlineClause} — or for the foreground deadline, after which it returns a cancel_requested or cleanup_deferred status — and is never resumable afterwards: the child ends with the call. Set run_in_background to true to keep it: a one-shot Agent then returns a job id, and an Agent whose continuation is optional returns a durable child id (reachable with send_message when you have agent-control). A background child's outcome arrives later as a notice; there is no wait call, and sleeping in a shell is not a way to wait — if you need the result now, stay in the foreground.`,
     parameters: {
       prompt: {
         type: 'string',
@@ -1075,7 +1083,7 @@ function namedTool(ctx, shared, configuredMainAgentId, record) {
       },
       run_in_background: {
         type: 'boolean',
-        description: 'Run in the background. Defaults to false.',
+        description: 'Run in the background. Defaults to false. Set true ONLY when you have other, UNRELATED work to do while this child runs; "I will also do this task myself" is NOT a reason. If you need this result to answer the user, leave it false: a background child ends your turn without a result, and an optional Agent then returns a durable child id you can reach with send_message.',
       },
     },
     output: textOutput,
@@ -1104,7 +1112,7 @@ function namedTool(ctx, shared, configuredMainAgentId, record) {
 function batchTool(ctx, shared, configuredMainAgentId) {
   return defineTool({
     name: 'delegate_batch',
-    description: 'Run 1..maxBatchWidth independent one-shot Agent tasks as one foreground barrier. Continuable Agents are rejected. Returns every item terminal, including partial failures and deadline cleanup state.',
+    description: 'Run 1..maxBatchWidth independent Agent tasks as ONE foreground barrier and return every result in the same turn. Each item runs its target as a ONE-SHOT run regardless of that Agent\'s continuation, so a batch child can never be resumed with send_message afterwards. To keep a child for follow-up work, make a single background agent_<id> call instead — background plus an optional Agent yields a durable child. Every item is terminal on return, including partial failures and deadline cleanup state.',
     parameters: {
       tasks: {
         type: 'array',

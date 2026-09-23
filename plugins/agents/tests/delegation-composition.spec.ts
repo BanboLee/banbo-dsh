@@ -367,6 +367,33 @@ describe('the delegation runtime plugin still mounts with a real registry', () =
       expect(description, 'background must name both terminal shapes').toMatch(/run_in_background[\s\S]*job id/)
       expect(description).toMatch(/durable child id/)
       expect(description, 'send_message needs agent-control').toMatch(/send_message when you have agent-control/)
+      // A caller cannot judge "will this fit in the foreground?" without the
+      // actual deadline, and a real session chose background purely to dodge a
+      // deadline it could not see. The clause must carry the LIVE value.
+      expect(description, 'the foreground deadline must be stated in minutes').toMatch(/FOREGROUND call waits up to \d+ minutes/)
+      expect(description, 'a background child has no wait call').toMatch(/no wait call/)
+      expect(description, 'shell sleep is not a way to wait').toMatch(/sleeping in a shell is not a way to wait/)
+
+      // Batch always executes every item through the one-shot path, so its
+      // description must say that a target's `continuation` does not apply
+      // here. Without that clause a coordinator batches an `optional` Agent and
+      // then tries to resume a child that was never created as continuable.
+      const batchDescription = host.ctx.tools.get('delegate_batch')?.description ?? ''
+      expect(batchDescription, 'batch must state that items run one-shot regardless of continuation')
+        .toMatch(/one-shot run regardless of[\s\S]*continuation/i)
+      expect(batchDescription, 'batch must point follow-up work at a single background call')
+        .toMatch(/background[\s\S]*agent_<id>/i)
+
+      // The delegation rule belongs where the model SETS the flag, not only in
+      // the tool description it may skim.
+      const backgroundParameter = (host.ctx.tools.get(deriveToolName('review'))?.parameters as any)
+        ?.properties?.run_in_background?.description ?? ''
+      expect(backgroundParameter, 'run_in_background must declare its default')
+        .toMatch(/defaults to false/i)
+      expect(backgroundParameter, 'run_in_background requires UNRELATED concurrent work')
+        .toMatch(/UNRELATED work/i)
+      expect(backgroundParameter, 'a needed result must keep the call foreground')
+        .toMatch(/need this result[\s\S]*leave it false/i)
 
       // The definition's `guidance` — "when to use this expert, and when NOT
       // to" — must reach the model. It was validated and stored but rendered
