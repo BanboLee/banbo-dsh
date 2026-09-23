@@ -367,6 +367,21 @@ describe('the delegation runtime plugin still mounts with a real registry', () =
       expect(description, 'background must name both terminal shapes').toMatch(/run_in_background[\s\S]*job id/)
       expect(description).toMatch(/durable child id/)
       expect(description, 'send_message needs agent-control').toMatch(/send_message when you have agent-control/)
+
+      // The definition's `guidance` — "when to use this expert, and when NOT
+      // to" — must reach the model. It was validated and stored but rendered
+      // NOWHERE, so a coordinator had only the tool NAME to guess from and
+      // reviewed work itself instead of calling `agent_review`.
+      for (const definition of definitions.values()) {
+        // `guidance` belongs to the CHILD form — the named tool always delegates
+        // to a child, so that is the sentence a caller needs.
+        const guidance = definition.child?.guidance
+        const text = host.ctx.tools.get(deriveToolName(definition.id))?.description ?? ''
+        if (typeof guidance === 'string' && guidance !== '') {
+          expect(text, `${definition.id}: its guidance must be in the tool description`).toContain(guidance)
+        }
+      }
+      expect(host.ctx.tools.get(deriveToolName('review'))?.description).toContain('"review"')
     } finally {
       await ctx.fiber.dispose()
     }

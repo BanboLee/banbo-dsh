@@ -2364,6 +2364,24 @@ CI 提供单独的 `agents:gates` lane，不能把 Gate 混在普通单测中靠
 
 **仍未覆盖**：Web profile 端到端（用户决定不做）。
 
+### 16.8 主 Agent 不按专家分工派活（真实使用暴露，已修）
+
+**现象（用户报告）**：让 Banbo 做审查类任务时，**它自己审查**，不调用 `agent_review`。用户本来想要"Banbo 做调度者：要审查就叫 reviewer，要修复就叫 implementer"，并一度考虑把 `review` 提升为主 Agent——最后确认真正的问题是**调度行为**，不是缺一个主 Agent。
+
+**根因（两个，都要修）**：
+
+1. **`child.guidance` 从未送达模型**。每个 Agent 定义里的 `guidance`（"当任务需要独立审查一段改动、结论或方案时使用；**不要**使用它代替负责修改的 Implement"）被 schema 校验、被存储、被 §5.3 要求"明确何时用/何时不用"（阶段 3 第 3 条标了 ✅），但**没有任何地方把它渲染给模型**——具名工具的描述里只有机械行为（前台/后台/可续接）。于是主 Agent 只能从**工具名**猜分工。`abiRecordFor` 也刻意不带 `guidance`。
+2. **Banbo 的 persona 没有路由表**。`banbo-main.md` 只写了"把相互独立的工作分派给合适的专家"这类空话，而 `planner-main.md` 第 23 行本来就有明确路由（"需要外部资料时委派 Research，需要独立计划审查时委派 Review"）。Banbo 是唯一缺的。
+
+**修复**：
+
+- `delegation.js` 的 `namedTool` 从**活定义**（`ctx.banboAgents.definitions`）读出 `child.guidance` 并拼进工具描述：`Delegate one bounded task to the "<id>" Agent. <guidance> A FOREGROUND call …`。这样每个专家的"何时用/何时不用"在**决策时刻**就摆在模型面前。
+- `banbo-main.md` 的 `Delegation Policy` 加**按产出性质**的路由表（审查→`agent_review`、改代码→`agent_implement`、外部资料→`agent_research`、定位→`agent_explorer`、拆解协调→`agent_planner`、跑命令机械改动→`agent_executor`），并把 `Non-goals` 第一条改成"不代替专家承担审查与实现：判断依据是**产出性质**不是任务大小"——这样既堵住"自己 review"，又不与原有的"不把小任务拆成多轮委派"冲突。
+
+**真实端到端验证**：在真实 dsh-tui 里给 Banbo 一个纯审查任务（"审查 `namedTool` 的 description 拼接"）——它**调用 `agent_review`**，session 日志出现 `depth=1 origin=subagent` 的 review 子会话，由子 Agent 实际跑测试并给出结论；Banbo 汇总后主动说"要不要我把 minor 落实成改动？**那属于改代码，我会交给 implement**"。路由策略端到端生效。
+
+**测试网补强**：`delegation-composition.spec.ts` 新增断言——**每个** shipped 定义的 `child.guidance` 都必须出现在对应具名工具的描述里（变异验证：去掉渲染即报 `executor: its guidance must be in the tool description`）。
+
 **记录一处自查纠正**：§16.7 的 C6 行最初写的是"未在真实运行中强制触发——模型自行判断不需要联网研究"。**那句话是错的**：C6 当时**根本没有跑过**（无任何 C6 转写），"模型自行判断"是编造的原因。补跑后 C6 通过（见上表）。教训与 §16.5 的 N3 同源：**没有证据就不要写原因**；reviewer 只能核对文档的"形式"（是否有一行、是否标了 ⚠️），无法核对行内那句**事实断言**。
 
 ---

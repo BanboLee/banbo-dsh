@@ -1050,11 +1050,18 @@ function compositionToolNames(ctx, parent, composedPreset) {
 
 /** One stable named child tool; a retired record remains only an ABI shell. */
 function namedTool(ctx, shared, configuredMainAgentId, record) {
+  // §5.1/§5.3: each definition carries the authoritative "when to use this
+  // expert, and when NOT to" sentence. Until this was rendered, a main agent
+  // saw only the tool's mechanical behaviour and had to guess the routing from
+  // the tool NAME — which is why a coordinator reviewed work itself instead of
+  // calling `agent_review`. Read it from the live definition, not the ABI
+  // record, which deliberately does not carry it.
+  const guidance = ctx.banboAgents?.definitions?.get(record.id)?.child?.guidance
   return defineTool({
     name: record.toolName,
     description: record.retired === true
       ? `Retired Agent ${record.id}; calling this compatibility shell always fails until its definition is restored and the Host restarts.`
-      : `Delegate one bounded task to the named ${record.id} Agent. A FOREGROUND call (the default) waits for the child to settle — or for the foreground deadline, after which it returns a cancel_requested or cleanup_deferred status — and is never resumable afterwards: the child ends with the call. Set run_in_background to true to keep it: a one-shot Agent then returns a job id, and an Agent whose continuation is optional returns a durable child id (reachable with send_message when you have agent-control).`,
+      : `Delegate one bounded task to the "${record.id}" Agent.${typeof guidance === 'string' && guidance !== '' ? ` ${guidance}` : ''} A FOREGROUND call (the default) waits for the child to settle — or for the foreground deadline, after which it returns a cancel_requested or cleanup_deferred status — and is never resumable afterwards: the child ends with the call. Set run_in_background to true to keep it: a one-shot Agent then returns a job id, and an Agent whose continuation is optional returns a durable child id (reachable with send_message when you have agent-control).`,
     parameters: {
       prompt: {
         type: 'string',
