@@ -24,7 +24,7 @@ import { parseDocument } from 'yaml'
  * @property {string} persona
  * @property {string[]} tools
  * @property {string[]} [extraTools]
- * @property {string} [writeScope] relative directory `write`/`edit` are confined to
+ * @property {string|false} [writeScope] relative directory `write`/`edit` are confined to; `false` cancels an inherited scope
  * @property {number} maxDepth
  * @property {Record<string, number>} budget
  */
@@ -39,7 +39,7 @@ import { parseDocument } from 'yaml'
  * @property {string} guidance
  * @property {string[]} tools
  * @property {string[]} [extraTools]
- * @property {string} [writeScope] relative directory `write`/`edit` are confined to
+ * @property {string|false} [writeScope] relative directory `write`/`edit` are confined to; `false` cancels an inherited scope
  * @property {'one-shot' | 'optional'} continuation
  */
 
@@ -544,9 +544,10 @@ export function hasWriteScope(form) {
  * @throws {CatalogError} `write-scope-with-shell`.
  */
 export function assertWriteScopeEnforceable(form, options = {}) {
-  // `false` is an explicit cancel, so it means the same thing as absent here:
-  // there is no scope to void, and a shell is therefore allowed.
-  if (form?.writeScope === undefined || form.writeScope === false) return
+  // The same predicate both registration sites use, so "declares a scope",
+  // "declares a cancel" and "declares nothing" cannot be judged differently here
+  // than they are at the guard.
+  if (!hasWriteScope(form)) return
   const path = options?.path === undefined || options.path === '' ? '' : `${options.path}.`
   const reason = 'a shell can write anywhere without calling "write" or "edit"'
   if (Array.isArray(form.tools) && form.tools.includes('exec')) {

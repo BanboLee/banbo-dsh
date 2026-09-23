@@ -559,6 +559,12 @@ async function startOneShot(runtime, prepared, options, holder, lease) {
     // It is legal here precisely because the run was never attached.
     holder.failStart(error)
     try {
+      // Unbounded on purpose, and unlike the deadline paths: `dispose()` cancels
+      // first (abort + machine.cancel + whenIdle), so it settles unless the
+      // child ignores cancellation entirely. The holder and the slot are
+      // released below either way, and this path only runs when installing the
+      // guard throws, which is a harness-shape change rather than a data
+      // condition.
       await run.dispose()
     } catch {
       // The run is already live; a failing dispose must not mask the original

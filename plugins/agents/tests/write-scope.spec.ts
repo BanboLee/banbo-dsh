@@ -11,7 +11,7 @@
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -308,8 +308,20 @@ describe('writeScopeGuardReason — symlink defence', () => {
     expect(writeScopeGuardReason(SCOPE, execution(workspace, 'write', '.banbo-dsh/plans/plan.md') as never))
       .toBeUndefined()
     // …and it really does land outside the declared directory, still inside the
-    // workspace: that is the widening this case documents.
-    expect(realpathSync(join(workspace, '.banbo-dsh'))).toBe(realpathSync(join(workspace, 'elsewhere')))
+    // workspace. Asserting the RESOLVED landing directory, not just the allow:
+    // the point of this case is that the write ends up somewhere other than
+    // `.banbo-dsh/plans`, which an allow-only assertion would not catch. The
+    // declared path stays `.banbo-dsh/plans` lexically — only its real path
+    // moved — which is precisely the widening being documented.
+    const landed = resolve(workspace, '.banbo-dsh/plans/plan.md')
+    const declaredDir = resolve(workspace, '.banbo-dsh')
+    const realLandingDir = realpathSync(declaredDir)
+    expect(realLandingDir).toBe(realpathSync(join(workspace, 'elsewhere')))
+    expect(realLandingDir).not.toBe(declaredDir)
+    // The scope check compares real paths, so the resolved target is what the
+    // backend publishes to — it is no longer under the declared directory.
+    expect(realpathSync(dirname(dirname(landed)))).toBe(realLandingDir)
+    expect(join(realLandingDir, 'plans', 'plan.md')).not.toContain(`${sep}.banbo-dsh${sep}`)
   })
 
   it.skipIf(!SYMLINKS)('denies when the real path cannot be resolved at all', () => {

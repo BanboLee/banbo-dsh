@@ -72,6 +72,24 @@ const fail = (code, message, options) => {
  * @throws {CatalogError} `id-mismatch`, `incomplete-new-form`, or
  *   `write-scope-with-shell` when the merged form would void its own scope.
  */
+/**
+ * Drop the cancel sentinel from a finished definition, in place.
+ *
+ * `writeScope: false` exists only to carry "cancel" from a user layer through
+ * normalisation to the merge — see `mergeDefinition`. Once merging is done it
+ * has no meaning, and a definition that never went through a merge (a user agent
+ * with no built-in of the same id) would otherwise keep it. Leaving the catalog
+ * with a single spelling of "no policy" — an absent field — is what keeps later
+ * consumers from having to know the sentinel exists at all.
+ *
+ * @param definition - one merged definition.
+ */
+function stripWriteScopeCancel(definition) {
+  for (const form of ['main', 'child']) {
+    if (definition[form]?.writeScope === false) delete definition[form].writeScope
+  }
+}
+
 export function mergeDefinition(base, override, options = {}) {
   if (override.id !== undefined && override.id !== base.id) {
     fail('id-mismatch', `override declares id "${String(override.id)}" but is merging into "${base.id}"`)
@@ -110,11 +128,12 @@ export function mergeDefinition(base, override, options = {}) {
 
     const next = { ...base[form] }
     // `writeScope: false` is the only way a YAML layer can CANCEL an inherited
-    // scope. It must be read from the RAW override, before the generic copy:
-    // "absent" and "cancelled" both normalise to a form with no `writeScope` at
-    // all, so the merged shape alone cannot tell them apart. `null` — what an
-    // accidentally-empty `writeScope:` line parses to — deliberately stays an
-    // error, so leaving the value blank can never disable the policy.
+    // scope. The sentinel arrives here because normalisation KEEPS it rather
+    // than dropping it — `loadCatalog` validates every layer before merging, so
+    // a cancel erased at validation could never be acted on, which is exactly
+    // how this feature was dead once. `null` — what an accidentally-empty
+    // `writeScope:` line parses to — deliberately stays an error, so leaving the
+    // value blank can never disable the policy.
     if (patch.writeScope === false) delete next.writeScope
     for (const [key, value] of Object.entries(patch)) {
       if (key === 'writeScope' && value === false) continue
@@ -397,6 +416,14 @@ export function loadCatalog(options) {
     // form names the layer the user actually has to edit.
     byId.set(definition.id, base === undefined ? definition : mergeDefinition(base, definition, { file }))
   }
+
+  // The cancel sentinel has done its job by now: it exists only so the merge can
+  // tell "cancel" from "inherit", and a definition with no builtin to merge into
+  // never reaches the merge at all. Dropping it here leaves the catalog with ONE
+  // spelling of "no policy" — absent — so no later consumer has to know the
+  // sentinel exists. This class of bug has already bitten twice; the fewer
+  // places that must remember it, the better.
+  for (const definition of byId.values()) stripWriteScopeCancel(definition)
 
   const definitions = [...byId.values()].sort((left, right) => left.id.localeCompare(right.id))
   validateGraph(definitions, { reservedPresetIds: options.reservedPresetIds })
