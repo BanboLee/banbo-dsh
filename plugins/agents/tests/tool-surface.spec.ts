@@ -129,6 +129,91 @@ describe('compileAllowlist', () => {
     expect(allow).toEqual(['read', 'read_image', 'lsp_diagnostics', 'mcp__codegraph__explore'])
   })
 
+  /* --------------------------------------------------------- ambient --- */
+
+  /**
+   * §5.2 — a form that already holds a shell inherits the tools this plugin
+   * cannot classify, so installing a plugin is enough to make its tools usable.
+   * The rule is derived from `exec` on purpose: a form with a shell can already
+   * read, write and run anything, so an extra unclassifiable tool adds no new
+   * class of risk to it, while the allowlist would only hide tools the user
+   * deliberately installed.
+   */
+  const AMBIENT = new Set([
+    ...STANDARD,
+    'lsp_diagnostics',
+    'mcp__codegraph__explore',
+    'agent_review',
+    'delegate_batch',
+  ])
+  const OWN = new Set(['agent_review', 'delegate_batch'])
+
+  it('grants third-party tools to a form that has a shell', () => {
+    const allow = compileAllowlist({
+      capabilities: ['read', 'exec'],
+      registered: AMBIENT,
+      ownTools: OWN,
+    })
+    expect(allow).toContain('lsp_diagnostics')
+    expect(allow).toContain('mcp__codegraph__explore')
+    // Exactly one shell, chosen by `exec.prefer` — which one depends on what
+    // this fixture registers, so assert the property rather than the name.
+    expect(allow.filter((name) => ['fish', 'bash', 'pwsh'].includes(name))).toHaveLength(1)
+  })
+
+  it('grants nothing ambient to a form without a shell', () => {
+    // `explorer` and `research` are the only genuinely tool-limited forms, and
+    // `planner` carries a `writeScope` whose whole soundness rests on having no
+    // shell. None of them may inherit a tool whose effects nobody can describe.
+    const allow = compileAllowlist({ capabilities: ['read', 'search'], registered: AMBIENT, ownTools: OWN })
+    expect(allow).toEqual(['read', 'read_image', 'grep', 'glob'])
+  })
+
+  it('never grants this bundle\'s own delegation tools as ambient', () => {
+    // They are not in the capability vocabulary, but they are granted per-child
+    // by the delegation runtime. Handing `agent_review` to a form that is not
+    // authorised to call it would show it a tool that can only ever fail.
+    const allow = compileAllowlist({ capabilities: ['read', 'exec'], registered: AMBIENT, ownTools: OWN })
+    expect(allow).not.toContain('agent_review')
+    expect(allow).not.toContain('delegate_batch')
+  })
+
+  it('never grants a forbidden runtime tool, even to a form with a shell', () => {
+    const allow = compileAllowlist({
+      capabilities: ['read', 'exec'],
+      registered: new Set([...AMBIENT, 'run_code', 'subagent', 'workflow']),
+      ownTools: OWN,
+    })
+    for (const forbidden of ['run_code', 'subagent', 'workflow']) {
+      expect(allow, `${forbidden} must stay ungrantable`).not.toContain(forbidden)
+    }
+  })
+
+  it('grants no ambient tool when the bundle cannot identify its own surface', () => {
+    // Fail closed: without `ownTools` the bundle cannot tell its delegation
+    // tools from third-party ones, and hiding a third-party tool is the lesser
+    // error. A service built without the slot behaves exactly like this.
+    for (const ownTools of [undefined, null, [], 'nope']) {
+      const allow = compileAllowlist({
+        capabilities: ['read', 'exec'],
+        registered: AMBIENT,
+        ownTools: ownTools as never,
+      })
+      expect(allow, `ownTools=${String(ownTools)}`).not.toContain('lsp_diagnostics')
+      expect(allow).not.toContain('agent_review')
+    }
+  })
+
+  it('still grants an ambient tool that was ALSO named explicitly', () => {
+    const allow = compileAllowlist({
+      capabilities: ['read'],
+      extraTools: ['lsp_diagnostics'],
+      registered: AMBIENT,
+      ownTools: OWN,
+    })
+    expect(allow.filter((name) => name === 'lsp_diagnostics')).toHaveLength(1)
+  })
+
   it('refuses an extraTool that is not a real runtime name', () => {
     // §5.2: only exact runtime names; no globs, no prefixes, no silent drops.
     expect(() => compileAllowlist({ capabilities: [], extraTools: ['mcp__*'], registered: STANDARD }))

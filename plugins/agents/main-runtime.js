@@ -104,6 +104,10 @@ export function buildMainAllowlist(service, agentId, registered) {
     capabilities: main.tools,
     extraTools: main.extraTools,
     registered,
+    // The bundle's own delegation surface is excluded from the ambient grant:
+    // those names are not in the capability vocabulary, but they are granted
+    // per-child below, and an unauthorised Agent must not even SEE them.
+    ownTools: service.delegationTools,
   })
 
   if (main.maxDepth > 0 && definition.allowedChildren.length > 0) {

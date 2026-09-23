@@ -391,6 +391,13 @@ export default async function apply(ctx, config) {
       // Do not replace this with a scope lookup, and do not rely on
       // cross-package module identity here.
       compositionTools: new Map(),
+      // The delegation surface THIS bundle registers into each preset scope
+      // (`agent_<id>` and `delegate_batch`), published by the delegation runtime
+      // at apply time. Capability resolution needs it to tell the plugin's own
+      // tools apart from third-party ones: the former are not in the capability
+      // vocabulary but must never be handed to an Agent that is not authorised
+      // to call them (§5.2).
+      delegationTools: new Set(),
     }))
     new BanboAgentsCatalog(ctx)
   } catch (error) {

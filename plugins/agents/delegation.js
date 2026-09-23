@@ -335,6 +335,10 @@ export function prepareDelegation(options) {
     capabilities: target.child.tools,
     extraTools: target.child.extraTools,
     registered,
+    // Same exclusion as the main form: this bundle's delegation tools are
+    // granted per-child just below, so the ambient rule must not hand them to
+    // a child that is not authorised to call them.
+    ownTools: service.delegationTools,
   })
   if (remainingDepth > 0 && target.allowedChildren.length > 0) {
     for (const childId of target.allowedChildren) {
@@ -1234,9 +1238,18 @@ export default function apply(ctx, config) {
   for (const record of ctx.banboAgents.abi.agents) {
     if (record.hasChild === true || record.retired === true) {
       ctx.tools.register(namedTool(ctx, shared, config.agentId, record))
+      // Recorded so capability resolution can tell this bundle's own delegation
+      // surface apart from third-party tools: these names are not in the
+      // capability vocabulary, and handing them to an unauthorised Agent would
+      // show it tools that can only ever fail (§5.2). Optional-chained for the
+      // same reason as `compositionTools`: a service built without the slot
+      // simply gets no ambient grant rather than crashing the preset.
+      ctx.banboAgents.delegationTools?.add(record.toolName)
     }
   }
-  ctx.tools.register(batchTool(ctx, shared, config.agentId))
+  const batch = batchTool(ctx, shared, config.agentId)
+  ctx.tools.register(batch)
+  ctx.banboAgents.delegationTools?.add(batch.name)
 
   ctx.on('subagent/end', (info) => {
     if (shared.continuableLeases.has(info.id)) {

@@ -156,13 +156,66 @@ export function resolveCapability(capability, registered) {
 }
 
 /**
+ * The names this capability vocabulary owns.
+ *
+ * Derived, never hand-maintained: a name is owned when some capability can
+ * grant it. Everything a composition registers that is NOT in here is, by
+ * definition, a tool this plugin does not manage — in practice a third-party or
+ * MCP tool the user installed.
+ */
+const OWNED_TOOL_NAMES = new Set(
+  Object.values(CAPABILITY_TOOLS).flatMap((spec) => [
+    ...(spec.all ?? []),
+    ...(spec.prefer ?? []),
+    ...(spec.optional ?? []),
+  ]),
+)
+
+/**
+ * Tools a composition registers that this plugin does not own and does not
+ * register itself (§5.2).
+ *
+ * These are "ambient": the plugin cannot classify them, because a third-party
+ * tool's schema says nothing about whether it reads, writes or executes. They
+ * are granted only to forms that already hold a shell — see `compileAllowlist`.
+ *
+ * @param registered - every live name in the composition.
+ * @param ownTools - names this bundle registers (its delegation surface). When
+ *   this is not known, NO ambient tool is granted: without it the bundle cannot
+ *   tell its own delegation tools from third-party ones, and exposing `agent_*`
+ *   to an Agent that is not authorised to call it would be worse than hiding a
+ *   third-party tool.
+ * @returns the ambient names, sorted for determinism.
+ */
+export function ambientToolNames(registered, ownTools) {
+  if (!(ownTools instanceof Set)) return []
+  return [...registered]
+    .filter((name) =>
+      !OWNED_TOOL_NAMES.has(name) &&
+      !FORBIDDEN_RUNTIME_TOOLS.includes(name) &&
+      !ownTools.has(name))
+    .sort()
+}
+
+/**
  * Compile a definition's capability list plus `extraTools` into one allowlist.
  *
  * Order is capability declaration order, then `extraTools` in the order given,
- * with duplicates removed — a deterministic list so a tool filter is stable
- * across restarts and comparable in tests.
+ * then ambient tools, with duplicates removed — a deterministic list so a tool
+ * filter is stable across restarts and comparable in tests.
  *
- * @param options - `capabilities`, optional `extraTools`, `registered`.
+ * §5.2 — ambient tools go to exactly the forms that already hold a shell, and
+ * to no others. The reasoning is that a form with `exec` can already read,
+ * write and run anything through the shell, so an unclassifiable extra tool adds
+ * no new class of risk to it; the allowlist buys no safety there and only hides
+ * tools the user deliberately installed. The converse is what matters: a
+ * tool-limited form (`explorer`, `research`) must not inherit a tool whose
+ * effects nobody can describe, and neither must a `writeScope` form, because an
+ * ambient write tool would silently void the path policy that is sound only
+ * while the form has no unguarded write path.
+ *
+ * @param options - `capabilities`, optional `extraTools`, `registered`, and the
+ *   bundle's own `ownTools` (its delegation surface).
  * @returns the allowlist.
  * @throws {ToolSurfaceError} on an unavailable capability, an `extraTools` name
  *   the registry does not have, or an `extraTools` name that is forbidden.
@@ -196,6 +249,16 @@ export function compileAllowlist(options) {
     if (seen.has(name)) continue
     seen.add(name)
     allow.push(name)
+  }
+  // §5.2 — the derived rule, in one place. `exec` is the marker for "this form
+  // can already do anything": it is the shell, so no allowlist entry constrains
+  // it. Forms without it keep a surface this plugin can describe completely.
+  if ((options.capabilities ?? []).includes('exec')) {
+    for (const name of ambientToolNames(registered, options.ownTools)) {
+      if (seen.has(name)) continue
+      seen.add(name)
+      allow.push(name)
+    }
   }
   return allow
 }

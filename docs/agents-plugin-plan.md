@@ -515,6 +515,7 @@ const CATALOG_LIMITS = {
 
 规则：
 
+- **ambient（第三方工具）按 `exec` 派生，不逐个点名**（§16.13）：composition 里注册的、**能力词表不拥有**、也不属于本插件自己的委派面（`agent_*` / `delegate_batch`）、且不在 `FORBIDDEN_RUNTIME_TOOLS` 里的工具，就是"ambient"。**有 `exec` 的形态继承全部 ambient；没有的一个都不继承。** 理由：有 shell 的形态本来就能读写执行任何东西，多一个无法分类的工具**不增加任何风险类别**，allowlist 在那里买不到安全、只挡住了用户特意装的工具；反过来，`explorer` / `research` 的 tool-limited 与 `planner` 的 `writeScope` 前提都必须靠"不继承无法分类的工具"来保住。词表拥有 composition 注册的**全部**工具，所以 ambient **只可能是第三方工具**——这一条要随 `CAPABILITY_TOOLS` 一起复查；
 - `goal`、`present` 只给主 Agent；
 - 子 Agent 默认不直接 `ask-user`，问题发给父 Agent；
 - `agent-control` 包含 `list_agents`、`send_message`、`interrupt_agent`；默认只给可能长期协作的 optional 子 Agent；Research / Explorer 固定 one-shot，默认不授予 agent-control，避免误导其尝试续聊或管理长期 child；
@@ -523,6 +524,7 @@ const CATALOG_LIMITS = {
 - `exec` 在目标 profile 中解析为实际可见 shell：优先 fish，否则 bash，否则 pwsh（Windows）；**恰好授予一个**（profile 同时注册多个 shell 不会因此放宽工具面）；一个都没有时，依赖它的 Agent 装配失败；
 - allowlist 编译为真实 runtime tool names；新增 Host 工具不会自动获得授权；
 - 高级用户可用 `extraTools` 精确授予 codegraph、MCP 等第三方最终 runtime tool name；只接受精确字符串，不支持 glob/前缀/别名；不得授予 `FORBIDDEN_DELEGATION_TOOLS` 中的 DSH 通用委派入口；按 profile 在主 Agent 创建时解析，缺失就回滚，不静默忽略；第三方工具后装或改名需要重启，第三方 schema、安全边界和外部副作用不属于本插件保证；
+- **有了 ambient 派生（§16.13）之后，`extraTools` 的定位变了**：它不再是"让第三方工具可见"的**唯一**途径，而是**精确授予**——给**没有 shell** 的形态点名一个它本来继承不到的工具（例如给 `research` 单独开 `lsp_diagnostics`）。有 shell 的形态已经自动继承，不需要再点名。这也修掉了 `extraTools` 作为内置默认不可用的老问题：它对未注册的名字**硬报错**（"install the plugin and restart"），所以任何内置默认都会让没装该插件的 profile 起不来；ambient 派生没有这个问题——**没装就没有这个工具，也就没有东西可继承**；
 - PTC 的 `run_code` 是保留传输名，不直接进入 filter；过滤它调用的最终能力工具；
 - `writeScope` 是路径级写入策略（§16.12）：只对声明它的那个形态的 `write` / `edit` 生效，`read` 与其它工具完全不受影响；它不是 sandbox，而且在同一个形态拿到 `exec` 之后就不再成立。
 
@@ -2547,6 +2549,40 @@ CI 提供单独的 `agents:gates` lane，不能把 Gate 混在普通单测中靠
 **测试**：`plugins/agents/tests/write-scope.spec.ts` 覆盖允许（scope 内、不存在的嵌套子目录、scope 目录本身、`edit` 与 `write` 等价）、拒绝（同前缀兄弟目录、工作区根、无关目录、`../` 逃逸、绝对路径、非法 `file_path`、无 `cwd`、scope 根指向工作区外）、非 `write`/`edit` 工具不受影响、无 `writeScope` 不受限、软链接内/外/scope 根两种情形、反斜杠与 NUL 规则（只有该规则能拦下的输入）、`realpathSync` 失败分支（ELOOP）、拒绝信息的回显上限，以及 schema 对绝对路径 / `..` / 空值 / 反斜杠的拒绝与 `writeScope: false` 的取消语义。
 **child 侧**：one-shot 的委派时注册由 `delegate-one.spec.ts` 覆盖（前台 one-shot 经 `run.localAgent` 装上守卫并拒绝逃逸、未声明 scope 不注册、远端 child 保持 no-op、守卫注册抛错时已发布的 run 被 dispose 且不泄漏 holder/并发槽）；**continuable child 与 resume 由 `write-scope.spec.ts` 的"resumed children"一组覆盖**——它捕获 `main-runtime` 注册的 `agent/created` listener，用真实 `ToolRuntime` + 合成 sidecar 触发，验证拒绝/允许、无 sidecar 不注册、定义无 scope 不注册、sidecar 指向已删除 agent 时不阻断恢复。**batch 路径**由 `batch.spec.ts` 覆盖（两个 item 中只有声明了 scope 的那个被守卫）。
 **取消语义**由 `write-scope.spec.ts` 的"cancelling a scope"一组覆盖，其中**必须有一条走真实 `loadCatalog`**——`loadCatalog` 会先校验每一层再合并，所以只在 `mergeDefinition` 上测取消会得到一个全绿但功能已死的套件（这条回归真实发生过）。
+
+### 16.13 ambient 工具：第三方工具按 `exec` 派生继承
+
+**来源**：用户实测反馈——装了 `@banbolee/dsh-lsp-diagnostics`（三个 profile 都装了，并由用户级 `cordis.patch.yml` 挂成全局工具），但 Banbo **看不到 `lsp_diagnostics`**。
+
+**根因**：agent 的工具面是**封闭的能力白名单**。`banbo.yaml` 只列能力名，`lsp_diagnostics` 不是能力，也没有任何 agent 声明 `extraTools`；而 agent 作用域的 `tools.restrict({allow})` **会过滤继承来的工具**（tools 包原文："A restriction filters what a scope inherits — the global layer and every ancestor layer on its chain"）。所以插件装了、全局注册了，agent 依然看不到。**不是安装问题。**
+
+**问题**：这对用户是反直觉的——"装了插件就该能用"。而 `extraTools` 作为解法有两个硬伤：(a) 只能逐个点名，用户每装一个新插件都要手工识别；(b) 它对未注册的名字**硬报错**，所以**无法作为内置默认**（会让没装该插件的 profile 起不来）。
+
+**做法（用户决策：派生，不做开关）**：
+
+```
+ambient  = registered \ 能力词表 \ FORBIDDEN_RUNTIME_TOOLS \ 本插件自己的委派面
+授予条件  = 该形态的 capabilities 含 exec
+```
+
+- **词表拥有 composition 注册的全部 24 个工具**（实测），所以 ambient **只可能是第三方工具**。这条不变量必须随 `CAPABILITY_TOOLS` 一起复查：一旦有 composition 工具不在词表里，它就会被当作 ambient 发出去；
+- **排除本插件自己的委派面**（`agent_<id>`、`delegate_batch`）是必需的：它们不在词表里，若不排除就会被授予所有有 `exec` 的形态——**包括没被授权委派给那个 child 的**（执行时会被 `delegationGuardReason` 拒，但工具**可见**，模型会看到一堆必然失败的工具）。委派面由 delegation runtime 在 apply 时发布到 `banboAgents.delegationTools`；
+- **拿不到 `ownTools` 时不授予任何 ambient**（fail-closed）：无法区分自己的工具与第三方的，宁可少给。
+
+**实测结果**（真实 catalog + 模拟 profile 注册表）：
+
+| agent | exec | 工具数 | ambient |
+|---|---|---|---|
+| banbo / executor / implement / review | ✅ | 25 / 20 / 20 / 16 | lsp_diagnostics + codegraph |
+| explorer / research / planner | ❌ | 6 / 8 / 21 | 无 |
+
+**为什么条件选 `exec`**：这 4 个形态**已经能通过 shell 读写执行任何东西**，多一个无法分类的工具**不增加任何风险类别**——allowlist 在那里买不到安全，只挡住了用户特意装的工具。反过来，`explorer`/`research` 是**唯一真实的 tool-limited 保证**，`planner` 的 `writeScope` 也**只在没有 shell 时成立**——两者都靠"不继承无法分类的工具"保住。
+
+**`extraTools` 的定位随之变化**：从"让第三方工具可见的唯一途径"变成**精确授予**——给**没有 shell** 的形态点名一个它本来继承不到的工具。有 shell 的形态已自动继承，不需要点名。ambient 派生也顺带修掉了 `extraTools` 不可作内置默认的问题：**没装就没有这个工具，也就没有东西可继承**。
+
+**测试**：`tool-surface.spec.ts` 覆盖"有 shell 才授予"、"无 shell 一个都不给"、"自己的委派面永不被当作 ambient"、"`FORBIDDEN_RUNTIME_TOOLS` 永不可授予"、"拿不到 `ownTools` 时 fail-closed"、"同时被 `extraTools` 点名时不重复"。
+
+**未做**：没有做 profile 级开关（用户明确不要）；没有给第三方工具分类（无法分类，所以按形态分级）。
 
 ---
 
