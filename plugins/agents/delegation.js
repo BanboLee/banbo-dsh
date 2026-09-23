@@ -777,6 +777,21 @@ async function delegateOneImpl(runtime, options) {
   }
 
   const budget = mainBudget(runtime.service, prepared.callerIdentity.mainAgentId)
+
+  // §16.14 — a `preferBackground` Agent exists to be FOLLOWED UP, and only a
+  // continuable child can be. A foreground call would end it with the call, so
+  // it is refused rather than silently producing the one thing the declaration
+  // says must not happen. The message names the fix, because the model can act
+  // on it directly.
+  if (prepared.targetDefinition.child?.preferBackground === true && options.runInBackground !== true) {
+    fail(
+      runtime.service,
+      'background-required',
+      `"${options.targetAgentId}" must be called with run_in_background: true — this Agent is kept so its work can be followed up, and a foreground call would end it with the call`,
+      { targetAgentId: options.targetAgentId },
+    )
+  }
+
   const lease = runtime.budgets.acquire(
     prepared.callerIdentity.rootSessionId,
     1,
@@ -877,6 +892,17 @@ function validateBatchContract(runtime, options, budget) {
     // execution mode: an `optional` Agent runs exactly as it does on a
     // foreground single call. The removed `batch-target-continuable` guard was
     // over-broad — it rejected the AGENT, not an execution mode.
+    //
+    // `preferBackground` IS a contract concern though, and for the same reason
+    // the foreground call is refused: batch runs items one-shot, so a batched
+    // review could never be followed up. Fanning out three reviews is still
+    // possible — as three background calls, which is the path that keeps each
+    // one resumable.
+    if (definition.child.preferBackground === true) {
+      throw new DelegationError('batch-target-kept', `banbo-agents: delegate_batch cannot run "${task.agentId}" because this Agent is always kept for follow-up work; make a separate call with run_in_background: true instead`, {
+        targetAgentId: task.agentId,
+      })
+    }
   }
 }
 
@@ -1143,11 +1169,17 @@ function namedTool(ctx, shared, configuredMainAgentId, record) {
   const deadlineClause = typeof foregroundMs === 'number'
     ? ` A FOREGROUND call waits up to ${Math.round(foregroundMs / 60_000)} minutes for the child to settle`
     : ' A FOREGROUND call waits for the child to settle'
+  // §16.14 — the declaration is rendered into the description rather than left
+  // to the persona: this is the moment the model chooses the flag, and a
+  // foreground call is refused outright for these Agents.
+  const keepClause = ctx.banboAgents?.definitions?.get(record.id)?.child?.preferBackground === true
+    ? ' This Agent is ALWAYS KEPT: call it with run_in_background: true, because its work is meant to be followed up and a foreground call is refused.'
+    : ''
   return defineTool({
     name: record.toolName,
     description: record.retired === true
       ? `Retired Agent ${record.id}; calling this compatibility shell always fails until its definition is restored and the Host restarts.`
-      : `Delegate one bounded task to the "${record.id}" Agent.${typeof guidance === 'string' && guidance !== '' ? ` ${guidance}` : ''}${deadlineClause} — or for the foreground deadline, after which it returns a cancel_requested or cleanup_deferred status — and is never resumable afterwards: the child ends with the call. Set run_in_background to true to keep it: a one-shot Agent then returns a job id, and an Agent whose continuation is optional returns a durable child id (reachable with send_message when you have agent-control). A background child's outcome arrives later as a notice; there is no wait call, and sleeping in a shell is not a way to wait — if you need the result now, stay in the foreground.`,
+      : `Delegate one bounded task to the "${record.id}" Agent.${typeof guidance === 'string' && guidance !== '' ? ` ${guidance}` : ''}${keepClause}${deadlineClause} — or for the foreground deadline, after which it returns a cancel_requested or cleanup_deferred status — and is never resumable afterwards: the child ends with the call. Set run_in_background to true to keep it: a one-shot Agent then returns a job id, and an Agent whose continuation is optional returns a durable child id (reachable with send_message when you have agent-control). A background child's outcome arrives later as a notice; there is no wait call, and sleeping in a shell is not a way to wait — if you need the result now, stay in the foreground.`,
     parameters: {
       prompt: {
         type: 'string',

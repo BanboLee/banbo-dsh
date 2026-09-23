@@ -352,6 +352,7 @@ interface ChildProfile {
   extraTools?: readonly string[] // 第三方 runtime tool name，精确授权
   writeScope?: string | false // 同上；main 与 child 各自声明、互不继承。`false` = 显式取消（§5.2、§16.12）
   continuation: 'one-shot' | 'optional'
+  preferBackground?: boolean // true = 该 Agent 存在的意义就是被追问，前台调用一律拒绝（§16.14）
 }
 
 interface AgentDefinition {
@@ -429,6 +430,8 @@ RetiredToolShell                    standing scope 里的空壳工具描述，�
 13. 内置 preset id 不可覆盖；用户 Agent 的已发布 preset id、toolName、已发布 main/child 形态和 child.continuation 写入 ABI manifest 后按兼容规则保护：允许新增缺失形态，禁止在文件仍存在时删除已发布形态或改变生命周期语义，破坏性修改必须换新 id；**整个定义文件被删除是唯一例外**，按 6.3 的删除语义处理（转 `RetiredToolShell` + 移除 generated preset）；
 14. `main.writeScope` / `child.writeScope` 若是字符串，必须非空且是**纯相对路径**：不得是绝对路径（POSIX 或 Windows）、不得含 `\` 或 NUL、规范化后不得为空、`.` 或以 `..` 开头；违反时以 `bad-write-scope`（非字符串或空串为 `missing-field`）让 Host 启动失败，不做静默截断。这里只做词法校验——本模块没有工作区、也不碰文件系统；真正的包含关系与软链接判定在执行期由 `path-policy.js` 完成（§5.2、§16.12）。**唯一接受的非路径值是 `false`：它显式取消从内置定义继承来的 scope**（省略 = 继承；`null`——YAML 里写空 `writeScope:` 解析出来的东西——**仍然报错**，所以手滑留空绝不会悄悄解除策略）。取消哨兵**必须穿过归一化保留下来**：`loadCatalog` 会先校验每一层再合并，若在校验时就把 `false` 丢掉，合并永远看不到它——这个功能曾经因此完全失效而测试仍全绿。合并消费掉哨兵后，`loadCatalog` 再统一把它从最终定义里剥掉，使 catalog 里"无策略"只有一种写法（字段缺失）；
 15. **同一个形态不得同时声明 `writeScope` 与 shell**：`writeScope` 的全部效力建立在"被约束形态没有 shell"之上——shell 可以 `echo x > /etc/y`，完全不经过 `write`/`edit`。因此 `tools` 里出现 `exec`、或 `extraTools` 里出现具体 shell 工具名（`fish` / `bash` / `pwsh`，与 `tool-surface.js` 的 `exec.prefer` 共用同一份 `SHELL_TOOL_NAMES`，避免两处漂移）时，以 `write-scope-with-shell` 让 Host 启动失败。**校验跑在合并后的形态上**，所以用户层只重述 `tools` 而内置仍带 `writeScope` 的情况同样被拒——这正是静默失效最容易发生的地方。`tools` 是封闭的能力集，那里唯一可达的 shell 就是 `exec`（写具体工具名本来就是 `unknown-tool-capability`）；`extraTools` 接受任意运行期工具名并原样授予，所以必须单独查。
+
+16. `child.preferBackground` 若存在必须是布尔；**为 `true` 时要求 `child.continuation` 是 `optional`**，否则以 `prefer-background-needs-optional` 让 Host 启动失败——要求"必须后台"一个根本不能被恢复的 Agent 等于要求一件生命周期里不存在的事。它只在 `child` 形态合法（主形态不被委派，写它是 `unknown-field`）。非布尔值报 `bad-prefer-background`；显式 `false` 归一化为字段缺失，使"不是 always-kept"只有一种写法（§16.14）。
 
 运行时 `enabled` 不参与图结构校验。被禁用 Agent 的稳定工具仍保留，调用时明确拒绝；这样重新启用不需要重启，也不会破坏旧 descriptor。
 
@@ -2583,6 +2586,28 @@ ambient  = registered \ 能力词表 \ FORBIDDEN_RUNTIME_TOOLS \ 本插件自己
 **测试**：`tool-surface.spec.ts` 覆盖"有 shell 才授予"、"无 shell 一个都不给"、"自己的委派面永不被当作 ambient"、"`FORBIDDEN_RUNTIME_TOOLS` 永不可授予"、"拿不到 `ownTools` 时 fail-closed"、"同时被 `extraTools` 点名时不重复"。
 
 **未做**：没有做 profile 级开关（用户明确不要）；没有给第三方工具分类（无法分类，所以按形态分级）。
+
+### 16.14 always-kept：审查/实现/计划必须可追问
+
+**来源**：用户要求"**每次审查都该能追问**"，并确认 `review`、`implement`、`planner` 三个都要。
+
+**硬约束**：**"可追问"与"本轮拿到结果"当前互斥**。前台走 `subagents.start()`（拿到 `SubagentRun`，有 deadline/cleanup），后台 + `optional` 走 `startContinuable()`（**没有 `SubagentRun`、没有 `dispose`**，由官方 continuation manager 持有）。§4.4 的 `optional | false | 前台 one-shot` 是**明确定的行为**，§16.x 的 C9 也确认过"行为正确，只是描述误导"。**根因与 §10.7.1 拒绝 continuable batch 相同。**
+
+**实测证据**（10 次 `agent_review` 调用）：前台 7 / 后台 3，child 模式精确 1:1（前台→`one-shot`，后台→`continuable`），且 3 次后台里 2 次是测试脚本明确要求的。**one-shot 是常态**，与"可追问"冲突。
+
+**做法（用户决策 A2+A3）**：新增 `child.preferBackground: true`，三个 Agent 都声明。
+
+- **A3（强制）**：前台调用直接被拒，错误码 `background-required`，消息点名修法（`run_in_background: true`）；`delegate_batch` 同样拒绝（`batch-target-kept`），因为 batch 的 item 一律 one-shot，批出来的审查同样无法追问。要并行扇出三次审查仍然可以——用三次后台调用，而那正是让每一次都可追问的路径；
+- **A2（引导）**：声明**渲染进 `agent_<id>` 的工具描述**（"This Agent is ALWAYS KEPT…"），而不是只写进 persona——这是模型**选择这个 flag 的那一刻**，也是 A3 会拒绝它的地方；
+- 拒绝发生在 `budget.acquire` **之前**，所以被拒的调用不占并发槽。
+
+**顺带修掉的两个用户亲历问题**：前台会阻塞 TUI 最长 30 分钟；且阻塞期间**收不到用户的新消息**（T5 实测：用户 5 分钟后说"停掉它"，指令排到 19 分钟后才被处理）。后台化之后两者都消失。
+
+**代价（如实记录）**：结论**晚一轮**到——协调者先回"已启动"，结算通知到了再给结论。
+
+**测试**：schema（可选、`true` 归一化保留、`false` 归一化消失、非布尔被拒、与 `one-shot` 组合被拒、主形态写它是 `unknown-field`、shipped 恰好是这三个）；委派（前台被拒且不启动不占槽、后台成功且走 `startContinuable`、未声明的仍可前台、描述含 `ALWAYS KEPT` 而未声明的 Agent 不含）；batch（`batch-target-kept` 且不启动不占槽）。三条规则各自变异验证过。
+
+**未做**：没有改 `continuation`（`review` 已是 `optional`，改它会违反 §4.4 第 13 条的 ABI 兼容规则，必须换新 id）；没有做"前台但保留 child"（那需要为 continuable 重新设计 deadline 与清理语义，即 §10.7.1 说清楚的难点，收益有限而代价大）。
 
 ---
 

@@ -34,11 +34,14 @@ function service() {
       // the same path a foreground single delegation takes — so a scoped target
       // must get its child-form guard here too (§16.12).
       ...(id === 'a' ? { writeScope: '.banbo-dsh/plans' } : {}),
+      // §16.14: an always-kept Agent cannot be batched, because batch runs every
+      // item one-shot and the child could then never be followed up.
+      ...(id === 'kept' ? { preferBackground: true } : {}),
     },
   })
   const definitions = new Map<string, any>([
     ['lead', {
-      id: 'lead', allowedChildren: ['a', 'b', 'optional'],
+      id: 'lead', allowedChildren: ['a', 'b', 'optional', 'kept'],
       main: {
         presetId: 'lead-preset', persona: 'lead.md', tools: ['read'], maxDepth: 1,
         budget: {
@@ -55,6 +58,7 @@ function service() {
     ['b', child('b')],
     ['not-allowed', child('not-allowed')],
     ['optional', child('optional', 'optional')],
+    ['kept', child('kept', 'optional')],
   ])
   return {
     rootDir,
@@ -176,8 +180,7 @@ describe('contract preflight rejects the whole call before any start', () => {
     }
   })
 
-  it('names the fix for an unknown target and for a retired definition', async () => {
-    const unknown = runtime([])
+  it('names the fix for an unknown target and for a retired definition', async () => {    const unknown = runtime([])
     await expect(call(unknown, { tasks: [{ agentId: 'unknown', prompt: 'x', description: 'x' }] }))
       .rejects.toThrow(/pick an Agent that has a child form/i)
     const retired = runtime([])
@@ -185,6 +188,21 @@ describe('contract preflight rejects the whole call before any start', () => {
       .rejects.toThrow(/restore its YAML and restart, or pick another Agent/i)
     const deadline = runtime([])
     await expect(call(deadline, { deadlineMs: 1 })).rejects.toThrow(/\[60000, 1800000\]/)
+  })
+
+  it('refuses an always-kept target, because a batched child can never be followed up', async () => {
+    // §16.14. Batch executes every item through `startOneShot`, so a batched
+    // review would be exactly the one-shot outcome the declaration forbids.
+    // Fanning out three reviews is still possible — as three background calls,
+    // which is the path that keeps each of them resumable.
+    const rt = runtime([])
+    await expect(call(rt, { tasks: [{ agentId: 'kept', prompt: 'x', description: 'x' }] }))
+      .rejects.toThrow(/always kept for follow-up work/i)
+    await expect(call(rt, { tasks: [{ agentId: 'kept', prompt: 'x', description: 'x' }] }))
+      .rejects.toThrow(/run_in_background: true/)
+    // The refusal is contract-level: nothing starts, and no slot is taken.
+    expect(rt.subagents.start).not.toHaveBeenCalled()
+    expect(rt.budgets.running('root-session')).toBe(0)
   })
 
   it('reserves every batch slot atomically before the first start', async () => {

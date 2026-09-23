@@ -8,8 +8,11 @@
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+
+import { loadCatalog } from '../catalog.js'
 
 import {
   CATALOG_LIMITS,
@@ -453,6 +456,69 @@ describe('TOOL_CAPABILITIES / FORBIDDEN_DELEGATION_TOOLS', () => {
     // §5.2 requires exactly one FORBIDDEN_DELEGATION_TOOLS list shared by the
     // catalog validator, the preset template and extraTools validation.
     expect([...FORBIDDEN_DELEGATION_TOOLS].sort()).toEqual(['ralph', 'subagent', 'subagent_fork', 'workflow'])
+  })
+})
+
+/* ------------------------------------------------- always-kept (§16.14) --- */
+
+describe('child.preferBackground', () => {
+  const withChild = (patch: Record<string, unknown>) => ({
+    ...childOnly,
+    child: { ...childOnly.child, continuation: 'optional', ...patch },
+  })
+
+  it('is optional, and absent means the Agent may run in the foreground', () => {
+    const definition = validateAgentDefinition(withChild({}) as never, { file: FILE })
+    expect(definition.child?.preferBackground).toBeUndefined()
+    expect('preferBackground' in (definition.child ?? {})).toBe(false)
+  })
+
+  it('is carried through normalisation when true', () => {
+    const definition = validateAgentDefinition(withChild({ preferBackground: true }) as never, { file: FILE })
+    expect(definition.child?.preferBackground).toBe(true)
+  })
+
+  it('treats an explicit false as absent, so the surface stays single-spelled', () => {
+    const definition = validateAgentDefinition(withChild({ preferBackground: false }) as never, { file: FILE })
+    expect('preferBackground' in (definition.child ?? {})).toBe(false)
+  })
+
+  it('rejects a non-boolean', () => {
+    const error = catalogError(() => validateAgentDefinition(withChild({ preferBackground: 'yes' }) as never, { file: FILE }))
+    expect(error.code).toBe('bad-prefer-background')
+    expect(error.field).toBe('child.preferBackground')
+  })
+
+  it('rejects being combined with one-shot continuation, which could never be kept', () => {
+    // Demanding the background for an Agent that cannot be resumed would ask for
+    // something the lifecycle does not have.
+    const error = catalogError(() => validateAgentDefinition({
+      ...childOnly,
+      child: { ...childOnly.child, continuation: 'one-shot', preferBackground: true },
+    } as never, { file: FILE }))
+    expect(error.code).toBe('prefer-background-needs-optional')
+  })
+
+  it('is not a legal key on the main form, which is never delegated to', () => {
+    const error = catalogError(() => validateAgentDefinition({
+      ...childOnly,
+      main: { presetId: 'probe', persona: 'prompts/probe.md', tools: ['read'], maxDepth: 0, preferBackground: true },
+    } as never, { file: FILE }))
+    expect(error.code).toBe('unknown-field')
+  })
+
+  it('is declared by exactly the shipped Agents whose work is meant to be followed up', () => {
+    // `review`, `implement` and `planner`: all three are iterated on in practice
+    // ("now check the fix", "also change X", "adjust the plan").
+    const catalog = loadCatalog({
+      rootDir: mkdtempSync(join(tmpdir(), 'banbo-kept-probe-')),
+      builtinDir: join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'catalog'),
+    })
+    const kept = [...catalog.definitions.values()]
+      .filter((definition) => definition.child?.preferBackground === true)
+      .map((definition) => definition.id)
+      .sort()
+    expect(kept).toEqual(['implement', 'planner', 'review'])
   })
 })
 

@@ -15,3 +15,6 @@ child:
   guidance: 当任务需要独立审查一段改动、结论或方案时使用；不要使用它代替负责修改的 Implement。
   tools: [read, search, exec, skill, todo, jobs, agent-control]
   continuation: optional
+  # §16.14: a review exists to be FOLLOWED UP ("now check the fix", "why did you
+  # miss X"), and only a continuable child can be. A foreground call is refused.
+  preferBackground: true

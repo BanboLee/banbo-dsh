@@ -41,6 +41,7 @@ import { parseDocument } from 'yaml'
  * @property {string[]} [extraTools]
  * @property {string|false} [writeScope] relative directory `write`/`edit` are confined to; `false` cancels an inherited scope
  * @property {'one-shot' | 'optional'} continuation
+ * @property {boolean} [preferBackground] true when the Agent exists to be followed up, so a foreground call is refused (§16.14)
  */
 
 /**
@@ -128,7 +129,7 @@ const BUDGET_FIELDS = Object.freeze({
 const KNOWN_KEYS = Object.freeze({
   '': ['id', 'displayName', 'description', 'allowedChildren', 'main', 'child'],
   main: ['presetId', 'persona', 'tools', 'extraTools', 'writeScope', 'maxDepth', 'budget'],
-  child: ['model', 'persona', 'guidance', 'tools', 'extraTools', 'writeScope', 'continuation'],
+  child: ['model', 'persona', 'guidance', 'tools', 'extraTools', 'writeScope', 'continuation', 'preferBackground'],
   model: ['default', 'provider', 'model', 'reasoningEffort'],
   budget: Object.keys(BUDGET_FIELDS),
 })
@@ -728,6 +729,19 @@ export function validateAgentDefinition(raw, options = {}) {
     if (child.continuation !== 'one-shot' && child.continuation !== 'optional') {
       fail('bad-continuation', `child.continuation must be "one-shot" or "optional", got ${JSON.stringify(child.continuation)}`, { file, field: 'child.continuation' })
     }
+    if (child.preferBackground !== undefined && typeof child.preferBackground !== 'boolean') {
+      fail('bad-prefer-background', `child.preferBackground must be a boolean, got ${JSON.stringify(child.preferBackground)}`, { file, field: 'child.preferBackground' })
+    }
+    // Keeping the child is only possible when the lifecycle allows it: a
+    // `one-shot` Agent cannot be resumed at all, so demanding the background
+    // would ask for something that does not exist.
+    if (child.preferBackground === true && child.continuation !== 'optional') {
+      fail(
+        'prefer-background-needs-optional',
+        'child.preferBackground requires child.continuation "optional"; a one-shot Agent cannot be kept for follow-up work',
+        { file, field: 'child.preferBackground' },
+      )
+    }
     assertKnownKeys(child.model, 'model', ctx)
     validateTools(child, 'child', file)
     assertWriteScopeEnforceable(child, { path: 'child', file })
@@ -739,6 +753,7 @@ export function validateAgentDefinition(raw, options = {}) {
       ...child.extraTools === undefined ? {} : { extraTools: [...child.extraTools] },
       ...writeScopeField(child.writeScope, 'child.writeScope', file),
       continuation: child.continuation,
+      ...child.preferBackground === true ? { preferBackground: true } : {},
     }
   }
 

@@ -29,3 +29,6 @@ child:
   tools: [read, search, web, write, edit, skill, todo, jobs, agent-control]
   writeScope: .banbo-dsh/plans
   continuation: optional
+  # §16.14: a plan is iterated on, so this Agent is always kept and a foreground
+  # call is refused.
+  preferBackground: true

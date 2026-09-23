@@ -158,8 +158,16 @@ describe('a child capability resolves against the composition, not the caller fi
         result: Promise.resolve({ stopReason: 'completed', output: [] }),
         dispose: vi.fn(async () => {}),
       }))
+      // §16.14: `review`, `implement` and `planner` declare `preferBackground`,
+      // so the edges that target them run through the continuable path. The test
+      // still has to exercise their capability resolution — refusing them would
+      // prove the policy but not the resolution it exists to protect.
+      const startContinuable = vi.fn(async (spec: { childId: string }) => ({
+        childId: spec.childId,
+        messageId: 'message-1',
+      }))
       host.ctx.provide('banboAgents', service)
-      host.ctx.provide('subagents', { start })
+      host.ctx.provide('subagents', { start, startContinuable })
       host.ctx.provide('agents', { get: () => undefined })
       host.ctx.provide('jobs', { start: vi.fn() })
 
@@ -176,6 +184,7 @@ describe('a child capability resolves against the composition, not the caller fi
         scopes.set(mainId, { key, ctx: scope.ctx })
       }
 
+      let keptEdges = 0
       for (const { callerId, childId } of edges) {
         const caller = definitions.get(callerId)!
         const isMain = caller.main !== undefined
@@ -229,8 +238,12 @@ describe('a child capability resolves against the composition, not the caller fi
         const named = preset.ctx.tools.get(deriveToolName(childId), parentAgent)
         expect(named, `${callerId} -> ${childId}: the named tool must be visible to the caller`).toBeDefined()
 
+        // A `preferBackground` target refuses the foreground outright, so the
+        // edge is exercised the way production must call it.
+        const keep = definitions.get(childId)!.child?.preferBackground === true
+        if (keep) keptEdges += 1
         try {
-          await named!.execute({ prompt: 'probe', description: 'probe' }, {
+          await named!.execute({ prompt: 'probe', description: 'probe', ...(keep ? { run_in_background: true } : {}) }, {
             agent: parentAgent as never,
             signal: new AbortController().signal,
           } as never)
@@ -239,7 +252,10 @@ describe('a child capability resolves against the composition, not the caller fi
         }
       }
 
-      expect(start).toHaveBeenCalledTimes(edges.length)
+      // One-shot edges reach `start`; the kept ones reach `startContinuable`.
+      expect(start).toHaveBeenCalledTimes(edges.length - keptEdges)
+      expect(startContinuable).toHaveBeenCalledTimes(keptEdges)
+      expect(keptEdges, 'the shipped team must declare at least one always-kept Agent').toBeGreaterThan(0)
     } finally {
       await ctx.fiber.dispose()
     }
@@ -376,6 +392,13 @@ describe('the delegation runtime plugin still mounts with a real registry', () =
       expect(description, 'the foreground deadline must be stated in minutes').toMatch(/FOREGROUND call waits up to \d+ minutes/)
       expect(description, 'a background child has no wait call').toMatch(/no wait call/)
       expect(description, 'shell sleep is not a way to wait').toMatch(/sleeping in a shell is not a way to wait/)
+      // §16.14: `review` is always kept, and the declaration is rendered at the
+      // moment the model chooses the flag rather than left to the persona.
+      expect(description, 'an always-kept Agent must say so in its own description').toMatch(/ALWAYS KEPT/)
+      expect(description).toMatch(/ALWAYS KEPT[\s\S]*run_in_background: true/)
+      // An Agent that is NOT kept must not carry the clause.
+      const freeDescription = host.ctx.tools.get(deriveToolName('explorer'))?.description ?? ''
+      expect(freeDescription, 'a foreground-friendly Agent must not claim to be kept').not.toMatch(/ALWAYS KEPT/)
 
       // Batch always executes every item through the one-shot path, so its
       // description must say that a target's `continuation` does not apply

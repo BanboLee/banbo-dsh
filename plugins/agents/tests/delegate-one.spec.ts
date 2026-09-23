@@ -29,6 +29,7 @@ afterEach(() => {
 function state(
   continuation: 'one-shot' | 'optional' = 'one-shot',
   writeScope?: string,
+  preferBackground?: boolean,
 ) {
   const rootDir = mkdtempSync(join(tmpdir(), 'banbo-delegate-one-'))
   scratch.push(rootDir)
@@ -57,6 +58,7 @@ function state(
         model: { default: true }, persona: 'worker.md', guidance: 'Do work.',
         tools: ['read'], continuation,
         ...(writeScope === undefined ? {} : { writeScope }),
+        ...(preferBackground === undefined ? {} : { preferBackground }),
       },
     }],
   ])
@@ -106,11 +108,13 @@ function runtime(options: {
   continuation?: 'one-shot' | 'optional'
   /** A child-form `writeScope` to declare on the `worker` target (§16.12). */
   writeScope?: string
+  /** Declare the target always-kept, so a foreground call must be refused (§16.14). */
+  preferBackground?: boolean
   run?: ReturnType<typeof runFixture>
   delay?: (ms: number) => Promise<void>
   jobs?: any
 } = {}) {
-  const service = state(options.continuation, options.writeScope)
+  const service = state(options.continuation, options.writeScope, options.preferBackground)
   const fixture = options.run ?? runFixture()
   const budgets = new RootBudgetRegistry()
   const holders = new HolderRegistry({ delay: options.delay })
@@ -399,6 +403,32 @@ describe('one-shot background job', () => {
     expect(rt.holders.size).toBe(1)
     expect(rt.budgets.running('root-session')).toBe(0)
     expect(rt.liveIdentities.size).toBe(1)
+  })
+})
+
+/* ------------------------------------------------- always-kept (§16.14) --- */
+
+describe('an always-kept Agent refuses the foreground', () => {
+  it('refuses a foreground call with a message that names the fix', async () => {
+    // The declaration exists because the Agent's work is meant to be followed
+    // up, and only a continuable child can be. Producing a one-shot review
+    // silently would be exactly the outcome the declaration forbids.
+    const rt = runtime({ continuation: 'optional', preferBackground: true })
+    await expect(call(rt)).rejects.toThrow(/run_in_background: true/)
+    await expect(call(rt)).rejects.toThrow(/followed up/)
+    expect(rt.subagents.start, 'nothing may be started on the refused path').not.toHaveBeenCalled()
+    expect(rt.budgets.running('root-session'), 'and no slot may be taken').toBe(0)
+  })
+
+  it('accepts the background call and keeps the child', async () => {
+    const rt = runtime({ continuation: 'optional', preferBackground: true })
+    await expect(call(rt, true)).resolves.toMatchObject({ kind: 'continuable', status: 'started' })
+    expect(rt.subagents.startContinuable).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves an Agent that does not declare it free to run in the foreground', async () => {
+    const rt = runtime({ continuation: 'optional' })
+    await expect(call(rt)).resolves.toMatchObject({ kind: 'foreground' })
   })
 })
 

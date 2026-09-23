@@ -12,3 +12,6 @@ child:
   guidance: 当任务需要按明确范围修改代码时使用；不要使用它顺手重构无关范围。
   tools: [read, search, web, exec, write, edit, skill, todo, jobs, agent-control]
   continuation: optional
+  # §16.14: follow-up edits are the norm, so this Agent is always kept and a
+  # foreground call is refused.
+  preferBackground: true
