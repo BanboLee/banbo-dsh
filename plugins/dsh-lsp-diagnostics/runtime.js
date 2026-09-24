@@ -1585,16 +1585,35 @@ class LspSession {
         errors.push(error)
       }
     }
-if (this.handle !== undefined) {
+    if (this.handle !== undefined) {
+      // These two waits must be BOUNDED. `terminate()` above is the hard stop —
+      // once it has been issued there is nothing left to decide, only a process
+      // tree to observe going away. On a platform whose containment never
+      // reports the tree as exited (a systemd scope whose direct runner dies
+      // while the scope lives, say), `waitForExit()` never resolves, and an
+      // unbounded await here deadlocks the teardown BEFORE the lifetime abort at
+      // the end of this method — the one action that would actually tear the
+      // subprocess down. The method's own contract says it "cannot wait
+      // forever"; this is where that promise is kept.
+      //
+      // A fresh graceful budget is used rather than the one above: that one
+      // bounded the shutdown handshake, which is a different question from how
+      // long to wait for a killed tree to disappear.
+      const settle = new AbortController()
+      const settleTimer = setTimeout(() => settle.abort(), this.config.shutdownTimeoutMs)
       try {
-        await this.handle.done
-      } catch (error) {
-        errors.push(error)
-      }
-      try {
-        await this.handle.waitForExit()
-      } catch (error) {
-        errors.push(error)
+        try {
+          await abortable(this.handle.done, settle.signal)
+        } catch (error) {
+          if (!(error instanceof Error && error.name === 'AbortError')) errors.push(error)
+        }
+        try {
+          await this.handle.waitForExit(settle.signal)
+        } catch (error) {
+          if (!(error instanceof Error && error.name === 'AbortError')) errors.push(error)
+        }
+      } finally {
+        clearTimeout(settleTimer)
       }
     }
     // Own the protocol write quiescence: every server-request handler and the

@@ -259,7 +259,7 @@ class FakeServer {
       }
       if (method === 'exit') {
         this.events.push('exit')
-        if (this.mode !== 'hung-all' && this.mode !== 'root-exit-helper-live') this.naturalClose()
+        if (this.mode !== 'hung-all' && this.mode !== 'root-exit-helper-live' && this.mode !== 'scope-outlives-runner') this.naturalClose()
         return
       }
       return
@@ -450,7 +450,7 @@ class FakeServer {
 
   private onShutdown(id: number): void {
     this.events.push('shutdown')
-    if (this.mode === 'hang-shutdown' || this.mode === 'hung-all') return
+    if (this.mode === 'hang-shutdown' || this.mode === 'hung-all' || this.mode === 'scope-outlives-runner') return
     this.send({ jsonrpc: '2.0', id, result: null })
   }
 
@@ -470,7 +470,12 @@ class FakeServer {
   private onTerminate(): void {
     this.events.push('terminate')
     this.doneResolve({ exitCode: null, signal: 'SIGTERM' })
-    this.markTreeExited()
+    // `scope-outlives-runner` models a platform whose containment does not
+    // report the TREE as gone when the direct process dies — a systemd scope
+    // whose runner is killed while the scope itself lives. That is the shape
+    // the ubuntu runner shows, and it is what made an unbounded `waitForExit()`
+    // deadlock the teardown.
+    if (this.mode !== 'scope-outlives-runner') this.markTreeExited()
   }
 }
 
@@ -1682,6 +1687,29 @@ await dispose
     expect(server.handle.terminate).toHaveBeenCalledTimes(1)
     expect(server.events).toContain('root-exit-helper-live')
     expect(server.events).toContain('terminate')
+  })
+
+  it('finishes teardown when terminate kills the runner but the tree is never reported gone', async () => {
+    // The ubuntu runner's shape: `terminate()` stops the direct process, but the
+    // containment that owns the tree never reports it as exited, so
+    // `waitForExit()` never resolves. Awaiting it unbounded deadlocked the whole
+    // teardown BEFORE the lifetime abort at the end of it — the one action that
+    // would have torn the subprocess down. The teardown must still finish, and
+    // still ask exactly once.
+    const h = makeHarness('scope-outlives-runner', { shutdownTimeoutMs: 100 })
+    await h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
+    const server = h.servers[0]!
+    const started = Date.now()
+    await h.runtime.dispose()
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(
+      server.handle.terminate,
+      `events=${JSON.stringify(server.events)}`,
+    ).toHaveBeenCalledTimes(1)
+    expect(server.events).toContain('terminate')
+    // `waitForExit` was asked with a signal, so the bound is observable rather
+    // than an accident of the fixture never resolving.
+    expect(server.handle.waitForExit).toHaveBeenCalled()
   })
 
   it('keeps the same single transaction when shutdown or exit writes fail', async () => {
