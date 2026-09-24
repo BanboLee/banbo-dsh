@@ -74,7 +74,15 @@ describe('round trip', () => {
   })
 
   it('derives the documented path', () => {
-    expect(childIdentityPath('/root', 'child-a')).toBe('/root/.children/child-a.json')
+    // `childIdentityPath` builds a REAL filesystem path, so it uses the
+    // platform's separator. Asserting a POSIX literal here passed on macOS and
+    // Linux and failed on the windows-latest CI job, which saw
+    // `\root\.children\child-a.json`. Build the expectation the way the
+    // implementation does, and pin the parts that are the actual contract.
+    const derived = childIdentityPath('/root', 'child-a')
+    expect(derived).toBe(join('/root', '.children', 'child-a.json'))
+    expect(derived).toContain('.children')
+    expect(derived).toContain('child-a.json')
   })
 
   it('creates the .children directory on first write', () => {

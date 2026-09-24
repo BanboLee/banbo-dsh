@@ -1,0 +1,42 @@
+# Normalize line endings for the whole repository.
+#
+# Without this, a Windows checkout can materialise every text file with CRLF,
+# which breaks exact-match assertions that look for `\n<heading>\n` — the
+# persona-heading lint in plugins/agents/tests/builtin-catalog.spec.ts failed on
+# the windows-latest CI job for exactly that reason, reporting a heading as
+# missing when the file was fine. `text=auto` still lets git detect binaries and
+# keeps the working tree native where a tool needs it; `eol=lf` pins the
+# repository content to LF so the tests see the same bytes everywhere.
+#
+# Deliberately explicit for the text formats this repository uses rather than a
+# blanket `* text=auto`, so a future binary fixture cannot be mangled by a
+# heuristic.
+
+* text=auto eol=lf
+
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.sh    text eol=lf
+*.fish  text eol=lf
+
+# Windows-only helpers keep CRLF so they stay runnable on a Windows checkout.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary fixtures must never be normalized.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.woff  binary
+*.woff2 binary
+*.zstd  binary
