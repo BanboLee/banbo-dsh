@@ -1806,4 +1806,34 @@ describe('@banbolee/dsh-lsp-diagnostics runtime dispose', () => {
     await first
     await expect(h.runtime.dispose()).resolves.toBeUndefined()
   })
+
+  it('owns the process a session spawns after its teardown was requested during startup', async () => {
+    const h = makeHarness('push-versioned')
+    let releaseExecutable!: (value: string) => void
+    h.subprocess.resolveExecutable.mockImplementationOnce(() => new Promise<string>((resolve) => {
+      releaseExecutable = resolve
+    }))
+    const diagnosis = h.runtime.diagnose(candidate(), WORKSPACE, WORKSPACE_URI, undefined)
+    // The session is published before its bootstrap resolves the executable, so
+    // the pool holds a session whose process does not exist yet.
+    await vi.waitFor(() => expect(h.subprocess.resolveExecutable).toHaveBeenCalledTimes(1))
+    expect(h.subprocess.spawn).not.toHaveBeenCalled()
+    const dispose = h.runtime.dispose()
+    // Let the teardown transaction reach its end while the process still does
+    // not exist: with no stdin/handle to act on it has nothing to shut down.
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    // The process appears only after this session's teardown was requested: the
+    // one teardown transaction must still own it.
+    releaseExecutable('fake-ts')
+    await dispose
+    await diagnosis
+    const server = h.servers[0]
+    expect(server).toBeDefined()
+    // dispose() may only resolve once the process that appeared mid-teardown has
+    // received the graceful sequence, in order, and is gone.
+    expect(server!.events).toContain('shutdown')
+    expect(server!.events).toContain('exit')
+    expect(server!.events.indexOf('exit')).toBeGreaterThan(server!.events.indexOf('shutdown'))
+    expect(server!.doneSettled).toBe(true)
+  })
 })

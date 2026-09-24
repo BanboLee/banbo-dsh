@@ -103,7 +103,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y fish
 
       - name: Run composition suite
-        run: npx vitest run --no-file-parallelism tests/composition
+        run: pnpm test:composition
 
   # docs/agents-plugin-plan.md §8.7 requires the generated-preset pointer
   # mechanism to be verified on Windows: a directory symlink needs Developer

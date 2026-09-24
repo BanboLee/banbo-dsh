@@ -12,9 +12,17 @@ export default defineConfig({
     // observed on its own lane rather than inferred from an overall green run,
     // and the packed lane needs `node plugins/agents/scripts/build.mjs` first.
     // Run them with `pnpm test:agents:gates`.
+    //
+    // The composition suite is excluded for a different reason: it boots REAL
+    // isolated DSH profiles and real subprocesses through the `dsh` CLI, which
+    // makes it a slow, resource-hungry lane that competes with the unit suite
+    // and buries its own signal. It runs on its own with `pnpm test:composition`
+    // (and in its own CI job, with file parallelism off) — coverage is moved,
+    // never dropped.
     exclude: [
       ...configDefaults.exclude,
       '**/.omo/**',
+      'tests/composition/**',
       'plugins/agents/tests/gates/**',
       'plugins/agents/tests/packed.spec.ts',
     ],

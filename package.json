@@ -8,6 +8,7 @@
   "packageManager": "pnpm@9.3.0",
   "scripts": {
     "test": "vitest run",
+    "test:composition": "vitest run --config vitest.composition.config.ts tests/composition",
     "test:harness": "vitest run tests/harness.spec.ts",
     "test:agents:gates": "vitest run --config vitest.gates.config.ts plugins/agents/tests/gates plugins/agents/tests/packed.spec.ts",
     "build:agents": "node plugins/agents/scripts/build.mjs",
