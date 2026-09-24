@@ -20,13 +20,15 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   COMPLETE_MARKER,
   PARTIAL_PREFIX,
   compilePresets,
   computeStandardInventory,
+  installPointerLink,
+  readCurrentGeneration,
   renderComposition,
   standardCompositionPath,
 } from '../preset-compiler.js'
@@ -74,6 +76,13 @@ function scratchDir(): string {
 afterEach(() => {
   while (scratch.length > 0) rmSync(scratch.pop()!, { recursive: true, force: true })
 })
+
+/**
+ * The private names the §8.7 replace fallback parks the live pointer under
+ * while it installs a new one. An activation must never leave one behind.
+ */
+const parkedPointers = (root: string): string[] =>
+  readdirSync(join(root, '.generated')).filter((name) => name.startsWith('.current.previous'))
 
 /** A definition carrying a main form, as `validateAgentDefinition` returns it. */
 const mainAgent = (id: string, patch: Record<string, unknown> = {}) => ({
@@ -551,6 +560,18 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     // The roster reads through the link, so it must resolve to real content.
     expect(readdirSync(join(pointer, 'presets'))).toEqual(['my-lead'])
     expect(readlinkSync(pointer)).toBe(relative(join(root, '.generated'), compiled.generationDir))
+
+    // Replacing the pointer is still the one atomic rename: the target stays a
+    // relative symlink, the generation it replaced is left for rollback, and no
+    // parked pointer exists. (That the replace is ONE rename is pinned by the
+    // `installPointerLink` describe below.)
+    const replaced = compilePresets(options(root, [mainAgent('my-lead'), mainAgent('added')]) as never)
+    expect(replaced.generation).not.toBe(compiled.generation)
+    expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(pointer)).toBe(relative(join(root, '.generated'), replaced.generationDir))
+    expect(readdirSync(join(pointer, 'presets')).sort()).toEqual(['added', 'my-lead'])
+    expect(existsSync(join(compiled.generationDir, COMPLETE_MARKER))).toBe(true)
+    expect(parkedPointers(root)).toEqual([])
   })
 
   // Runs only on the Windows CI runner: macOS/Linux cannot exercise the junction
@@ -565,5 +586,158 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     expect(compiled.reused).toBe(false)
     // A second compile of the same content must reuse it through the link.
     expect(compilePresets(options(root, [mainAgent('my-lead')]) as never).reused).toBe(true)
+
+    // The REPLACE path — the case this job failed on. A junction cannot be
+    // renamed over, so installing a NEW pointer has to park the live one,
+    // install the staged one, and drop the parked link; the pointer must end up
+    // naming the new generation and the roster must read it.
+    const replaced = compilePresets(options(root, [mainAgent('my-lead'), mainAgent('added')]) as never)
+    expect(replaced.generation).not.toBe(compiled.generation)
+    expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
+    expect(readdirSync(join(pointer, 'presets')).sort()).toEqual(['added', 'my-lead'])
+    expect(readCurrentGeneration(root)).toBe(resolve(replaced.generationDir))
+    // The generation the pointer replaced survives for rollback, and the swap
+    // left nothing parked behind.
+    expect(existsSync(join(compiled.generationDir, COMPLETE_MARKER))).toBe(true)
+    expect(parkedPointers(root)).toEqual([])
+  })
+
+  it('keeps the previous generation live when the staged pointer cannot be installed (§8.7)', () => {
+    // The swap's dangerous window: the live pointer is parked and the install
+    // that should follow cannot happen. A missing staging link is the one
+    // install failure a healthy filesystem produces on every platform; Windows
+    // CI's EPERM on a junction is the platform-gated case above. Either way the
+    // pointer must name the previous generation again and leave nothing parked.
+    const root = scratchDir()
+    const first = compilePresets(options(root, [mainAgent('my-lead')]) as never)
+    const pointer = join(root, '.generated', 'current')
+
+    expect(() => installPointerLink(join(root, '.generated', '.current.gone'), pointer)).toThrow(
+      /moved back|ABSENT|preserved/,
+    )
+
+    expect(readCurrentGeneration(root)).toBe(resolve(first.generationDir))
+    expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
+    expect(readdirSync(join(pointer, 'presets'))).toEqual(['my-lead'])
+    expect(parkedPointers(root)).toEqual([])
+  })
+
+  it('never moves or deletes a real directory sitting at `current` (§8.6 startup rule 3)', () => {
+    // Only a link this plugin could have created is a pointer. A real directory
+    // at that name is not ours, so the rename failure stands and its contents
+    // are left exactly as they were.
+    const root = scratchDir()
+    const pointer = join(root, '.generated', 'current')
+    mkdirSync(pointer, { recursive: true })
+    writeFileSync(join(pointer, 'keep-me'), 'x')
+
+    expect(() => compilePresets(options(root, [mainAgent('my-lead')]) as never)).toThrow(/preserved/i)
+
+    expect(readFileSync(join(pointer, 'keep-me'), 'utf8')).toBe('x')
+    expect(parkedPointers(root)).toEqual([])
+  })
+})
+
+/* ------------------------------------------------ the §8.7 replace ladder --- */
+
+describe('installPointerLink — the replace ladder of §8.7', () => {
+  afterEach(() => {
+    vi.doUnmock('node:fs')
+    vi.resetModules()
+  })
+
+  it.skipIf(process.platform === 'win32')('replaces `current` with ONE rename and never parks it on POSIX', async () => {
+    const root = scratchDir()
+    /** Every rename the module performs, in order. */
+    const renames: Array<[string, string]> = []
+    vi.doMock('node:fs', async (importOriginal) => {
+      const fs = await importOriginal<typeof import('node:fs')>()
+      return {
+        ...fs,
+        renameSync(source: string, destination: string) {
+          renames.push([source, destination])
+          return fs.renameSync(source, destination)
+        },
+      }
+    })
+    // The static import at the top of this file already instantiated the real
+    // module, so the registry must be cleared for the mock to take effect.
+    vi.resetModules()
+    const { compilePresets: compile } = await import('../preset-compiler.js')
+    const pointer = join(root, '.generated', 'current')
+    const compileCatalog = (definitions: unknown[]) =>
+      compile({
+        rootDir: root,
+        templateText,
+        definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
+        dshVersion: '0.1.5-rc.2',
+        selfVersion: '0.0.0',
+      } as never)
+
+    compileCatalog([mainAgent('my-lead')])
+    compileCatalog([mainAgent('my-lead'), mainAgent('added')])
+
+    // Two activations, each exactly one rename whose destination is `current`…
+    expect(renames.filter(([, destination]) => destination === pointer)).toHaveLength(2)
+    // …and `current` itself is never renamed away, i.e. never parked: the
+    // POSIX path keeps the single atomic swap and does not use the fallback.
+    expect(renames.filter(([source]) => source === pointer)).toEqual([])
+    expect(parkedPointers(root)).toEqual([])
+    expect(readdirSync(join(pointer, 'presets')).sort()).toEqual(['added', 'my-lead'])
+  })
+
+  it('installs a new pointer where renaming one over a link is refused (the Windows path)', async () => {
+    // `agents-windows` fails because Windows refuses to rename one directory
+    // link over another — a junction is a directory reparse point, and
+    // MoveFileEx's replace semantics do not cover directories. Simulating that
+    // refusal (rename fails only when `current` already exists, exactly as a
+    // junction behaves) exercises the swap on every platform instead of leaving
+    // it verifiable only on the runner that needs it.
+    const root = scratchDir()
+    const pointer = join(root, '.generated', 'current')
+    vi.doMock('node:fs', async (importOriginal) => {
+      const fs = await importOriginal<typeof import('node:fs')>()
+      const present = (path: string) => {
+        try {
+          fs.lstatSync(path)
+          return true
+        } catch {
+          return false
+        }
+      }
+      return {
+        ...fs,
+        renameSync(source: string, destination: string) {
+          if (destination === pointer && present(pointer)) {
+            throw Object.assign(new Error('rename-over-link unavailable'), { code: 'EPERM' })
+          }
+          return fs.renameSync(source, destination)
+        },
+      }
+    })
+    vi.resetModules()
+    const { compilePresets: compile } = await import('../preset-compiler.js')
+    const compileCatalog = (definitions: unknown[]) =>
+      compile({
+        rootDir: root,
+        templateText,
+        definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
+        dshVersion: '0.1.5-rc.2',
+        selfVersion: '0.0.0',
+      } as never)
+
+    // The first activation creates the pointer, which the refusal does not block.
+    const first = compileCatalog([mainAgent('my-lead')])
+    expect(readdirSync(join(pointer, 'presets'))).toEqual(['my-lead'])
+
+    // The second must replace it: park, install, drop the parked link.
+    const second = compileCatalog([mainAgent('my-lead'), mainAgent('added')])
+    expect(second.generation).not.toBe(first.generation)
+    expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
+    expect(readdirSync(join(pointer, 'presets')).sort()).toEqual(['added', 'my-lead'])
+    expect(readCurrentGeneration(root)).toBe(resolve(second.generationDir))
+    // The replaced generation survives for rollback and nothing stays parked.
+    expect(existsSync(join(first.generationDir, COMPLETE_MARKER))).toBe(true)
+    expect(parkedPointers(root)).toEqual([])
   })
 })

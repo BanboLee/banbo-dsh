@@ -21,8 +21,12 @@
  *   1. a generation is built under a `.partial-*` name and `rename`d into place
  *      only after its `complete` marker exists, so a half-written generation is
  *      never visible under a generation name;
- *   2. the pointer is swapped by writing a temporary link and `rename`ing it
- *      over `current`, which is atomic on POSIX;
+ *   2. the pointer is installed by writing a temporary link and `rename`ing it
+ *      over `current` — one atomic step on POSIX. Where a directory link cannot
+ *      be replaced (a Windows junction), the ladder's second step parks the live
+ *      pointer under a private name, installs the new one, and puts the old one
+ *      back when the install fails, so `current` is never left naming a
+ *      generation that was never activated (§8.7);
  *   3. cleanup removes only directories this plugin can prove it owns — a
  *      generation carrying our `complete` marker, or one still under our
  *      `.partial-` prefix. Anything else in `.generated/` is left alone.
@@ -37,8 +41,10 @@ import {
   readdirSync,
   readlinkSync,
   renameSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -64,6 +70,13 @@ export const GENERATIONS_DIR = 'generations'
 
 /** The single mutable name: a symlink to the active generation directory. */
 export const CURRENT_POINTER = 'current'
+
+/**
+ * Prefix of the private name the Windows replace fallback parks the live
+ * pointer under while it swaps in the new one (§8.7). The rest of the name is
+ * the process id plus a UUID, so two compiles can never park onto one name.
+ */
+const PARKED_POINTER_PREFIX = `.${CURRENT_POINTER}.previous.`
 
 /** Prefix marking a directory the compiler is still building. */
 export const PARTIAL_PREFIX = '.partial-'
@@ -116,6 +129,40 @@ function lexists(path) {
 /** Remove one path without following it and without failing when it is absent. */
 function removePath(path) {
   rmSync(path, { recursive: true, force: true })
+}
+
+/** Whether one path is a link (POSIX symlink or Windows junction), not a real entry. */
+function isPointerLink(path) {
+  try {
+    return lstatSync(path).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Remove one pointer link without following it, and without failing when it is
+ * already gone.
+ *
+ * `unlink` detaches a POSIX symlink and a Windows directory symlink. A Windows
+ * junction is a directory reparse point, which only `rmdir` detaches, so both
+ * are tried — neither recurses, so the generation the link names is never
+ * touched. This matters wherever the pointer is dropped: `rmSync` is the wrong
+ * tool for a reparse point, and following one would delete a generation a
+ * running process may still be reading.
+ *
+ * @param path - the link to remove.
+ * @throws {Error} when the link is there and neither call removes it.
+ */
+function removePointerLink(path) {
+  if (!isPointerLink(path)) return
+  try {
+    unlinkSync(path)
+    return
+  } catch {
+    // A junction refuses `unlink`; fall through to the directory call.
+  }
+  rmdirSync(path)
 }
 
 /** Sort by `id`, the stable order every manifest and payload uses. */
@@ -420,7 +467,10 @@ export function restoreGenerationPointer(rootDir, previousGenerationDir) {
   if (previousGenerationDir === undefined) {
     // No earlier generation existed, so the honest post-failure state is "no
     // pointer" rather than one naming a generation the Host never accepted.
-    removePath(pointer)
+    // A pointer link is detached, never recursed into: the generation it names
+    // is a directory a running process may still be reading.
+    if (isPointerLink(pointer)) removePointerLink(pointer)
+    else removePath(pointer)
     return
   }
   activateGeneration(rootDir, previousGenerationDir)
@@ -457,9 +507,12 @@ export function readCurrentGeneration(rootDir) {
 /**
  * Point `current` at one generation.
  *
- * The link is created under a temporary name and `rename`d over `current`, so a
- * reader either sees the previous generation or the new one — never a missing
- * pointer (§8.6).
+ * The link is created under a temporary name and installed as `current` by
+ * {@link installPointerLink}: one atomic `rename` on POSIX, the ladder's
+ * two-rename swap where a directory link cannot be replaced (§8.7). A reader
+ * therefore sees the previous generation or the new one — never a half-written
+ * generation — and the only moment `current` is absent is the one the swap
+ * documents.
  *
  * @param rootDir - the plugin's state root.
  * @param generationDir - the absolute generation directory to activate.
@@ -472,20 +525,194 @@ function activateGeneration(rootDir, generationDir) {
   mkdirSync(base, { recursive: true, mode: 0o700 })
 
   const temporary = join(base, `.${CURRENT_POINTER}.${process.pid}.${randomUUID()}`)
-  removePath(temporary)
+  removePointerLink(temporary)
   createPointerLink(temporary, target, generationDir)
 
   try {
-    renameSync(temporary, pointer)
+    installPointerLink(temporary, pointer)
   } catch (error) {
-    removePath(temporary)
+    // The staged link carries a private name and is ours either way, so it is
+    // dropped even when the install failed: the error describes the pointer's
+    // state, and it should not have to describe leftover staging too.
+    try {
+      removePointerLink(temporary)
+    } catch {
+      // Staging litter costs disk space, never correctness.
+    }
+    throw error
+  }
+  return target
+}
+
+/**
+ * Install a staged pointer link as `current`, replacing whatever is there.
+ *
+ * POSIX has the primitive the design wants: `rename(2)` replaces the
+ * destination in one step, so that is the whole operation there and the single
+ * atomic step §8.6 relies on. Windows has no equivalent — `MoveFileEx`'s
+ * replace semantics do not extend to directories, and a junction IS a directory
+ * reparse point — so the same rename answers `EPERM` and `current` would never
+ * advance past its first generation (§8.7). The ladder's replace step there is
+ * a two-rename swap:
+ *
+ *   1. rename the live pointer aside, to a private name in the same directory;
+ *   2. rename the staged link into the now-free `current`;
+ *   3. drop the parked link.
+ *
+ * `current` is absent only between steps 1 and 2 — two metadata operations on
+ * one directory, with no payload I/O between them. That is as small as the
+ * window can be made on this platform, which offers no primitive that replaces
+ * one directory link with another atomically.
+ *
+ * Failure is reported as the state the pointer is really in, never as one it is
+ * not:
+ *
+ *   - nothing was moved         → the previous pointer was preserved;
+ *   - it was moved and put back → it names the previous generation again;
+ *   - it was moved and could not
+ *     be put back, or a concurrent
+ *     compile installed one     → the message says whether `current` is absent
+ *                                 or names someone else's generation, and
+ *                                 where the pointer this activation moved is.
+ *
+ * Exported because the rollback it owns cannot be provoked through
+ * `compilePresets` on a healthy POSIX filesystem, and it must be testable on
+ * every platform rather than only on the one that needs the swap.
+ *
+ * @param temporary - the staged pointer link to install.
+ * @param pointer - the `current` path to install it at.
+ * @throws {Error} when the new pointer could not be installed.
+ */
+export function installPointerLink(temporary, pointer) {
+  try {
+    renameSync(temporary, pointer)
+    return
+  } catch (error) {
+    if (replacePointerBySwap(temporary, pointer)) return
     throw new Error(
       `cannot atomically activate generated presets: renaming the temporary pointer over ${pointer} failed (${error.code ?? 'unknown'}). ` +
         'The previous pointer was preserved. See docs/agents-plugin-plan.md §8.7 for the platform fallback ladder.',
       { cause: error },
     )
   }
-  return target
+}
+
+/**
+ * The ladder's replace step where `rename` cannot replace a directory link.
+ *
+ * @param temporary - the staged pointer link.
+ * @param pointer - the `current` path.
+ * @returns whether the staged link was installed.
+ * @throws {Error} when the live pointer was parked and could not be put back.
+ */
+function replacePointerBySwap(temporary, pointer) {
+  // Only a link this plugin could have created is moved aside. A real file or
+  // directory sitting at `current` is not ours to touch, so the rename failure
+  // stands as it is.
+  if (!isPointerLink(pointer)) return false
+
+  const parked = join(dirname(pointer), `${PARKED_POINTER_PREFIX}${process.pid}.${randomUUID()}`)
+  try {
+    renameSync(pointer, parked)
+  } catch {
+    // Nothing moved: the live pointer is exactly where it was.
+    return false
+  }
+
+  try {
+    renameSync(temporary, pointer)
+  } catch (installError) {
+    throw pointerStateAfterFailedSwap(pointer, parked, installError)
+  }
+  // The parked link is litter once the new pointer is live, and it points at a
+  // generation cleanup may already have removed. Failing to drop it must not
+  // fail an activation that succeeded.
+  try {
+    removePointerLink(parked)
+  } catch {
+    // Disk space, not correctness.
+  }
+  return true
+}
+
+/**
+ * Describe a swap that parked the live pointer and then could not install the
+ * staged one — after putting the pointer back, or after failing to.
+ *
+ * @param pointer - the `current` path.
+ * @param parked - where the live pointer was moved to.
+ * @param installError - the failed install, kept as the cause.
+ * @returns the error to throw.
+ */
+function pointerStateAfterFailedSwap(pointer, parked, installError) {
+  const code = installError.code ?? 'unknown'
+  if (restoreParkedPointer(pointer, parked)) {
+    return new Error(
+      `cannot activate generated presets: installing the temporary pointer at ${pointer} failed (${code}) after the previous pointer had been moved aside; ` +
+        `it was moved back, so ${pointer} still names the previous generation. ` +
+        'See docs/agents-plugin-plan.md §8.7 for the platform fallback ladder.',
+      { cause: installError },
+    )
+  }
+  if (lexists(pointer)) {
+    // A pointer that appeared here belongs to another compile. Overwriting it
+    // would silently undo an activation that succeeded, so it is left alone.
+    return new Error(
+      `cannot activate generated presets: installing the temporary pointer at ${pointer} failed (${code}), and ${pointer} exists again — ` +
+        `most likely installed by a concurrent compile. It was left in place rather than overwritten; the pointer this activation moved aside is still at ${parked}. ` +
+        'See docs/agents-plugin-plan.md §8.7 for the platform fallback ladder.',
+      { cause: installError },
+    )
+  }
+  return new Error(
+    `cannot activate generated presets: ${pointer} is now ABSENT — installing the temporary pointer failed (${code}) after the previous pointer had been moved aside to ${parked}, ` +
+      `and it could not be moved back. No generation is live until the next successful compile; the previous pointer is intact at that path. ` +
+      'See docs/agents-plugin-plan.md §8.7 for the platform fallback ladder.',
+    { cause: installError },
+  )
+}
+
+/**
+ * Put the pointer back after a failed swap, and say whether it is back.
+ *
+ * A pointer that appeared at `pointer` in the meantime belongs to a concurrent
+ * compile, so it is left alone. Otherwise the parked link is renamed back — the
+ * exact inverse of the park. If the platform refuses even that, the pointer is
+ * re-created from the parked link's own target: "current names a complete
+ * generation" is the invariant that matters, and which link carries it is not.
+ *
+ * @param pointer - the `current` path.
+ * @param parked - the parked pointer link.
+ * @returns whether `pointer` names the previous generation again.
+ */
+function restoreParkedPointer(pointer, parked) {
+  if (lexists(pointer)) return false
+  try {
+    renameSync(parked, pointer)
+    return true
+  } catch {
+    // The destination is free here, so this is a platform refusal, not a
+    // collision; re-creating the link is the remaining way back.
+  }
+  let target
+  try {
+    target = readlinkSync(parked)
+  } catch {
+    return false
+  }
+  try {
+    // A junction stores an absolute target, so the resolved path is the one the
+    // ladder's second mechanism needs when the first is unavailable.
+    createPointerLink(pointer, target, resolve(dirname(parked), target))
+  } catch {
+    return false
+  }
+  try {
+    removePointerLink(parked)
+  } catch {
+    // Disk space, not correctness.
+  }
+  return true
 }
 
 /**
@@ -496,33 +723,34 @@ function activateGeneration(rootDir, generationDir) {
  *   2. a Windows junction, which needs no elevation and can only point at a
  *      directory — exactly this use case.
  *
- * Both are created under a temporary name so the caller can rename them over
- * `current` atomically. The third ladder step (two live roots plus an
- * invalidation marker) is deliberately NOT implemented: it would change the
- * verified roster composition, and it is unreachable while a junction exists on
- * every Windows filesystem this plugin supports. When neither mechanism works
- * this throws instead of degrading silently.
+ * Both are created under a temporary name so the caller can install them as
+ * `current` — atomically by rename on POSIX, by the two-rename swap where that
+ * is not available. The third ladder step (two live roots plus an invalidation
+ * marker) is deliberately NOT implemented: it would change the verified roster
+ * composition, and it is unreachable while a junction exists on every Windows
+ * filesystem this plugin supports. When neither mechanism works this throws
+ * instead of degrading silently.
  *
- * @param temporary - the staging path the link is created at.
+ * @param linkPath - the path the link is created at.
  * @param target - the link target relative to `.generated/`, for a symlink.
- * @param generationDir - the absolute generation directory, for a junction.
+ * @param absoluteTarget - the resolved generation directory, for a junction.
  * @throws {Error} when no link mechanism is available.
  */
-function createPointerLink(temporary, target, generationDir) {
+function createPointerLink(linkPath, target, absoluteTarget) {
   try {
-    symlinkSync(target, temporary, 'dir')
+    symlinkSync(target, linkPath, 'dir')
     return
   } catch (error) {
     if (!SYMLINK_UNAVAILABLE_CODES.has(error?.code)) throw error
     try {
       // A junction stores an ABSOLUTE target, so it must be handed the resolved
       // generation directory rather than the relative pointer target.
-      symlinkSync(generationDir, temporary, 'junction')
+      symlinkSync(absoluteTarget, linkPath, 'junction')
       return
     } catch (junctionError) {
       throw new Error(
         `cannot activate generated presets: neither a directory symlink (${String(error.code)}) nor a junction ` +
-          `(${String(junctionError?.code ?? 'unknown')}) could be created at ${temporary}. ` +
+          `(${String(junctionError?.code ?? 'unknown')}) could be created at ${linkPath}. ` +
           'See docs/agents-plugin-plan.md §8.7 for the platform fallback ladder.',
         { cause: junctionError },
       )

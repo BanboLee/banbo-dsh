@@ -1021,7 +1021,8 @@ await fs.rename(tmpLink, currentLink) // 覆盖 current：POSIX 下原子
 |---|---|
 | 写 generation 中途 | `complete` 标记不存在 → 该目录永不激活；`current` 仍指旧代；启动时清理残留 |
 | 替换 `current` 前 | 旧代继续有效，行为同上一行 |
-| 替换 `current` 中 | `rename` 原子：要么旧代要么新代，不存在"两者都不"或"半残" |
+| 替换 `current` 中（**POSIX**） | `rename` 原子：要么旧代要么新代，不存在"两者都不"或"半残" |
+| 替换 `current` 中（**Windows junction**，§8.7 第 2 层） | 平台没有"用一个目录链接原子替换另一个"的原语，所以这一步是**两次 rename 的 swap**（把活动指针挪到私有名 → 装入新指针 → 丢弃被挪走的旧指针）。崩溃落在两次 rename 之间时 `current` **可能缺失**，旧指针完好地留在 `.current.previous.<pid>.<uuid>`；下一次成功编译即可恢复。这是该平台的**下界**，不是实现疏漏——见 §8.7 的"替换"实现状态 |
 | 切换后清理旧代时 | 只影响磁盘占用，不影响运行 |
 
 **启动要求**：
@@ -1049,6 +1050,7 @@ Gate B 必须在真实 Web/TUI profile 上实测下列顺序，取第一个可�
 
 - **第 1 层 symlink：已实现并实测**（macOS，Gate B + `preset-compiler.spec.ts` 的 POSIX 指针探针）；
 - **第 2 层 junction：已实现**（`createPointerLink` 在 symlink 报 `EPERM/ENOTSUP/ENOSYS/EACCES` 时改用 `symlinkSync(generationDir, temp, 'junction')`，junction 存绝对目标，故传入已解析的 generation 目录）；由 Windows CI job `agents-windows` 中的 Windows-only 探针验证，macOS 上该探针**跳过而非假装通过**；
+  **替换（replace）也必须分平台——这是 §8.7 曾经的实现缺口**：`MoveFileEx` 的替换语义**不覆盖目录**，而 junction 就是目录重解析点，所以 Windows 上"`rename` 覆盖 `current`"返回 `EPERM`——**第一次激活成功、之后每一次都抛错**（`agents-windows` 首次运行时三个栈同源于此）。现在替换由 `installPointerLink` 一处负责：先试 `rename`（POSIX 上这就是全部，仍是单次原子交换）；失败且 `current` 确实是本插件可能创建的链接时，走 **park → install → drop** 的两步 swap。这**不是**本节禁止的"先删后改名"：旧指针对象被移开、必要时放回，从未被删除。`current` 缺失的窗口是**两次 rename 之间**（同一目录上的两次元数据操作，中间没有载荷 I/O）——这是该平台的下界。失败时报告的是指针**真实所处**的状态（未移动 / 已放回 / 已被并发编译装入 / **确实缺失**），绝不谎称"旧指针已保留"；
 - **第 3 层（双路径根 + 失效标记）：经用户决策不实现**。理由与代价已在评审中说明：它会让两个 root 在同一个 roster 里并存，需要同步改 §8.5 冲突规则（即给"重复 id 一律报错"这条安全保证开例外）与 `cordis.patch.yml` 的 roots 组成——而那份组成正是 Gate B 已实测的对象。在 Windows 上 junction 无需管理员权限且 NTFS 均支持，POSIX 上 symlink 恒可用，因此第 3 层在实践中不可达。当第 1、2 层都失败时，实现选择 **fail-loud 报错并保留旧指针**，绝不静默降级。
   **用户已确认此取舍（保持现状）**：不做第 3 层。若将来确有平台同时缺少 symlink 与 junction，需先回到本节重新设计、重跑 Gate B，并重新评估 §8.5 例外带来的风险，而不是就地补一个降级。
 
