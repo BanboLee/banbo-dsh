@@ -76,17 +76,25 @@ async function writeFileThroughRealTool(
  * Remove the live loader entry and await that plugin's async cleanup.
  *
  * `entry.update({ disabled: true })` is not sufficient on its own. On macOS it
- * happens to resolve only after the fiber has been disposed (measured: ~26 ms,
- * with the plugin's shutdown/exit already written to the protocol log), but on
- * the ubuntu runner it returns in ~1 ms while the fiber is still in its
- * unloading state — so the plugin's dispose, and therefore the LSP `shutdown`
- * and `exit`, have not happened yet when the assertions read the log. That is
- * the difference the composition job kept reporting, and it is a property of the
- * loader's update path, not of this plugin.
+ * happens to resolve only after the plugin's dispose has finished (measured:
+ * ~26 ms, with the shutdown/exit handshake already written to the protocol log),
+ * but on the ubuntu runner it returns in about 1 ms while that dispose is still
+ * in flight — so the LSP `shutdown` and `exit` have not happened yet when the
+ * assertions read the log. That one difference produces every symptom the
+ * composition job reported: no 'shutdown', a -1 index for it, cleanup appearing
+ * to finish inside the 25 ms the spec asserts it cannot, and an afterEach left
+ * waiting on a server nobody shut down.
  *
- * Waiting for the fiber to disappear makes this helper mean what its name says
- * on every platform. The wait is bounded so a genuine hang still fails the test
- * rather than stalling the lane.
+ * Watching `entry.fiber.uid` cannot detect it, and neither can `_disposing`: on
+ * the runner the entry still HAS a fiber whose `uid` is already null — the fiber
+ * has been unregistered but its dispose has not run — so a uid-based check exits
+ * immediately and a counter-based one reads zero. `fiber` becoming `undefined`
+ * is the signal that actually fires, because the loader's `_dispose` clears that
+ * field as part of disposing. The wait is bounded so a genuine hang still fails
+ * the test instead of stalling the lane.
+ *
+ * This belongs in the helper rather than the plugin: AGENTS.md forbids modifying
+ * the harness, and the early return is in the loader's update path.
  */
 async function unloadDiagnostics(booted: LspDiagnosticsBooted): Promise<void> {
   const loader = (booted.ctx as any).get('loader')
@@ -94,7 +102,7 @@ async function unloadDiagnostics(booted: LspDiagnosticsBooted): Promise<void> {
   if (entry === undefined) throw new Error('live @banbolee/dsh-lsp-diagnostics loader entry not found')
   await entry.update({ disabled: true })
   const deadline = Date.now() + 10_000
-  while (entry.fiber !== undefined && entry.fiber?.uid !== null && Date.now() < deadline) {
+  while ((entry.fiber !== undefined || (entry._disposing ?? 0) > 0) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
 }
