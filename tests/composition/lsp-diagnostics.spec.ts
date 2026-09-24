@@ -72,12 +72,31 @@ async function writeFileThroughRealTool(
   return executeTool(booted, 'write', { file_path: relativePath, content }, booted.workspace)
 }
 
-/** Remove the live loader entry and await that plugin's async cleanup. */
+/**
+ * Remove the live loader entry and await that plugin's async cleanup.
+ *
+ * `entry.update({ disabled: true })` is not sufficient on its own. On macOS it
+ * happens to resolve only after the fiber has been disposed (measured: ~26 ms,
+ * with the plugin's shutdown/exit already written to the protocol log), but on
+ * the ubuntu runner it returns in ~1 ms while the fiber is still in its
+ * unloading state — so the plugin's dispose, and therefore the LSP `shutdown`
+ * and `exit`, have not happened yet when the assertions read the log. That is
+ * the difference the composition job kept reporting, and it is a property of the
+ * loader's update path, not of this plugin.
+ *
+ * Waiting for the fiber to disappear makes this helper mean what its name says
+ * on every platform. The wait is bounded so a genuine hang still fails the test
+ * rather than stalling the lane.
+ */
 async function unloadDiagnostics(booted: LspDiagnosticsBooted): Promise<void> {
   const loader = (booted.ctx as any).get('loader')
   const entry = [...loader.entries()].find((candidate: any) => candidate.options.name === '@banbolee/dsh-lsp-diagnostics')
   if (entry === undefined) throw new Error('live @banbolee/dsh-lsp-diagnostics loader entry not found')
   await entry.update({ disabled: true })
+  const deadline = Date.now() + 10_000
+  while (entry.fiber !== undefined && entry.fiber?.uid !== null && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
 }
 
 /** Return the real Loader-backed catalog exposed to model tool calls. */
