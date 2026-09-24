@@ -1,46 +1,46 @@
 # @banbolee/dsh-agents
 
-**中文** | [English](./README.en.md)
+**English** | [中文](./README.zh.md)
 
-用 YAML 定义你自己的 Agent 团队，并在 DSH 里以**具名工具**（`agent_<id>`）显式委派。本插件接管 Web 的 `agent-presets` 或 dsh-tui 的 `dsh-tui-agent-presets` roster seat，把包内 preset 与用户主 Agent 的编译产物一起挂进 roster，并在 Plugin Configuration 里提供一张设置卡。
+Define your own agent team in YAML and delegate explicitly inside DSH through **named tools** (`agent_<id>`). This bundle takes over the Web `agent-presets` seat or the dsh-tui `dsh-tui-agent-presets` seat, mounts the shipped presets together with the compiled user main agents onto the roster, and adds a settings card under Plugin Configuration.
 
-设计与决策的完整依据见 [`docs/agents-plugin-plan.md`](../../docs/agents-plugin-plan.md)。
+The full design and decision record lives in [`docs/agents-plugin-plan.md`](../../docs/agents-plugin-plan.md).
 
-## 当前状态
+## Current status
 
-方案 §16 的 Stage 1–4 已完成，Gate A–E 平台探针全绿：
+Stages 1–4 of plan §16 are complete, and the Gate A–E platform probes are green:
 
-- **Host 装配**：读取内置 catalog（`catalog/*.yaml`，7 个 Agent）与用户 catalog（`$DSH_HOME/banbo-agents/agents/*.yaml`），受约束合并与全量校验；把用户新增的主 Agent 编译成**不可变 generation**，用原子 `current` 指针替换激活；写入 ABI manifest，保护已发布的 `toolName` / `presetId` / main-child 形态 / `child.continuation`。
-- **Persona**：用户 `prompts/` 优先、包内 `prompts/` 兜底；严格 UTF-8、双重尺寸上限、末尾单换行归一化。
-- **委派 runtime**：`agent_<id>`、`delegate_batch`、授权图与 absolute depth 校验、root Session 并发预算、one-shot/continuable 生命周期、HolderRegistry 与结构化隐私安全日志。
-- **CatalogRemote**：只读、启动期固定的 catalog 视图（无 persona、路径、composition、settings）；由官方 Typert generator 生成 Host/客户端 descriptor。
-- **Web 设置卡**：官方 `settings.plugin.item`（key `banbo-agents`），经严格 Typert Remote 读 catalog，用官方 `settingsScope` 读写 enabled/model。
+- **Host assembly**: reads the built-in catalog (`catalog/*.yaml`, 7 agents) and the user catalog (`$DSH_HOME/banbo-agents/agents/*.yaml`), merges under constraints, and validates the whole graph; compiles user main agents into an **immutable generation** activated by an atomic `current` pointer; writes the ABI manifest that protects published `toolName` / `presetId` / main-child shape / `child.continuation`.
+- **Personas**: user `prompts/` wins, shipped `prompts/` is the fallback; strict UTF-8, dual size caps, single trailing-newline normalization.
+- **Delegation runtime**: `agent_<id>`, `delegate_batch`, the authorisation graph and absolute-depth checks, root-Session concurrency budget, one-shot/continuable lifecycle, HolderRegistry, and structured privacy-safe logging.
+- **CatalogRemote**: a read-only, startup-static catalog view (no persona, paths, composition, or settings) with Host/client descriptors produced by the official Typert generator.
+- **Web settings card**: the official `settings.plugin.item` seat (key `banbo-agents`) reads the catalog through the strict Typert Remote and reads/writes enabled/model through the official `settingsScope`.
 
-## 安装
+## Install
 
 ```sh
 dsh plugin --profile <profile> add @banbolee/dsh-agents
 ```
 
-从源码安装：
+From source:
 
 ```sh
 dsh plugin --profile <profile> add -w ./plugins/agents
 ```
 
-安装后重启 profile：catalog 与 generation 在 Host ready 之前完成，坏配置会让启动直接失败并在报错里给出文件路径。
+Restart the profile afterwards: catalog and generation complete before the Host reports ready, so a broken configuration fails startup and names the file.
 
-### Roster 所有权兼容性
+### Roster ownership compatibility
 
-同一个包支持 DSH Web `0.1.5-rc.2` 和 dsh-tui `0.10.2` 的不同 roster row id。由于 Cordis 对不存在的 patch target 采用 warning + skip，每次启动会看到**一条预期 warning**：Web 提示缺少 `dsh-tui-agent-presets`，TUI 提示缺少 `agent-presets`；命中的另一 row 仍正常激活。
+One package supports the different roster row ids of DSH Web `0.1.5-rc.2` and dsh-tui `0.10.2`. Because Cordis warns and skips a patch target that does not exist, every start shows **one expected warning**: Web reports the missing `dsh-tui-agent-presets`, TUI reports the missing `agent-presets`, and the row that does match still activates.
 
-本插件是 roster-owner Bundle：不兼容另一个覆盖同一 Web/TUI roster seat 的 Bundle，除非你手工合并完整 `roots`。Host 会检查 package/generated 两个 root，缺失时 fail-loud，不会静默接受覆盖。
+This bundle owns a roster seat: it is incompatible with another bundle covering the same Web/TUI roster seat unless you merge the full `roots` by hand. The Host checks the package and generated roots and fails loud rather than silently accepting an override.
 
-## 团队一览
+## The team
 
-内置 7 个 Agent。`main` 形态出现在官方 Session 的 preset picker 里；`child` 形态只能通过具名工具委派。
+Seven agents ship built in. A `main` form appears in the official Session preset picker; a `child` form is reachable only through a named delegation tool.
 
-| Agent | 形态 | continuation | 可委派给 | maxDepth |
+| Agent | Forms | Continuation | May delegate to | maxDepth |
 |---|---|---|---|---|
 | `banbo` | main | — | planner, research, explorer, implement, review, executor | 2 |
 | `planner` | main + child | optional | research, explorer, review | 1 |
@@ -50,59 +50,59 @@ dsh plugin --profile <profile> add -w ./plugins/agents
 | `research` | child | one-shot | — | — |
 | `explorer` | child | one-shot | — | — |
 
-`maxDepth` 是**绝对**深度上限，不是相对层数。`banbo` 的 2 意味着 `Banbo → Executor → Implement` 合法，而 `Implement` 不能再委派第三层。
+`maxDepth` is an **absolute** cap, not a relative level count. `banbo`'s 2 allows `Banbo → Executor → Implement`, and `Implement` cannot delegate a third level.
 
-## 委派语义
+## Delegation semantics
 
-- **前台（默认）**：下一步依赖子结果、或会改同一文件时，前台等待。
-- **后台**：仅当存在明确无依赖、无冲突的其他工作时才用 `run_in_background: true`。
-- **batch**：多个互不依赖的 one-shot 结果都返回后才能继续时用 `delegate_batch`。batch 不接受需要保留对话的 Agent。
-- **one-shot**：`research` / `explorer` 是一次性任务，结算后不保留可继续会话；给它们发复用型指令不会有第二次送达。
-- **continuable**：`optional` continuation 的 child 在前台调用时仍是 one-shot，只有后台调用才保留可继续会话。需要同一专家继续上下文时，先 `list_agents` 找 idle 的 continuable child，再用 `send_message` 复用。
+- **Foreground (default)**: wait when the next step depends on the child's result or would edit the same file.
+- **Background**: use `run_in_background: true` only when genuinely independent, non-conflicting work exists.
+- **Batch**: use `delegate_batch` when several independent one-shot results must all return before continuing. A batch rejects agents that need to keep a conversation.
+- **One-shot**: `research` / `explorer` are one-shot; no continuable session survives settlement, so a reuse-style instruction never gets a second delivery.
+- **Continuable**: an `optional`-continuation child is still one-shot when called in the foreground; only a background call keeps it continuable. To continue one expert with its context, use `list_agents` to find an idle continuable child and reuse it with `send_message`.
 
-子 Agent 可能通过 direct message 和 settlement notice **两次**送达同一份结论；按 `childId` 视为同一次完成，不重复行动。
+A child may deliver the same conclusion **twice**, as a direct message and as a settlement notice; treat both as one completion keyed by `childId`, and do not act twice.
 
-## 部分状态与并发
+## Partial states and concurrency
 
-- `deadline` 到期拿到的是 `partial_timeout`：基于部分结果继续。
-- `cancel_requested` 与 `cleanup_deferred` **都不代表任务已完成**。
-- **并发超限 fail-fast**：root Session 并发预算用尽时新委派直接失败并说明原因与修复路径，不排队、不静默降级。
-- 并发计数**不跨重启**：重启后额度从零开始，历史占用不会被重新计入。
+- A `deadline` that expires yields `partial_timeout`: continue from the partial result.
+- Neither `cancel_requested` nor `cleanup_deferred` means the work completed.
+- **Concurrency limits fail fast**: when the root Session budget is exhausted, a new delegation fails immediately with the reason and a repair path. Nothing is queued and nothing degrades silently.
+- The concurrency count does **not** survive a restart: the budget starts at zero and prior usage is not re-counted.
 
-## Persona 与覆盖
+## Personas and overrides
 
-内置 persona 按运行形态拆分，固定包含 `Role`、`Responsibilities`、`Non-goals`、`Tool Policy`、`Delegation Policy`、`Collaboration Protocol`、`Output Contract`、`Failure Policy` 八节。lint 会机械校验：节标题唯一、顺序固定、每节非空，且不出现未授权的工具名或通用委派入口。
+Built-in personas are split by runtime form and always carry the eight sections `Role`, `Responsibilities`, `Non-goals`, `Tool Policy`, `Delegation Policy`, `Collaboration Protocol`, `Output Contract`, and `Failure Policy`. Lint checks them mechanically: unique headings, fixed order, non-empty sections, and no unauthorised tool name or generic delegation entry point.
 
-不要编辑发布包里的 `prompts/`。覆盖有两条路径：
+Do not edit the shipped `prompts/`. Two override paths exist:
 
-1. **同名自动覆盖**：把与内置文件**同名**的文件放进 `$DSH_HOME/banbo-agents/prompts/`，例如 `prompts/planner-child.md`，它会自动覆盖包内的同名 persona，无需改 YAML。
-2. **自定义文件名**：先放文件，再在用户 Agent YAML 里显式引用：
+1. **Same-name automatic override**: put a file with the **same name** as a built-in into `$DSH_HOME/banbo-agents/prompts/`, for example `prompts/planner-child.md`. It overrides the shipped persona with no YAML change.
+2. **Custom filename**: place the file, then reference it explicitly in a user agent YAML:
 
 ```yaml
 main:
   persona: prompts/my-lead-main.md
 ```
 
-覆盖文件遵守同一 UTF-8、64 KiB 单文件与总量限制；配置修改在下次 profile 启动时生效。
+Overrides obey the same UTF-8, 64 KiB per-file and total-size limits. Configuration changes take effect on the next profile start.
 
-## 设置
+## Settings
 
-Web 端在 **Plugin Configuration → `banbo-agents`** 提供一张设置卡，读写官方 `banbo-agents` settings namespace。
+On the Web side, **Plugin Configuration → `banbo-agents`** provides a settings card over the official `banbo-agents` settings namespace.
 
-可编辑项：
+Editable:
 
-- `includeDefaults`：是否启用全部**内置** Agent（默认开）。用户自定义 Agent 永远启用。
-- 每个 Agent 的 `enabled`：停用可逆，不删除定义。
-- child 形态的 `model`：`{ provider, model, reasoningEffort? }` 或 `{ default: true }`。
+- `includeDefaults`: enable every **built-in** agent (default on). User-defined agents are always enabled.
+- Per-agent `enabled`: reversible deactivation without deleting a definition.
+- The `model` of a `child` form: `{ provider, model, reasoningEffort? }` or `{ default: true }`.
 
-不可编辑项（会明确说明原因）：
+Not editable (each with an explicit reason):
 
-- **main 形态的 model**：主 Agent 的模型只由官方 Session model selector 决定。给 main-only Agent 写 model 会以 `model-on-main-only` 拒绝。
-- **已退役（retired）Agent**：只读展示，不能重新启用。
+- **The model of a `main` form**: a main agent's model is owned solely by the official Session model selector. Writing a model for a main-only agent is rejected as `model-on-main-only`.
+- **A retired agent**: shown read-only and cannot be re-enabled.
 
-设置卡采用**暂存编辑 + 一次提交**：改动先进入草稿，点提交后用当前 revision 走一次 `mutate`；如果 revision 已过期，会保留草稿并提示冲突，不会覆盖别人的改动。清空 model 使用路径级 `unset`，不会连带删除同 Agent 的其他字段。
+The card uses **staged edits plus a single commit**: changes first enter a draft, and submitting runs one `mutate` with the revision the card read. A stale revision keeps the draft and reports the conflict instead of overwriting someone else's change. Clearing a model uses a path-level `unset`, so sibling fields of the same agent are untouched.
 
-YAML/JSON 形状示例：
+Shape example:
 
 ```yaml
 includeDefaults: true
@@ -115,101 +115,101 @@ agents:
       model: default-model
 ```
 
-**live 状态 vs 冻结 descriptor**：`enabled` / `model` 是 live 的，改完对**新建**的子 Agent 生效（main 的模型仍归官方选择器）。而子 Agent 创建时冻结的 `persona` / `toolFilter`（continuable descriptor）不会因为后来改设置而回写；已经存在的 continuable child 继续用创建时的组合。这也是为什么**推荐用 `enabled: false` 而不是删除定义**，以及为什么退役 Agent 会保留同名空壳工具：冷恢复时冻结的 `toolFilter` 里必须仍有那个名字，否则官方 `tools.restrict()` 会直接抛错。
+**Live state vs frozen descriptor**: `enabled` / `model` are live and apply to **newly created** children (a main agent's model still belongs to the official selector). The `persona` / `toolFilter` frozen into a continuable child's descriptor at creation is never rewritten by a later settings change; existing continuable children keep the composition they were created with. That is why `enabled: false` is preferred over deleting a definition, and why a retired agent keeps a same-named shell tool: a cold resume still has to name that tool inside its frozen `toolFilter`, or the official `tools.restrict()` throws.
 
-## 数据布局
+## Data layout
 
 ```text
 $DSH_HOME/banbo-agents/
-├── agents/*.yaml              你写的 Agent 定义（唯一需要手工编辑的目录）
-├── prompts/*.md               你写的 persona；同名文件覆盖包内版本
-├── .generated/                Host 生成的 preset 产物，勿手工编辑
-│   ├── generations/<hash>/    不可变的一代：presets/ + abi.json + complete
-│   └── current -> generations/<hash>   原子替换的指针
-└── .children/<childId>.json   continuable 子 Agent 的身份 sidecar
+├── agents/*.yaml              your agent definitions (the only directory you edit)
+├── prompts/*.md               your personas; a same-named file overrides the shipped one
+├── .generated/                Host-generated preset output; never edit by hand
+│   ├── generations/<hash>/    one immutable generation: presets/ + abi.json + complete
+│   └── current -> generations/<hash>   the atomically replaced pointer
+└── .children/<childId>.json   identity sidecar of one continuable child
 ```
 
-`.generated/` 只由本插件写入和清理，且只清理带自己 `complete` 标记的目录；你放进去的其它内容不会被跟随、也不会被删除。指针替换失败时**旧指针原样保留**，编译直接失败并报错，不会出现半激活的一代。
+Only this bundle writes to and cleans `.generated/`, and it only removes directories carrying its own `complete` marker; anything else you put there is neither followed nor deleted. If pointer replacement fails, the **previous pointer stays exactly as it was**, compilation fails loudly, and no half-activated generation exists.
 
-### Sidecar 可移植性
+### Sidecar portability
 
-每个 continuable child 一个不可变 JSON 文件，路径是 `.children/<childId>.json`，以 `childId` 为唯一键。写入先把内容落到临时文件，再用 **`link` 原子创建**（create-if-absent）发布：已存在的同名记录**不会被覆盖**——内容完全相同视为幂等重试，内容不同则报 `already-exists`。不支持硬链接的文件系统回退为「先检查再 rename」，拒绝覆盖的语义不变。多 child 并发写不同路径互不冲突。文件内容不含绝对路径，因此：
+One immutable JSON file per continuable child lives at `.children/<childId>.json`, keyed by `childId`. A write stages the content in a temp file and publishes it with an atomic **`link`** (create-if-absent): an existing record is **never overwritten** — byte-identical content counts as an idempotent retry, different content fails with `already-exists`. Filesystems without hard links fall back to a checked rename, which keeps the refusal semantics. Concurrent writes to different children touch different paths and cannot conflict. The content holds no absolute paths, so:
 
-- 备份/迁移整个 `$DSH_HOME/banbo-agents/` 目录即可保留子 Agent 身份；
-- 单独移动 `DSH_HOME` 而带上该目录同样有效；
-- 删掉某个 sidecar 只会让对应 child 无法按身份复用，不影响其它 child。
+- backing up or migrating the whole `$DSH_HOME/banbo-agents/` directory preserves child identity;
+- moving `DSH_HOME` while carrying that directory works the same way;
+- deleting one sidecar only stops that child from being reused by identity and leaves the others alone.
 
-## 卸载与数据保留
+## Uninstall and data retention
 
 ```sh
 dsh plugin --profile <profile> remove @banbolee/dsh-agents
 ```
 
-普通卸载**保留** `$DSH_HOME/banbo-agents/` 全部内容（YAML、persona、generated presets、ABI manifest、身份 sidecar）。重装后 catalog、退役空壳和旧 continuable 子 Agent 的身份都能恢复。卸载只意味着本插件不再挂载到运行时，官方 roster 回到默认状态。
+A normal uninstall **keeps** everything under `$DSH_HOME/banbo-agents/` (YAML, personas, generated presets, the ABI manifest, identity sidecars). Reinstalling restores the catalog, the retired shells, and the identity of old continuable children. Uninstalling only means the bundle no longer mounts at runtime and the official roster returns to its default.
 
-## 破坏性清除（不可逆）
+## Destructive removal (irreversible)
 
-只有手工删除才会真正清除：
+Only a manual delete truly clears state:
 
 ```sh
 rm -rf "$DSH_HOME/banbo-agents"
 ```
 
-这会同时删除 YAML、persona、generated presets、ABI manifest 与退役空壳记录。**删除 ABI manifest 的后果**：旧 continuable 子 Agent 冻结的 `toolFilter` 里那些 `agent_<id>` 名字会消失，冷恢复将无法进行。
+This removes YAML, personas, generated presets, the ABI manifest, and retired-shell records together. **Consequence of deleting the ABI manifest**: the `agent_<id>` names frozen into old continuable children's `toolFilter` disappear, and cold resume can no longer proceed.
 
-## 三条明确的非承诺
+## Three explicit non-promises
 
-1. `send_message` 的复用**不精确计数**：它是尽力而为的会话复用，不保证同一个子 Session 被复用几次。
-2. 并发计数**不跨重启**：重启后并发额度从零开始，历史占用不会被重新计入。
-3. 删除一个有 `main` 形态的主 Agent 会**连带整棵子树失效**（连带其下全部 continuable 子 Agent，因为冷恢复需要活着的直接父 Session）。这是期望行为，不是缺陷。
+1. `send_message` reuse is **not exactly counted**: it is best-effort session reuse and does not promise how many times one child Session is reused.
+2. The concurrency count does **not** survive a restart: the budget starts at zero and prior usage is not re-counted.
+3. Deleting a `main`-form agent **invalidates its whole subtree** (including every continuable child beneath it, because cold resume needs a live direct parent Session). This is intended, not a defect.
 
-因此**推荐用 `enabled: false` 停用 Agent，而不是删除定义文件**：停用随时可撤销；删除会让该 Agent 退役（有 `main` 形态时连带整棵子树失效），虽然把同名文件放回去可以复活，但**要改语义就换新 id**。
+Prefer `enabled: false` over deleting a definition file: deactivation can be undone at any time, while deletion retires the agent (taking its whole subtree with it when it has a `main` form). Restoring the same file revives it, but **change meaning under a new id**.
 
-### 删除后放回同名 YAML 会复活，但用的是新 composition
+### Putting the YAML back revives the agent, on a new composition
 
-删掉定义文件后，那个 id 会**退役**：generated preset 目录一并移除，旧主 Session 走官方 `agent-preset/not-found`。**把同名文件放回去并重启，这个 id 会复活**——generated preset 重新生成，旧 Session 的 preset 解析重新成功，于是按 current-policy resume 语义继续运行。
+Deleting a definition file **retires** that id: its generated preset directory goes away too, and old main sessions hit the official `agent-preset/not-found`. **Restoring a file with the same name and restarting revives the id** — the generated preset is rebuilt, the old session's preset resolves again, and it continues under current-policy resume semantics.
 
-这条边界要清楚：
+Know the boundary:
 
-- **好处**：误删之后放回原文件即可恢复，是最自然的救回路径；
-- **风险**：如果放回的是**改写过的**定义，旧 Session 会在一个新 composition 下继续，历史里可能出现新 composition 做不了的工具调用；
-- **推荐**：要改定义语义就**换一个新 id**，不要复用旧 id 改含义。复活的定义仍受 ABI 收窄检查约束——不能删掉已发布的 main/child 形态、不能改 preset id、不能切换 `continuation`，否则启动会明确失败。
+- **Upside**: after an accidental delete, putting the original file back is the natural recovery path.
+- **Risk**: if the restored file has been **rewritten**, the old session continues on a new composition and its history may contain tool calls the new composition cannot make.
+- **Recommendation**: change meaning under a **new id**, never by reusing an old one. A revived definition still obeys the ABI narrowing checks — it may not drop a published main/child form, change the preset id, or switch `continuation`; startup fails loudly if it tries.
 
-## Web 设置卡与构建
+## Web settings card and build
 
-Host Remote、Typert descriptor 与 Web client 都有构建产物，源码改动后必须重新构建：
+The Host Remote, the Typert descriptors, and the Web client all have build output, so source changes require a rebuild:
 
 ```sh
 pnpm --filter @banbolee/dsh-agents build   # node scripts/build.mjs
 ```
 
-构建会：
+The build:
 
-1. 先清空 `lib/`；
-2. 在临时 workspace 适配层里调用官方 Typert generator，产出 `lib/typert.host.*` 与 `lib/typert.remote-client.*`；
-3. 用 `tsc` 产出 Host Remote 与客户端类型（`lib/types/**`）；
-4. 用 `tsdown` 产出单文件经典客户端 bundle `lib/client.js`（`window.__ModuleLoader__` 工厂、无代码分割）。
+1. clears `lib/` first;
+2. calls the official Typert generator from a temporary workspace adapter, producing `lib/typert.host.*` and `lib/typert.remote-client.*`;
+3. runs `tsc` for the Host Remote and the client types (`lib/types/**`);
+4. runs `tsdown` for the single-file classic client bundle `lib/client.js` (a `window.__ModuleLoader__` factory, no code splitting).
 
-排障：
+Troubleshooting:
 
-- **设置卡不出现**：确认构建已跑过且 profile 里存在 `lib/client.js`；再次刷新页面。客户端只在 Remote mount 与 `list()` 成功后才注册 locale 与 slot，任一步失败都会整体回滚。
-- **改了 persona/YAML 没生效**：配置在**下次 profile 启动**时生效；改动的是已有 continuable child 的冻结 descriptor 时，需要新建 child。
-- **启动直接失败并给出文件路径**：这是期望的 fail-loud。按报错里的文件与字段修正 YAML；旧 generation 与 `current` 指针保持原样。
-- **看到 missing-sibling warning**：见上文「Roster 所有权兼容性」，每端一条属预期。
+- **The settings card is missing**: confirm the build ran and `lib/client.js` exists in the profile, then refresh. The client registers the locale and slot only after the Remote mount and `list()` succeed; any failure rolls the whole startup back.
+- **A persona/YAML change had no effect**: configuration applies on the **next profile start**; when the change targets an existing continuable child's frozen descriptor, create a new child.
+- **Startup fails and names a file**: that is the intended fail-loud. Fix the YAML at the reported field; the previous generation and the `current` pointer stay untouched.
+- **A missing-sibling warning appears**: see "Roster ownership compatibility" above; one per side is expected.
 
-## 开发
+## Development
 
 ```sh
-env NODE_ENV=development pnpm test                              # 整仓
-env NODE_ENV=development npx vitest run --dir plugins/agents    # 只跑本插件
-node scripts/build.mjs                                          # 重新构建产物
+env NODE_ENV=development pnpm test                              # whole repo
+env NODE_ENV=development npx vitest run --dir plugins/agents    # this bundle only
+node scripts/build.mjs                                          # rebuild artifacts
 ```
 
-Gate 探针位于 `tests/gates/`，与产品单测分开：
+Gate probes live under `tests/gates/`, separate from product unit tests:
 
 ```sh
-env NODE_ENV=development npx vitest run --dir plugins/agents    # 只跑本插件普通 lane
+env NODE_ENV=development npx vitest run --dir plugins/agents    # ordinary lane, this bundle
 env NODE_ENV=development pnpm test:agents:gates                 # Gate + packed lane
 ```
 
-`tests/packed.spec.ts` 会跑真实 `npm pack` 并断言发布面与纯 ESM 导入，需要先执行一次构建。
+`tests/packed.spec.ts` runs a real `npm pack` and asserts the published surface and pure-ESM imports; build once before running it.

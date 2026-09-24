@@ -16,9 +16,13 @@ import { describe, expect, it } from 'vitest'
 
 const read = (relative: string): string => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8')
 
-const ZH = read('../plugins/agents/README.md')
-const EN = read('../plugins/agents/README.en.md')
-const ROOT = read('../README.md')
+// English is the primary README (`README.md`, what npm and GitHub render);
+// the Chinese counterpart is `README.zh.md`. The assertions below are
+// language-specific on purpose, so the two must not be swapped.
+const EN = read('../plugins/agents/README.md')
+const ZH = read('../plugins/agents/README.zh.md')
+const ROOT_EN = read('../README.md')
+const ROOT_ZH = read('../README.zh.md')
 
 const PACKAGE_NAME = '@banbolee/dsh-agents'
 const STATE_DIR = '$DSH_HOME/banbo-agents'
@@ -31,8 +35,12 @@ describe('agents README — install surface', () => {
       expect(readme).toContain('dsh plugin --profile <profile> add -w ./plugins/agents')
       expect(readme).toContain(`dsh plugin --profile <profile> remove ${PACKAGE_NAME}`)
     }
-    expect(ROOT).toContain(`dsh plugin --profile <profile> add ${PACKAGE_NAME}`)
-    expect(ROOT).toContain(`dsh plugin --profile <profile> remove ${PACKAGE_NAME}`)
+    // The root README advertises the bundle in BOTH languages, so the two must
+    // not drift apart on the install/uninstall contract.
+    for (const root of [ROOT_EN, ROOT_ZH]) {
+      expect(root).toContain(`dsh plugin --profile <profile> add ${PACKAGE_NAME}`)
+      expect(root).toContain(`dsh plugin --profile <profile> remove ${PACKAGE_NAME}`)
+    }
   })
 
   it('states that a normal uninstall keeps user data and that purge is manual and destructive', () => {

@@ -272,7 +272,7 @@ Gate B 已锁定：
     "lib/client.js",
     "lib/types",
     "README.md",
-    "README.en.md"
+    "README.zh.md"
   ],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },

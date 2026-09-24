@@ -15,7 +15,8 @@
     "model.js",
     "stream.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "README.zh.md"
   ],
   "dsh": {
     "bundle": {

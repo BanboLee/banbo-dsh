@@ -5,7 +5,8 @@
   "type": "module",
   "files": [
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "README.zh.md"
   ],
   "dsh": {
     "bundle": {

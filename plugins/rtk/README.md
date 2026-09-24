@@ -1,5 +1,7 @@
 # @banbolee/dsh-rtk
 
+**English** | [中文](./README.zh.md)
+
 RTK rewrite decorator for DeepSeek Harness: a plain Cordis function plugin
 (`name`/`inject`/`Config`/`apply`) that decorates the live `ctx.shell`
 executor — wrapping its `run`/`start` with the `rtk rewrite` oracle — and

@@ -1,56 +1,74 @@
 # @banbolee/dsh-llm-pi-ai-with-session
 
-> **English summary.** A generic session wrapper over the official `llm-pi-ai`
-> adapter for DeepSeek Harness. It registers explicit session provider routes
-> (only the routes declared in `routes`) that reuse pi-ai's
-> `openai-completions` implementation and add a dynamic session id header
-> (default `x-session-id`) to every LLM request, so your own gateway can
-> correlate requests with dsh sessions. Gateway, credentials, static headers,
-> models, and reasoning tiers are all inherited from the source provider in
-> `llm-pi-ai.providers` — nothing is duplicated. It uses the public
-> `ctx.llm.registerAdapter` extension point, never modifies harness core, and
-> needs no extra binary. Install:
-> `dsh plugin --profile <profile> add -w ./plugins/dsh-llm-pi-ai-with-session`,
-> then point your agent's default provider at one of the declared session
-> routes. Full Chinese documentation follows below (安装 / 配置 / 使用 /
-> 行为细节 / 限制).
+**English** | [中文](./README.zh.md)
 
-一个给 DeepSeek Harness 的 LLM 调用加上「会话（session）标识」能力的插件：在每次 LLM 请求的 HTTP 头里带上当前会话 id，方便自建网关把请求和 dsh 会话关联起来。
+A plugin that adds **session identity** to DeepSeek Harness LLM calls: every LLM
+request carries the current session id in an HTTP header, so your own gateway
+can correlate requests with dsh sessions.
 
-它是 `llm-pi-ai` 的一个**通用 session wrapper**：只为配置中显式声明的 provider 注册 session 路由，复用 pi-ai 的 **openai-completions** 线上实现，在每次请求里额外带上一个可配置的会话 header（默认 `x-session-id`）。网关、模型、凭据、静态 headers、推理档位全部从 source provider **继承**，无需重复配置——不含任何环境特定内容，无需改动 harness 内核、无需碰被锁死的 `sendSessionAffinityHeaders` 开关。
+It is a **generic session wrapper** over the official `llm-pi-ai` adapter: it
+registers explicit session provider routes — only the routes declared in
+`routes` — that reuse pi-ai's **openai-completions** wire implementation and add
+one configurable session header (default `x-session-id`) to every request.
+Gateway, credentials, static headers, models, and reasoning tiers are all
+**inherited** from the source provider in `llm-pi-ai.providers`; nothing is
+duplicated. It uses only the public `ctx.llm.registerAdapter` extension point,
+never modifies harness core, needs no extra binary, and never touches the
+locked-down `sendSessionAffinityHeaders` switch.
 
-## 为什么需要它
+## Why this plugin exists
 
-Harness 官方有两条 LLM 通路：
+Harness ships two official LLM paths:
 
-- `@deepseek-ai/dsh-llm-deepseek`（`deepseek-official` 路由）：自带 `x-deepseek-harness-session-id` header，但请求体是 DeepSeek 官方风格（顶层 `thinking` 字段、`reasoning_effort` 上限 `max`），不适合标准 OpenAI-completions 网关。
-- `@deepseek-ai/dsh-llm-pi-ai`（多 provider 路由）：是标准 OpenAI-completions 协议，但把 session id 写进 header 的开关（`compat.sendSessionAffinityHeaders`）被 harness **故意 withhold（禁止配置）**，且 profile 的 `headers` 只能是静态字符串，带不了动态的会话 id。
+- `@deepseek-ai/dsh-llm-deepseek` (the `deepseek-official` route): it already
+  sends an `x-deepseek-harness-session-id` header, but its request body follows
+  the DeepSeek official shape (a top-level `thinking` field, `reasoning_effort`
+  capped at `max`), which does not fit a standard OpenAI-completions gateway.
+- `@deepseek-ai/dsh-llm-pi-ai` (multi-provider routes): it speaks the standard
+  OpenAI-completions protocol, but the switch that writes the session id into a
+  header (`compat.sendSessionAffinityHeaders`) is **deliberately withheld by
+  harness (configuration refused)**, and a profile's `headers` can only be
+  static strings, so they cannot carry a dynamic session id.
 
-本插件用 harness 的公开扩展点 `ctx.llm.registerAdapter` 注册一个自定义 `LlmAdapter`，内部复用 pi-ai 的 `streamSimple`（`@earendil-works/pi-ai/compat` 公开导出、按 `model.api` 自动分发），在 `options.headers` 里注入动态会话 header——既保留 pi-ai 的协议行为，又补上动态 session id。
+This plugin registers a custom `LlmAdapter` through the public
+`ctx.llm.registerAdapter` extension point. Internally it reuses pi-ai's
+`streamSimple` (a public export of `@earendil-works/pi-ai/compat` that
+dispatches on `model.api`) and injects the dynamic session header into
+`options.headers` — keeping pi-ai's protocol behavior while adding the dynamic
+session id.
 
-> 它不修改官方 `llm-pi-ai` provider，也不全局拦截 fetch；它通过公开的 `ctx.llm.registerAdapter` 注册独立 session 路由。每条 session 路由都显式声明 `source`，并从 `ctx.settings.get('llm-pi-ai')` 读取对应 source provider 的配置。
+> It does not modify the official `llm-pi-ai` provider and does not intercept
+> fetch globally; it registers independent session routes through the public
+> `ctx.llm.registerAdapter`. Every session route declares its `source`
+> explicitly and reads that source provider's configuration from
+> `ctx.settings.get('llm-pi-ai')`.
 
-## 安装
+## Install
 
-**直接安装（推荐）**——从 npm 安装，无需 clone：
+**Install from npm (recommended)** — no clone needed:
 
 ```sh
 dsh plugin --profile <profile> add @banbolee/dsh-llm-pi-ai-with-session
 ```
 
-本地开发时从仓库根目录安装：
+For local development, install from the repository root:
 
 ```sh
 cd ~/project/banbo-dsh
 dsh plugin --profile <profile> add -w ./plugins/dsh-llm-pi-ai-with-session
 ```
 
-## 配置
+## Config
 
-**通用配置（网关、凭据、模型、推理档位、重试与超时）只写一份**——就在 `llm-pi-ai` 的 providers 里。插件自身只声明需要生成哪些 session 路由，以及会话 header 名；其余一切（baseURL、apiKeyEnv、headers、models、reasoning、reasoningEfforts、retryPolicy、timeoutMs、streamIdleTimeoutMs）都从 source provider 继承：
+**The shared configuration — gateway, credentials, models, reasoning tiers,
+retry, and timeouts — is written exactly once**, in `llm-pi-ai`'s providers.
+The plugin itself only declares which session routes to create and the session
+header name; everything else (baseURL, apiKeyEnv, headers, models, reasoning,
+reasoningEfforts, retryPolicy, timeoutMs, streamIdleTimeoutMs) is inherited from
+the source provider:
 
 ```yaml
-# settings.yaml —— llm-pi-ai 的 providers 是唯一的事实来源
+# settings.yaml — llm-pi-ai's providers are the single source of truth
 llm-pi-ai:
   providers:
     deepseek:
@@ -73,7 +91,7 @@ llm-pi-ai:
           maxTokens: 128000
           input: [text, image]
 
-# 插件段：只声明 session route；baseURL/apiKeyEnv/models/reasoning 一律不写
+# Plugin section: declare session routes only; never write baseURL/apiKeyEnv/models/reasoning
 llm-pi-ai-with-session:
   sessionHeader: x-session-id
   routes:
@@ -82,43 +100,77 @@ llm-pi-ai-with-session:
       displayName: Light (session)
 ```
 
-装好后，只有 `routes` 中声明的路由会注册。上例只注册 `light-session`，不会自动生成 `deepseek-session`，因此模型选择器不会因为本插件把所有 provider 翻倍。
+Once installed, only the routes declared in `routes` are registered. The example
+above registers `light-session` only and does not automatically create
+`deepseek-session`, so the plugin never doubles every provider in the model
+picker.
 
-### 字段说明
+### Field reference
 
-| 字段 | 默认值 | 说明 |
+| Field | Default | Meaning |
 | --- | --- | --- |
-| `sessionHeader` | `x-session-id` | 会话 header 的名字。请求没有 `sessionId` 时会失败，不会静默发送无会话请求。 |
-| `routes[].route` | 必填 | 注册到 Harness 的 session provider 路由名。 |
-| `routes[].source` | 必填 | 继承配置的 `llm-pi-ai.providers.<source>`。 |
-| `routes[].displayName` | `route` | 模型选择器显示名，建议加上 `(session)` 与原 provider 区分。 |
+| `sessionHeader` | `x-session-id` | Name of the session header. A request without a `sessionId` fails instead of silently sending a session-less request. |
+| `routes[].route` | required | Session provider route name registered with Harness. |
+| `routes[].source` | required | The `llm-pi-ai.providers.<source>` entry the configuration is inherited from. |
+| `routes[].displayName` | `route` | Model picker display name; adding `(session)` is recommended so it is distinguishable from the original provider. |
 
-插件没有 `suffix`、`reasoning`、`reasoningEfforts` 配置——**路由名只来自 `routes[].route`，推理与输入模态从 source provider 继承**：默认档位取 source provider 的 `reasoning`，可选档位取 source 模型声明的 `reasoningEfforts` dict（未声明时用默认列表 `[off, low, medium, high, xhigh, max]`，`false` 表示禁用推理）。输入模态按 source 模型的非空 `input`、pi-ai 内置 catalog、provider `defaultInput`、`[text]` 的顺序解析。图片模型使用 Harness 的持久附件服务生成受像素和字节预算约束的请求图片；超出请求预算的历史图片会保留可用的只读附件路径。文本模型由 Harness 把各角色中的图片投影为稳定文本占位符。`baseURL`、`apiKeyEnv`、`headers`、`models` 同样从 `ctx.settings.get('llm-pi-ai')` 的对应 provider 逐条继承。若 settings namespace 未注册、providers 为空或 routes 为空，插件以零路由 dormant 启动，不报错。
+The plugin has no `suffix`, `reasoning`, or `reasoningEfforts` configuration —
+**the route name comes only from `routes[].route`, and reasoning and input
+modalities are inherited from the source provider**: the default tier comes from
+the source provider's `reasoning`, and the selectable tiers come from the
+`reasoningEfforts` dict declared on the source model (when it is not declared,
+the default list `[off, low, medium, high, xhigh, max]` is used, and `false`
+disables reasoning). Input modalities resolve in this order: a non-empty `input`
+on the source model, pi-ai's built-in catalog, the provider's `defaultInput`,
+then `[text]`. Image models use Harness's persistent attachment service to
+produce request images bounded by pixel and byte budgets; historical images
+beyond the request budget keep their usable read-only attachment paths. For text
+models, Harness projects the images in every role into stable text placeholders.
+`baseURL`, `apiKeyEnv`, `headers`, and `models` are likewise inherited field by
+field from the matching provider in `ctx.settings.get('llm-pi-ai')`. If the
+settings namespace is not registered, providers is empty, or routes is empty,
+the plugin starts dormant with zero routes and reports no error.
 
-### 重试与超时（自 0.1.2 起继承）
+### Retry and timeouts (inherited since 0.1.2)
 
-session 路由的**重试策略、请求超时、流式空闲超时**同样继承自 source provider 的 `retryPolicy` / `timeoutMs` / `streamIdleTimeoutMs`，解析方式与官方 `llm-pi-ai` 完全一致：
+A session route's **retry policy, request timeout, and streaming idle timeout**
+are likewise inherited from the source provider's `retryPolicy` / `timeoutMs` /
+`streamIdleTimeoutMs`, resolved exactly the way the official `llm-pi-ai`
+resolves them:
 
-- `retryPolicy`：在路由注册时解析并交给 harness 的 `dsh-llm-retry` 执行；未配置时与官方一致使用 normal 模式、默认 5 次重试。
-- `timeoutMs`：透传给底层 pi-ai / SDK 的单次请求超时。
-- `streamIdleTimeoutMs`：由本插件用与官方相同的 `idleWatchdog` 施加在流读取上，空闲超时映射为 `TIMEOUT` 错误（进入可重试错误码）；未配置时默认 5 分钟（300000ms），与官方默认一致。
+- `retryPolicy`: resolved when the route is registered and handed to harness's
+  `dsh-llm-retry` for execution; when unset it matches the official behavior —
+  normal mode with 5 retries by default.
+- `timeoutMs`: passed through to the underlying pi-ai / SDK as the per-request
+  timeout.
+- `streamIdleTimeoutMs`: applied to stream reads by this plugin through the same
+  `idleWatchdog` the official adapter uses; an idle timeout maps to a `TIMEOUT`
+  error (a retryable error code). When unset it defaults to 5 minutes
+  (300000ms), the same as the official default.
 
-settings.yaml 中修改这三个字段会**热生效**：`timeoutMs` / `streamIdleTimeoutMs` 下一次请求即用新值，`retryPolicy` 通过订阅 `settings/updated` 自动重新注册路由，无需重启。
+Changing these three fields in settings.yaml takes effect **hot**: `timeoutMs` /
+`streamIdleTimeoutMs` use the new values on the next request, and `retryPolicy`
+re-registers the routes automatically by subscribing to `settings/updated` — no
+restart required.
 
-### 请求头
+### Request headers
 
-每次请求都会带上（与 harness 归因契约一致）：
+Every request carries the following (matching harness's attribution contract):
 
 ```
 user-agent: deepseek-harness/<version> (+https://github.com/deepseek-ai/deepseek-harness)
-x-session-id: <当前会话 id>   # 仅当请求携带 sessionId 时
+x-session-id: <current session id>   # only when the request carries a sessionId
 ```
 
-source provider 的静态 `headers` 会一起发送；若静态 headers 与会话 header 同名，请求的真实 session id 会覆盖静态值。其它 header（`authorization`、`content-type`、`accept`）由 pi-ai 的 openai-completions 实现负责。
+The source provider's static `headers` are sent as well; if a static header has
+the same name as the session header, the request's real session id overrides the
+static value. The other headers (`authorization`, `content-type`, `accept`) are
+handled by pi-ai's openai-completions implementation.
 
-## 使用
+## Usage
 
-装好后，把 dsh-tui / agent 的默认 provider 指向某条会话路由即可：
+Once installed, point the default provider used by dsh-tui or an agent at one of
+the session routes:
 
 ```yaml
 # settings.yaml
@@ -127,41 +179,90 @@ agent-default-model:
   model: gpt-5.5
 ```
 
-之后每次调用 LLM，网关都能在请求头里读到 `x-session-id`。会话模型选择器里只会出现配置中声明的 session 路由。
+From then on every LLM call carries `x-session-id` in its request headers, so
+the gateway can read it. The session model picker shows only the session routes
+declared in the configuration.
 
-## 行为细节
+## Behavior
 
-- **显式路由**：插件在 apply 时读取 `ctx.settings.get('llm-pi-ai')` 的 providers，只注册 `routes` 中声明的路由；网关（baseURL）、凭据（apiKeyEnv）、静态 headers、模型表、推理能力全部继承自 source provider。声明的 source 不存在时插件加载失败；未声明的路由由 Harness 以 `NO_ADAPTER` 拒绝。
-- **消息转换**：`GenerateOptions.messages` → pi-ai Context（文本、用户图片、工具、工具结果、assistant 重放）。系统提示走 `options.system` → pi-ai 的 `systemPrompt` 槽；历史中的 system 消息折叠为 user 消息以保持顺序。图片模型通过持久附件服务读取确定性的请求版本，并在图片前加入附件标识、实际请求尺寸和可用的只读路径；pi-ai 不能重放的 system 或 assistant 图片以 `UNSUPPORTED_CONTENT` 拒绝。文本模型则由 Harness 在 adapter dispatch 前把所有角色中的图片投影为稳定文本占位符。
-- **事件转换**：pi-ai 的 `AssistantMessageEventStream` → harness `StreamChunk`（text / reasoning / tool-call 增量、usage、finish）。工具参数从 pi-ai 的已解析对象序列化回 raw JSON 字符串。
-- **错误映射**：把 pi-ai 的错误文案归类为 harness 的 `LlmError` code——上下文超限归 `CONTEXT_WINDOW_EXCEEDED`（触发 harness 自动压缩）、配额/余额耗尽归 `QUOTA`、`429`/限流归 `RATE_LIMIT`，其余按 `AUTH` / `INVALID_REQUEST` / `SERVER` / `TIMEOUT` / `TRANSPORT` 归类。
-- **推理档位**：完全继承源 provider——默认档位取 provider 级 `reasoning`，可选档位取模型级 `reasoningEfforts` dict（其 wire spelling 原样透传给 pi-ai，所以 `xhigh` / `max` 会真实发送，不会被钳到 `high`）；模型未声明时用默认列表，`false` 禁用推理。
-- **只支持 openai-completions**：内部固定使用 pi-ai 的 `openai-completions` 线上实现。如果你还需要 `openai-responses` / `anthropic-messages`，需要扩展 `buildModel` 的 `api` 字段。
+- **Explicit routes**: at apply time the plugin reads the providers from
+  `ctx.settings.get('llm-pi-ai')` and registers only the routes declared in
+  `routes`; the gateway (baseURL), credentials (apiKeyEnv), static headers,
+  model table, and reasoning capabilities are all inherited from the source
+  provider. A declared source that does not exist makes plugin loading fail; a
+  route that was never declared is rejected by Harness with `NO_ADAPTER`.
+- **Message conversion**: `GenerateOptions.messages` → a pi-ai Context (text,
+  user images, tools, tool results, assistant replay). The system prompt goes
+  through `options.system` → pi-ai's `systemPrompt` slot; system messages in the
+  history are folded into user messages to preserve order. Image models read a
+  deterministic request version through the persistent attachment service and
+  prefix each image with its attachment identity, actual request dimensions, and
+  usable read-only paths; system or assistant images that pi-ai cannot replay
+  are rejected with `UNSUPPORTED_CONTENT`. For text models, Harness projects the
+  images in every role into stable text placeholders before adapter dispatch.
+- **Event conversion**: pi-ai's `AssistantMessageEventStream` → harness
+  `StreamChunk` (text / reasoning / tool-call deltas, usage, finish). Tool
+  arguments are serialized from pi-ai's parsed object back into a raw JSON
+  string.
+- **Error mapping**: pi-ai error text is classified into harness `LlmError`
+  codes — an exceeded context window becomes `CONTEXT_WINDOW_EXCEEDED` (which
+  triggers harness auto-compaction), exhausted quota/balance becomes `QUOTA`,
+  `429`/rate limiting becomes `RATE_LIMIT`, and everything else is classified as
+  `AUTH` / `INVALID_REQUEST` / `SERVER` / `TIMEOUT` / `TRANSPORT`.
+- **Reasoning tiers**: fully inherited from the source provider — the default
+  tier comes from the provider-level `reasoning`, and the selectable tiers come
+  from the model-level `reasoningEfforts` dict (their wire spelling is passed
+  through to pi-ai unchanged, so `xhigh` / `max` are really sent and never
+  clamped to `high`); when a model declares nothing the default list is used, and
+  `false` disables reasoning.
+- **openai-completions only**: the wire implementation is pinned to pi-ai's
+  `openai-completions`. If you also need `openai-responses` /
+  `anthropic-messages`, you have to extend `buildModel`'s `api` field.
 
-## 开发 / 测试
+## Development / testing
 
 ```sh
 cd ~/project/banbo-dsh
 env -u NODE_ENV npx vitest run plugins/dsh-llm-pi-ai-with-session
 ```
 
-测试用本地 mock 网关（`tests/helpers.ts` 的 `mockGateway`）扮演 OpenAI-completions 端点，断言：
+The tests use a local mock gateway (the `mockGateway` in `tests/helpers.ts`) to
+play the OpenAI-completions endpoint, and assert that:
 
-- 请求头带 `x-session-id`（可配置名字；无 sessionId 时请求失败）
-- 请求体模型与消息正确、带 `stream: true`
-- 带 harness 的 `user-agent` 归因头
-- 文本 / 工具 SSE 事件被正确翻译成 harness chunk
-- 显式路由注册：只有配置中声明的 route 会注册，显示名可与 source provider 区分
-- 按 provider 分发：各路由请求打到各自的网关、用各自的 api key
-- 缺 API key 时以 `MISSING_CREDENTIAL` 失败；未镜像路由以 `NO_ADAPTER` 失败
-- 推理能力继承：默认档位取源 provider 的 `reasoning`，可选档位取源模型的 `reasoningEfforts` dict
-- 图片能力继承：源模型声明 `input: [text, image]` 后，请求体包含图片且保留动态 session header
-- settings 集成路径：stub `llm-pi-ai` namespace + 内存 settings provider，验证从 settings 镜像
+- request headers carry `x-session-id` (a configurable name; a request without a
+  sessionId fails)
+- the request body carries the right model and messages, with `stream: true`
+- harness's `user-agent` attribution header is present
+- text / tool SSE events are translated correctly into harness chunks
+- explicit route registration: only the routes declared in the configuration are
+  registered, and the display name can be distinguished from the source provider
+- per-provider dispatch: each route's requests hit its own gateway with its own
+  api key
+- a missing API key fails with `MISSING_CREDENTIAL`; a route that is not mirrored
+  fails with `NO_ADAPTER`
+- reasoning capability inheritance: the default tier comes from the source
+  provider's `reasoning`, and the selectable tiers come from the source model's
+  `reasoningEfforts` dict
+- image capability inheritance: once the source model declares
+  `input: [text, image]`, the request body contains images and still keeps the
+  dynamic session header
+- the settings integration path: a stubbed `llm-pi-ai` namespace plus an
+  in-memory settings provider verify mirroring from settings
 
-## 限制
+## Limitations
 
-- 图片模型仅直接上送 user 消息及其中工具结果的图片；system 和 assistant 图片不能由 pi-ai 重放，会以 `UNSUPPORTED_CONTENT` 拒绝。文本模型的所有历史图片由 Harness 预先投影为文本占位符。
-- 只复用 pi-ai 的 openai-completions 实现，不支持其它线上协议。
-- 只注册配置中声明的 route，不能与其它已注册路由冲突。
-- 依赖 `llm-pi-ai` 的 settings namespace 已注册（含 providers）；未注册或为空时插件 dormant，不提供任何路由。
-- 高级 profile 字段尚未继承：`compat`、`transport`、`cacheRetention`、`thinkingBudgets`、`modelOverrides`、`websocketConnectTimeoutMs` 等仍由 pi-ai 使用默认行为；需要时再逐字段对齐。
+- Image models only send the images in user messages and in their tool results;
+  system and assistant images cannot be replayed by pi-ai and are rejected with
+  `UNSUPPORTED_CONTENT`. For text models, Harness projects all historical images
+  into text placeholders up front.
+- Only pi-ai's openai-completions implementation is reused; no other wire
+  protocol is supported.
+- Only the routes declared in the configuration are registered, and they must
+  not collide with any other registered route.
+- It depends on the `llm-pi-ai` settings namespace being registered (including
+  providers); when that namespace is unregistered or empty the plugin stays
+  dormant and provides no routes.
+- Advanced profile fields are not inherited yet: `compat`, `transport`,
+  `cacheRetention`, `thinkingBudgets`, `modelOverrides`,
+  `websocketConnectTimeoutMs`, and others still use pi-ai's default behavior;
+  they can be aligned field by field when needed.

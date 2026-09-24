@@ -2,15 +2,17 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/BanboLee/banbo-dsh/ci.yml?label=CI&logo=github)](https://github.com/BanboLee/banbo-dsh/actions/workflows/ci.yml)
 
-**中文** | [English](./README.en.md)
+**English** | [中文](./README.zh.md)
 
-DeepSeek Harness（DSH）插件集合：6 个开箱即用的插件，全部发布在 npm（`@banbolee/dsh-*`），一条命令即可安装到任意 DSH profile，无需 clone 本仓库。MIT 协议开源。
+A collection of DeepSeek Harness (DSH) plugins: six ready-to-use bundles published
+on npm under `@banbolee/dsh-*`, installable into any DSH profile with a single
+command — no need to clone this repository. MIT licensed.
 
-## 快速安装（用户）
+## Quick install (users)
 
-前置条件：已安装 `dsh`（0.1.5-rc.2 族）、Node.js ≥ 22、pnpm 9.x。
+Prerequisites: `dsh` (0.1.5-rc.2 family), Node.js >= 22, pnpm 9.x.
 
-想装哪个装哪个：
+Install whichever bundles you need:
 
 ```sh
 dsh plugin --profile <profile> add @banbolee/dsh-rtk
@@ -21,33 +23,37 @@ dsh plugin --profile <profile> add @banbolee/dsh-llm-pi-ai-with-session
 dsh plugin --profile <profile> add @banbolee/dsh-agents
 ```
 
-## 插件总览
+## Bundles
 
-| 插件 | 功能 | 需要的二进制 |
+| Bundle | What it does | Binary it needs |
 | --- | --- | --- |
-| [`@banbolee/dsh-rtk`](plugins/rtk/README.md) | 装饰已挂载的 shell 执行器：每条命令经 `rtk rewrite` 改写后执行，模型侧 `grep` 输出经 `rtk pipe` 压缩 | `rtk` |
-| [`@banbolee/dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) | 通过官方 DSH bridge 在 profile 中接入 CodeGraph MCP 服务（`codegraph serve --mcp`），并附 agent 指令安装脚本 | `codegraph` |
-| [`@banbolee/dsh-fish-shell`](plugins/fish-shell/README.md) | 用 fish 替代 bash：沙箱/本地两种执行器 + 模型可调的 `fish` 工具 + 任意 agent preset 下用 fish 替换 bash 的 per-agent 策略 | fish |
-| [`@banbolee/dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | `write`/`edit`/`str_replace_editor` 改动落盘后，自动把 LSP 诊断结果附到下轮模型推理；另注册模型可调用的 `lsp_diagnostics(file_path)` 工具 | `typescript-language-server`、`gopls`（可选 `clangd`、`rust-analyzer`、`pyright-langserver`） |
-| [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md) | `llm-pi-ai` 的通用 session wrapper：注册显式 session provider 路由，每次 LLM 请求携带动态会话 header（默认 `x-session-id`） | 无（复用 `llm-pi-ai` provider） |
-| [`@banbolee/dsh-agents`](plugins/agents/README.md) | 用 YAML 定义自己的 Agent 团队：具名 `agent_<id>` 工具、每个 Agent 的 persona 与工具面、显式委派图、绝对深度/并发预算；接管官方 `agent-presets` roster 行 | 无 |
+| [`@banbolee/dsh-rtk`](plugins/rtk/README.md) | Decorates the mounted shell executor: every command is rewritten through the `rtk rewrite` oracle, and model-facing `grep` output is compressed via `rtk pipe` | `rtk` |
+| [`@banbolee/dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) | Adds an `mcp-codegraph` row that serves the CodeGraph MCP server over stdio through the official DSH bridge, plus an agent-instructions install helper | `codegraph` |
+| [`@banbolee/dsh-fish-shell`](plugins/fish-shell/README.md) | Fish executors (sandboxed and local) plus a model-facing `fish` tool and a per-agent policy that swaps bash for fish under any agent preset | fish |
+| [`@banbolee/dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | After `write`/`edit`/`str_replace_editor` mutations, appends a persistent LSP diagnostics notice to the next model inference; also registers a model-callable `lsp_diagnostics(file_path)` tool | `typescript-language-server`, `gopls` (opt-in: `clangd`, `rust-analyzer`, `pyright-langserver`) |
+| [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md) | Generic session wrapper over `llm-pi-ai`: registers explicit session provider routes that carry a dynamic session id header (default `x-session-id`) on every LLM request | none (reuses `llm-pi-ai` providers) |
+| [`@banbolee/dsh-agents`](plugins/agents/README.md) | Define your own Agent team in YAML: named `agent_<id>` tools, a persona and a tool surface per Agent, an explicit delegation graph, and absolute depth/concurrency budgets; takes over the official `agent-presets` roster seat | none |
 
-`@banbolee/dsh-llm-pi-ai-with-session` 是 `llm-pi-ai` 的一个通用 session wrapper：按配置显式注册 session provider 路由，复用 pi-ai 的 openai-completions 实现并在每次请求里带上可配置的会话 header（默认 `x-session-id`）；网关、凭据、模型、推理档位全部从 source provider 继承，无需重复配置。详见 [plugins/dsh-llm-pi-ai-with-session/README.md](plugins/dsh-llm-pi-ai-with-session/README.md)。
+`@banbolee/dsh-llm-pi-ai-with-session` is a generic session wrapper over `llm-pi-ai`: it registers explicit session provider routes as configured, reuses pi-ai's openai-completions implementation, and carries a configurable session header (default `x-session-id`) on every request; the gateway, credentials, model and reasoning effort are all inherited from the source provider, so nothing has to be configured twice. See [plugins/dsh-llm-pi-ai-with-session/README.md](plugins/dsh-llm-pi-ai-with-session/README.md).
 
-## 外部依赖（重要，装前必读）
+See each plugin README for full details.
 
-`rtk`、`codegraph`、fish、LSP servers 等二进制**必须预先安装**，插件不会帮你下载：
+## External dependencies (important — read before installing)
 
-| 二进制 | 用于 |
+`rtk`, `codegraph`, fish, and the LSP servers must be **pre-installed by you**;
+the bundles never download or install them:
+
+| Binary | Used by |
 | --- | --- |
-| `rtk` | `@banbolee/dsh-rtk`——**必须预装**，否则命令改写/grep 压缩全部 fail-open 直通 |
-| `codegraph` | `@banbolee/dsh-codegraph-mcp`——**必须预装**，否则 MCP bridge 没有服务器、无 `mcp__codegraph__*` 工具 |
-| fish | `@banbolee/dsh-fish-shell` 执行器与工具 |
-| `typescript-language-server`、`gopls`（可选 `clangd`、`rust-analyzer`、`pyright-langserver`） | `@banbolee/dsh-lsp-diagnostics` 的自动诊断 |
+| `rtk` | `@banbolee/dsh-rtk` — **must be pre-installed** or rewrites/grep-compression fail open to passthrough |
+| `codegraph` | `@banbolee/dsh-codegraph-mcp` — **must be pre-installed** or the MCP bridge has no server and no `mcp__codegraph__*` tools |
+| fish | `@banbolee/dsh-fish-shell` executors and tool |
+| `typescript-language-server`, `gopls` (opt-in: `clangd`, `rust-analyzer`, `pyright-langserver`) | `@banbolee/dsh-lsp-diagnostics` automatic diagnostics |
 
-把二进制放进 `PATH`（或通过插件配置固定路径）。缺少二进制不影响安装和测试，只是对应功能 fail-open。
+Put the binaries on `PATH` (or pin them through the bundle config). A missing
+binary never blocks install or tests — the affected feature fails open.
 
-## 卸载
+## Uninstall
 
 ```sh
 dsh plugin --profile <profile> remove @banbolee/dsh-rtk
@@ -58,9 +64,13 @@ dsh plugin --profile <profile> remove @banbolee/dsh-llm-pi-ai-with-session
 dsh plugin --profile <profile> remove @banbolee/dsh-agents
 ```
 
->`@banbolee/dsh-agents` 的普通卸载**保留**用户数据（`$DSH_HOME/banbo-agents/`：YAML 定义、persona、generated presets、ABI manifest），重装后即可恢复；它只是不再挂载到运行时。彻底清除是显式的破坏性操作，见 [plugins/agents/README.md](plugins/agents/README.md)。
+> A normal uninstall of `@banbolee/dsh-agents` **keeps** your data
+> (`$DSH_HOME/banbo-agents/`: YAML definitions, personas, generated presets, the
+> ABI manifest), so reinstalling restores it; the bundle simply stops being
+> mounted at runtime. A full wipe is an explicit destructive operation — see
+> [plugins/agents/README.md](plugins/agents/README.md).
 
-## 本地开发 / 从源码安装（贡献者）
+## Local development / install from source (contributors)
 
 ```sh
 git clone git@github.com:BanboLee/banbo-dsh.git
@@ -68,7 +78,10 @@ cd banbo-dsh
 env NODE_ENV=development pnpm install
 ```
 
-从仓库根目录安装到 profile（`-w` 标志对以下本地路径安装是必需的，否则 pnpm 报 `ERR_PNPM_ADDING_TO_ROOT`；`@banbolee/dsh-fish-shell` 例外，不需要 `-w`，它有独立的部署与符号链接方案，见其 README）：
+Install into a profile from the repository root (the `-w` flag is required for
+the local path installs below, otherwise pnpm fails with
+`ERR_PNPM_ADDING_TO_ROOT`; `@banbolee/dsh-fish-shell` is the exception — no `-w`,
+it has its own deploy-and-symlink story documented in its README):
 
 ```sh
 dsh plugin --profile <profile> add -w ./plugins/rtk
@@ -79,25 +92,30 @@ dsh plugin --profile <profile> add -w ./plugins/agents
 dsh plugin --profile <profile> add ./plugins/fish-shell
 ```
 
-一次性装多个/维护隔离环境，可用同步脚本（要求 `DSH_HOME` 指向隔离目录）：
+Sync helpers for isolated profiles (they require `DSH_HOME` to point at
+isolated state):
 
 ```sh
 DSH_HOME="$(mktemp -d)" scripts/sync-rtk-codegraph-to-profile.sh <profile>
 DSH_HOME="$(mktemp -d)" scripts/sync-lsp-diagnostics-to-profile.sh <profile>
-scripts/sync-to-profile.sh            # fish-shell：把插件拷贝进 profile 树
+scripts/sync-to-profile.sh            # fish-shell: copy the plugin into the profile tree
 ```
 
-### 测试
+### Testing
 
 ```sh
 env NODE_ENV=development pnpm test
 ```
 
-`NODE_ENV=development` 很重要：`NODE_ENV=production` 时 pnpm 会跳过 devDependencies，导致依赖装不全、依赖图断言失败。各插件自己的验证命令见各自 README。
+`NODE_ENV=development` matters: with `NODE_ENV=production` pnpm skips
+devDependencies entirely, which breaks installs and the dependency-graph
+assertions. Per-bundle verification commands are documented in each plugin
+README.
 
-### 真实 headless E2E（可选）
+### Real headless E2E (optional)
 
-先构建相邻的 RTK release 二进制与 CodeGraph 产物，再跑 opt-in 的真实 profile 套件：
+Build the sibling RTK release binary and CodeGraph distribution, then run the
+opt-in real profile suite:
 
 ```sh
 (cd ../rtk && cargo build --release)
@@ -105,8 +123,10 @@ env NODE_ENV=development pnpm test
 corepack pnpm test:e2e:headless
 ```
 
-需要 Node 22、`dsh`、fish；可用 `DSH_REAL_E2E_DSH_BIN` / `DSH_REAL_E2E_NODE_BIN` / `DSH_REAL_E2E_RTK_BIN` / `DSH_REAL_E2E_CODEGRAPH_BIN` 覆盖可执行文件位置。
+Requires Node 22, `dsh`, and fish. Override executable locations with
+`DSH_REAL_E2E_DSH_BIN`, `DSH_REAL_E2E_NODE_BIN`, `DSH_REAL_E2E_RTK_BIN`, and
+`DSH_REAL_E2E_CODEGRAPH_BIN`.
 
 ## License
 
-MIT —— 见 [LICENSE](LICENSE)。
+MIT — see [LICENSE](LICENSE).

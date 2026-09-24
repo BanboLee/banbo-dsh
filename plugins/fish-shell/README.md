@@ -1,5 +1,7 @@
 # @banbolee/dsh-fish-shell
 
+**English** | [中文](./README.zh.md)
+
 Fish shell executors and tool for DeepSeek Harness: run commands with
 **fish** instead of bash. Distribution-ready and surface-agnostic: works in
 any profile that mounts it — preset-roster based (dsh-tui, web) or

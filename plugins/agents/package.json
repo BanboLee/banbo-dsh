@@ -60,7 +60,7 @@
     "lib/typert.remote-client.js",
     "lib/typert.remote-client.d.ts",
     "README.md",
-    "README.en.md"
+    "README.zh.md"
   ],
   "dsh": {
     "bundle": {

@@ -126,7 +126,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
       'lib/typert.remote-client.js',
       'lib/typert.remote-client.d.ts',
       'README.md',
-      'README.en.md',
+      'README.zh.md',
     ],
     peerDependencies: {
       '@deepseek-ai/cordis': '^4.0.2',

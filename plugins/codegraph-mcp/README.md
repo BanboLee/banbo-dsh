@@ -1,5 +1,7 @@
 # @banbolee/dsh-codegraph-mcp
 
+**English** | [中文](./README.zh.md)
+
 DSH profile bundle that connects the CodeGraph MCP server to any DeepSeek
 Harness profile through the official [`@deepseek-ai/dsh-mcp-client`] bridge. It
 adds one configurable row, `mcp-codegraph`, which launches
