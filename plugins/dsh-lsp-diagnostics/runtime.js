@@ -1505,17 +1505,37 @@ class LspSession {
   }
 
   /**
-   * The unique teardown sequence: shutdown request within an independent
-   * graceful budget, exit notification plus natural-close wait, whole-process-
-   * tree liveness probe (bounded by the same budget), conditional
-   * `terminate()` (the only hard-stop, exactly once, tree-scoped), then
-   * `handle.done` and `waitForExit()`, and only then the process-lifetime
-   * controller abort. Terminate is decided by whole-tree liveness, never by
-   * direct-process `done` alone, so a root that exits while a helper remains
-   * alive still escalates and the teardown cannot wait forever.
+   * The unique teardown sequence: own the session's startup, then shutdown
+   * request within an independent graceful budget, exit notification plus
+   * natural-close wait, whole-process-tree liveness probe (bounded by the same
+   * budget), conditional `terminate()` (the only hard-stop, exactly once,
+   * tree-scoped), then `handle.done` and `waitForExit()`, and only then the
+   * process-lifetime controller abort. Terminate is decided by whole-tree
+   * liveness, never by direct-process `done` alone, so a root that exits while
+   * a helper remains alive still escalates and the teardown cannot wait forever.
    * @returns {Promise<void>}
    */
   async teardown() {
+    // A session can be retired while its bootstrap is still running: the pool
+    // publishes the session before its process exists. Acting on the process
+    // now would find no stdin and no handle, so the sequence below would
+    // complete as a no-op while the process the bootstrap spawns afterwards
+    // stays owned by nobody — never sent shutdown/exit and never terminated —
+    // and dispose() would have reported a finished teardown. Own the startup
+    // first, so the single transaction always runs against the process this
+    // session actually has. This wait is deliberately not charged to the
+    // graceful budget, which bounds the shutdown handshake against a live but
+    // hung server: the bootstrap cannot outlive the admitted operation's signal
+    // (cleanup aborts it before disposing) and its pending initialize request
+    // was already rejected by `startTeardown`, so it settles without a process
+    // or with the one the sequence must tear down.
+    if (this.handle === undefined && this.ready !== undefined) {
+      try {
+        await this.ready
+      } catch {
+        // the bootstrap failed without spawning; the transaction continues
+      }
+    }
     /** @type {unknown[]} */
     const errors = []
     const budget = new AbortController()
