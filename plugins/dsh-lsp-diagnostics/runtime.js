@@ -473,7 +473,27 @@ export class DiagnosticsRuntime {
     for (const session of sessions) this.startSessionTeardown(session)
     /** @type {unknown[]} */
     const errors = []
-    const queueResults = await Promise.allSettled(queues)
+    // Bounded for the same reason every wait inside `teardown` is: these are the
+    // serialized write queues, and a queue whose peer is gone never settles. The
+    // sessions' own teardowns are already bounded, but this await is a SECOND,
+    // independent one on the same tails — bounding it inside `teardown` does not
+    // reach it, and an unbounded await here keeps `dispose()` from ever
+    // resolving, which is what leaves the fiber alive and the plugin never
+    // reporting itself disposed.
+    const queues$ = new AbortController()
+    const queuesTimer = setTimeout(() => queues$.abort(), this.config.shutdownTimeoutMs)
+    /** @type {PromiseSettledResult<unknown>[]} */
+    let queueResults = []
+    try {
+      queueResults = await /** @type {Promise<PromiseSettledResult<unknown>[]>} */ (
+        abortable(Promise.allSettled(queues), queues$.signal)
+      )
+    } catch (error) {
+      if (!(error instanceof Error && error.name === 'AbortError')) errors.push(error)
+      queueResults = []
+    } finally {
+      clearTimeout(queuesTimer)
+    }
     for (const result of queueResults) {
       if (result.status === 'rejected') errors.push(result.reason)
     }
