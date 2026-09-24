@@ -508,8 +508,9 @@ describe('child.preferBackground', () => {
   })
 
   it('is declared by exactly the shipped Agents whose work is meant to be followed up', () => {
-    // `review`, `implement` and `planner`: all three are iterated on in practice
-    // ("now check the fix", "also change X", "adjust the plan").
+    // `review`, `implement`, `planner` and `executor`: all four are iterated on
+    // in practice ("now check the fix", "also change X", "adjust the plan",
+    // "now verify it").
     const catalog = loadCatalog({
       rootDir: mkdtempSync(join(tmpdir(), 'banbo-kept-probe-')),
       builtinDir: join(resolve(dirname(fileURLToPath(import.meta.url)), '..'), 'catalog'),
@@ -518,7 +519,7 @@ describe('child.preferBackground', () => {
       .filter((definition) => definition.child?.preferBackground === true)
       .map((definition) => definition.id)
       .sort()
-    expect(kept).toEqual(['implement', 'planner', 'review'])
+    expect(kept).toEqual(['executor', 'implement', 'planner', 'review'])
   })
 })
 

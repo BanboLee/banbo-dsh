@@ -242,13 +242,22 @@ describe('a child capability resolves against the composition, not the caller fi
         // edge is exercised the way production must call it.
         const keep = definitions.get(childId)!.child?.preferBackground === true
         if (keep) keptEdges += 1
+        let started: unknown
         try {
-          await named!.execute({ prompt: 'probe', description: 'probe', ...(keep ? { run_in_background: true } : {}) }, {
+          started = await named!.execute({ prompt: 'probe', description: 'probe', ...(keep ? { run_in_background: true } : {}) }, {
             agent: parentAgent as never,
             signal: new AbortController().signal,
           } as never)
         } catch (error) {
           throw new Error(`${callerId} -> ${childId} failed: ${String((error as Error)?.message ?? error)}`)
+        }
+        // A continuable child holds its concurrency slot until its `subagent/end`
+        // arrives — real behaviour, and this test never produces one. Emit the
+        // real event rather than reaching into the lease map, so the release path
+        // under test is the production one.
+        const keptChildId = (started as { childId?: string } | undefined)?.childId
+        if (keep && keptChildId !== undefined) {
+          preset.ctx.emit('subagent/end', { id: keptChildId, stopReason: 'completed' } as never)
         }
       }
 

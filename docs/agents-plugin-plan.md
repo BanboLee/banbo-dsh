@@ -2587,9 +2587,9 @@ ambient  = registered \ 能力词表 \ FORBIDDEN_RUNTIME_TOOLS \ 本插件自己
 
 **未做**：没有做 profile 级开关（用户明确不要）；没有给第三方工具分类（无法分类，所以按形态分级）。
 
-### 16.14 always-kept：审查/实现/计划必须可追问
+### 16.14 always-kept：审查/实现/计划/执行必须可追问
 
-**来源**：用户要求"**每次审查都该能追问**"，并确认 `review`、`implement`、`planner` 三个都要。
+**来源**：用户要求"**每次审查都该能追问**"，并确认 `review`、`implement`、`planner` 三个都要；随后在一次真实会话复盘中追加 `executor`——那次会话里两次 executor 都是前台 one-shot，第二次"让 5 个 lark skill 的清理持久化"是对第一次工作的**直接延续**，却因为第一个 child 已死而只能新建一个从零确认状态的 child。**四个 Agent 现在都声明 `preferBackground`。**
 
 **硬约束**：**"可追问"与"本轮拿到结果"当前互斥**。前台走 `subagents.start()`（拿到 `SubagentRun`，有 deadline/cleanup），后台 + `optional` 走 `startContinuable()`（**没有 `SubagentRun`、没有 `dispose`**，由官方 continuation manager 持有）。§4.4 的 `optional | false | 前台 one-shot` 是**明确定的行为**，§16.x 的 C9 也确认过"行为正确，只是描述误导"。**根因与 §10.7.1 拒绝 continuable batch 相同。**
 
@@ -2608,6 +2608,41 @@ ambient  = registered \ 能力词表 \ FORBIDDEN_RUNTIME_TOOLS \ 本插件自己
 **测试**：schema（可选、`true` 归一化保留、`false` 归一化消失、非布尔被拒、与 `one-shot` 组合被拒、主形态写它是 `unknown-field`、shipped 恰好是这三个）；委派（前台被拒且不启动不占槽、后台成功且走 `startContinuable`、未声明的仍可前台、描述含 `ALWAYS KEPT` 而未声明的 Agent 不含）；batch（`batch-target-kept` 且不启动不占槽）。三条规则各自变异验证过。
 
 **未做**：没有改 `continuation`（`review` 已是 `optional`，改它会违反 §4.4 第 13 条的 ABI 兼容规则，必须换新 id）；没有做"前台但保留 child"（那需要为 continuable 重新设计 deadline 与清理语义，即 §10.7.1 说清楚的难点，收益有限而代价大）。
+
+**给 `executor` 加 `preferBackground` 的代价（如实记录）**：`delegate_batch` 同样会拒绝它（§16.14 的 `batch-target-kept`），所以"并行跑 3 个验证"不能再写成一次 batch，只能写成**三次后台调用**——并行度不变，但多两次工具调用；而且**每次 executor 调用的结果都晚一轮到**。
+
+### 16.15 等子 Agent 时应当结束本轮（D3/D4 修正）
+
+**来源**：用户要求"调用 subagent 的 agent 在没有事做或依赖返回的时候，停止或挂起，等 subagent 的消息唤醒再继续"。
+
+**机制已经存在，而且实测到了**——一次真实会话（`ac5dbae0`）的时间线：
+
+```
++73s   TURN 1 END              ← 启动两个后台 review 后结束本轮
++473s  INBOX[next-step] "Agent 9e2a5182… sent a message: REVIEW RESULT — …"
++473s  TURN 2 START            ← 被子 Agent 消息唤醒
++490s  INBOX[next-turn] "Background subagent 9e2a5182… finished …"
++490s  TURN 3 START            ← 再次唤醒
++541s  INBOX[next-step] "Agent a13eddbe… sent a message: …"
++541s  TURN 4 START
+```
+
+**`send_message` 投递的内容与结算通知都会唤醒父 Agent 开新一轮**，所以"挂起等唤醒"不需要任何新机制。
+
+**根因是我们自己的措辞在反着推**：
+
+| 规则 | 旧措辞 | 问题 |
+|---|---|---|
+| **D3** | "`run_in_background: true` 的**唯一**理由是'我接下来要做的事与它完全无关'" | 暗示"没事做还用后台"是错的——而那**恰恰**是"结束本轮去等"的正确场景 |
+| **D4** | "用后台就必须在**结束本轮前收割**" | 把"空手结束本轮"定义成失败——**于是模型发明了 `sleep 300`**（§16.11 的 T4） |
+
+**修正**（6 份可委派 persona 全部更新，四份 continuable 子 persona 的共享段落仍逐字节一致）：
+
+- **D3 改成两种、且只有两种正当理由**：**有与它完全无关的事要做**（边等边做掉）；或**一件别的事都没有、就是在等它**（**直接结束本轮**，让它的消息唤醒你）。并明确 **"空手结束本轮去等，是正确做法，不是失败。"**
+- **D4 改成**："结束本轮前要么已经拿到结论，要么**明确说明你在等谁的消息、等它做什么**。"
+- 新增一条**反模式**："**不要自己发明'等'**：没有 wait 调用，用 shell `sleep` 等待也不算等待。子 Agent 的消息（`send_message` 投递的内容和结算通知）**会唤醒你开新一轮**，你不需要盯着它。"
+
+**lint**：`builtin-catalog.spec.ts` 的 §5.4 逐条断言新增 `/空手结束本轮去等，是正确做法/`、`/会唤醒你开新一轮/`、`/不要自己发明/`、`/用 shell \`sleep\` 等待也不算等待/`，并把旧的 `/不算并行的理由/`、`/结束本轮前收割/` 换成新措辞——旧措辞删掉后测试会红，不会静默消失。
 
 ---
 

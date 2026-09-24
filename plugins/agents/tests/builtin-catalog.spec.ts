@@ -285,9 +285,19 @@ describe('built-in personas follow the §5.3 skeleton', () => {
       // 1A/1C — one owner per piece of work.
       /不许既派出去、又自己再做一遍/,
       // 2A — background needs an unrelated reason, not "I'll do it too".
-      /不算并行的理由/,
-      // 2C — a background child must be harvested before the turn ends.
-      /结束本轮前收割/,
+      /永远不是并行的理由/,
+      // 2C — a background child must be accounted for before the turn ends.
+      /结束本轮前要么已经拿到结论/,
+      // §16.15 — the POSITIVE rule that was missing: having nothing else to do
+      // and simply waiting IS a legitimate reason to background, and ending the
+      // turn empty-handed to be woken by the child's message is correct rather
+      // than a failure. Without this the persona pushed the model into inventing
+      // a wait (`sleep 300` in a real session), because it read "harvest before
+      // the turn ends" as "never end the turn without the result".
+      /空手结束本轮去等，是正确做法/,
+      /会唤醒你开新一轮/,
+      /不要自己发明/,
+      /用 shell `sleep` 等待也不算等待/,
       // 3A — no status polling.
       /不是进度轮询工具/,
       // 4A — `ready` means the turn ended, NOT that the work is done.

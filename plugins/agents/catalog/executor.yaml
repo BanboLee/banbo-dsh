@@ -15,3 +15,6 @@ child:
   guidance: 当任务需要实际运行命令或做小范围机械改动时使用；不要使用它承担需要设计判断的实现。
   tools: [read, search, web, exec, write, edit, skill, todo, jobs, agent-control]
   continuation: optional
+  # §16.14: the same Agent is normally needed again for the next step ("now verify X",
+  # "run the suite"), so it is always kept and a foreground call is refused.
+  preferBackground: true
