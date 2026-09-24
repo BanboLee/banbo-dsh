@@ -96,6 +96,12 @@ jobs:
       - name: Install dsh CLI
         run: npm install -g @deepseek-ai/dsh@0.1.5-rc.2
 
+      # fish-shell is the only shell these profiles mount, so without the binary
+      # the sandbox executor refuses to run anything: fish-rtk-coexist.spec.ts
+      # fails with `spawn fish ENOENT` wrapped in SandboxUnavailableError.
+      - name: Install fish
+        run: sudo apt-get update && sudo apt-get install -y fish
+
       - name: Run composition suite
         run: npx vitest run --no-file-parallelism tests/composition
 

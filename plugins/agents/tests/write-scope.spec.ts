@@ -11,7 +11,7 @@
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -180,7 +180,11 @@ describe('writeScopeGuardReason — denied writes', () => {
     // path that starts with `..`, which is what makes this case a denial —
     // otherwise the check would be pure defence in depth and unobservable.
     const workspace = scratchDir()
-    const filePath = `../${workspace.split('/').pop()}/.banbo-dsh/plans/plan.md`
+    // `basename`, not `split('/')`: a Windows scratch path has no forward slash,
+    // so splitting on one yielded the whole `C:\...` path and the constructed
+    // `../C:\...\plan.md` was classified as "not a plain relative path" instead
+    // of the escape this case is about.
+    const filePath = `../${basename(workspace)}/.banbo-dsh/plans/plan.md`
     expect(writeScopeGuardReason(SCOPE, execution(workspace, 'write', filePath) as never))
       .toMatch(/escapes the session workspace/)
   })
