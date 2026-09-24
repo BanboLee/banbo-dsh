@@ -65,6 +65,40 @@ jobs:
           npx vitest run --config vitest.gates.config.ts
           plugins/agents/tests/gates/gate-f-install.spec.ts
 
+  # The composition suite boots REAL isolated DSH profiles and real subprocesses
+  # (a fake LSP server, a real `dsh` CLI). That is a different kind of test from
+  # the unit suite, and it was sharing a 2-core runner with it: it failed only on
+  # CI, only in the teardown path, and passed on a developer machine with the
+  # same engine version. Its own job, with file parallelism off, gives a clean
+  # signal either way — if it still fails here, contention was not the cause and
+  # the failure is real and reproducible in isolation.
+  composition:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.3.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # These specs shell out to the `dsh` CLI to boot profiles, so it must be on
+      # PATH at the version the plugin family is pinned to (AGENTS.md).
+      - name: Install dsh CLI
+        run: npm install -g @deepseek-ai/dsh@0.1.5-rc.2
+
+      - name: Run composition suite
+        run: npx vitest run --no-file-parallelism tests/composition
+
   # docs/agents-plugin-plan.md §8.7 requires the generated-preset pointer
   # mechanism to be verified on Windows: a directory symlink needs Developer
   # Mode or elevation there, so the junction fallback is the branch that
