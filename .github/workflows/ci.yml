@@ -37,6 +37,14 @@ jobs:
       - name: Install dsh CLI
         run: npm install -g @deepseek-ai/dsh@0.1.5-rc.2
 
+      # Gate B resolves the TUI's own roster patch to prove the two seats are
+      # disjoint, and it finds it beside the global `dsh`, not inside it: the
+      # TUI ships as a separate global package. Without this the gate fails with
+      # `cannot resolve Gate B package @deepseek-harness-tui/dsh-tui`. The
+      # version is the one Gate B's assertions name.
+      - name: Install dsh TUI package (Gate B)
+        run: npm install -g @deepseek-harness-tui/dsh-tui@0.10.2
+
       # fish-shell bundle composition tests execute the real fish binary.
       - name: Install fish
         run: sudo apt-get update && sudo apt-get install -y fish
