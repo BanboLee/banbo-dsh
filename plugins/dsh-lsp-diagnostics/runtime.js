@@ -1619,16 +1619,31 @@ class LspSession {
     // Own the protocol write quiescence: every server-request handler and the
     // serialized write tail must settle before cleanup returns, so no queued
     // frame (responses, shutdown, exit) can be written after dispose resolves.
-    // No new server-request handlers start while closing, so this terminates.
-for (;;) {
-      while (this.serverRequests.size > 0) {
-        await Promise.allSettled([...this.serverRequests])
+    // No new server-request handlers start while closing, so this terminates —
+    // EXCEPT when the peer is gone and a write never settles, which is precisely
+    // the case teardown exists to survive. The loop is therefore bounded by the
+    // same graceful budget as the waits above: quiescence is a cleanliness
+    // guarantee, not something worth hanging the whole teardown for. An expired
+    // budget is not an error — the lifetime abort below is the lever.
+    const quiesce = new AbortController()
+    const quiesceTimer = setTimeout(() => quiesce.abort(), this.config.shutdownTimeoutMs)
+    try {
+      for (;;) {
+        while (this.serverRequests.size > 0) {
+          await Promise.allSettled([...this.serverRequests])
+          if (quiesce.signal.aborted) break
+        }
+        const tail = this.writeTail
+        await abortable(tail, quiesce.signal).catch((error) => {
+          if (!(error instanceof Error && error.name === 'AbortError')) errors.push(error)
+        })
+        if (quiesce.signal.aborted) break
+        if (this.writeTail === tail && this.serverRequests.size === 0) break
       }
-  const tail = this.writeTail
-      await tail
-      if (this.writeTail === tail && this.serverRequests.size === 0) break
+    } finally {
+      clearTimeout(quiesceTimer)
     }
-this.lifetimeController.abort()
+    this.lifetimeController.abort()
     this.detachStreams()
     if (errors.length === 1) throw errors[0]
     if (errors.length > 1) {
