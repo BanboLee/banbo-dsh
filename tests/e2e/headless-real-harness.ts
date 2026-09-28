@@ -3,7 +3,12 @@
 import { randomUUID } from 'node:crypto'
 import { delimiter, dirname, join } from 'node:path'
 import { createIsolatedProfile } from '../helpers/profile'
-import { type BootContext } from '../composition/profile-loader'
+import {
+  layerPatchFiles,
+  runShellForeground,
+  startShellProcess,
+  type BootContext,
+} from '../composition/profile-loader'
 import {
   activeLocalPluginOrder,
   activeShellProviders,
@@ -112,7 +117,7 @@ export async function createRealHeadlessHarness(): Promise<RealHeadlessHarness> 
       ]
       let ctx: BootContext
       try {
-        ctx = await appBoot.boot('dsh', rootConfig, patches)
+        ctx = await appBoot.boot('dsh', rootConfig, patches, initialized.prepare)
       } catch (error) {
         try {
           await terminateMarkerOwnedProcesses(processMarker)
@@ -130,7 +135,7 @@ export async function createRealHeadlessHarness(): Promise<RealHeadlessHarness> 
           profileDir: profile.dir,
           installedBundles: layers.map((layer) => layer.packageName),
           bundlePackageDirs: layers.map((layer) => layer.packageDir),
-          bundlePatchFiles: layers.map((layer) => layer.patchPath),
+          bundlePatchFiles: layers.flatMap((layer) => layerPatchFiles(layer)),
         },
         ownedProcessPids: () => markerOwnedPids(processMarker),
         localPluginOrder: () => activeLocalPluginOrder(ctx),
@@ -140,13 +145,13 @@ export async function createRealHeadlessHarness(): Promise<RealHeadlessHarness> 
           const input = typeof request === 'string'
             ? { command: request, timeoutMs: 60_000 }
             : { timeoutMs: 60_000, ...request }
-          return ctx.shell.run(ctx.shell.resolve(input))
+          return runShellForeground(ctx.shell, input)
         },
         startShell: (request) => {
           const input = typeof request === 'string'
             ? { command: request, timeoutMs: 60_000 }
             : { timeoutMs: 60_000, ...request }
-          return ctx.shell.start(ctx.shell.resolve(input))
+          return startShellProcess(ctx.shell, input)
         },
         executeTool: async (name, args) => {
           const result = await ctx.get('tools')?.execute({

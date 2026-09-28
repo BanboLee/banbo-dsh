@@ -39,7 +39,7 @@ export type RealBoot = {
   readonly localPluginOrder: () => string[]
   readonly toolNames: () => string[]
   readonly runShell: (request: ShellRequest | string) => Promise<ShellRunResultLike>
-  readonly startShell: (request: ShellRequest | string) => ShellProcessLike
+  readonly startShell: (request: ShellRequest | string) => Promise<ShellProcessLike>
   readonly executeTool: (
     name: string,
     args: Readonly<Record<string, unknown>>,

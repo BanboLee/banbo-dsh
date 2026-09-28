@@ -1,12 +1,13 @@
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CODEGRAPH_BIN,
   createRealHeadlessHarness,
   NODE_BIN,
   PROCESS_INSPECTION_AVAILABLE,
   readTextToolResult,
+  type RealBoot,
   type RealHeadlessHarness,
 } from './headless-real-harness'
 
@@ -119,17 +120,63 @@ realDescribe('real CodeGraph stdio MCP in the headless profile', () => {
     expect(booted.ownedProcessPids()).toEqual([])
   }, 120_000)
 
-  it.runIf(PROCESS_INSPECTION_AVAILABLE)('rejects boot for a missing local CodeGraph CLI without leaving a child', async () => {
+  it.runIf(PROCESS_INSPECTION_AVAILABLE)('degrades a missing local CodeGraph CLI to an inactive row with a warning and no child', async () => {
     // Given a definitely missing CodeGraph module under the isolated home
     const harness = await createRealHeadlessHarness()
     harnesses.push(harness)
     const missingCodeGraph = join(harness.home, 'missing-codegraph.js')
+    const stderrSpy = vi.spyOn(process.stderr, 'write')
+    let booted: RealBoot | undefined
+    let bootFailure: string | undefined
 
     // When profile boot uses that missing module in the pinned Node argv
-    const boot = harness.boot({ codegraphBin: missingCodeGraph })
+    try {
+      booted = await harness.boot({ codegraphBin: missingCodeGraph })
+    } catch (error) {
+      // Keep a rejection as text: the booted value carries live cordis Context
+      // proxies, which an assertion failure could not be pretty-printed from.
+      bootFailure = error instanceof Error ? error.message : String(error)
+    }
+    // Read the recorded writes before restoring the spy (restore clears them).
+    const bootStderr = stderrSpy.mock.calls.map((call) => String(call[0])).join('')
+    stderrSpy.mockRestore()
 
-    // Then startup fails clearly within the bound and leaves no owned child
-    await expect(boot).rejects.toThrow(/initial connection or tool synchronization failed|Connection closed/i)
+    // Then boot survives the failed row and reports the degradation instead of
+    // aborting: since 0.1.7 an activation failure of a non-required entry is
+    // downgraded to a warning (`auditStartupEntries` in
+    // dsh-app-boot/lib/index.js:4008-4019 aborts only for the bootstrap include
+    // and the private `requiredStartupEntryIds` at :3835-3843), so the
+    // `mcp-codegraph` row stays inactive — its tools are never registered —
+    // while its own `failOnStartupError: true` still fails this row's
+    // activation (the message asserted below) rather than activating a row
+    // whose connection is dead. What it no longer does is abort the whole boot.
+    expect(bootFailure).toBeUndefined()
+    if (booted === undefined) throw new Error('missing-CLI boot returned no context')
+    const loader = booted.ctx.get('loader')
+    const rows = (loader === undefined ? [] : [...loader.entries()]) as unknown as Array<{
+      readonly id: string
+      readonly disabled: boolean
+      readonly options: { readonly name: string }
+      readonly fiber?: { readonly state?: number }
+    }>
+    const codegraphRow = rows.find((row) => row.options.name === '@deepseek-ai/dsh-mcp-client')
+    if (codegraphRow === undefined) throw new Error('the mcp-codegraph loader row is missing from the booted tree')
+    // Not administratively disabled: the row failed to activate. Cordis fiber
+    // states: 3 records the activation error, 2 is running (cordis/lib/index.js:1288-1293).
+    expect(codegraphRow.disabled).toBe(false)
+    expect(codegraphRow.id).toBe('include:mcp-codegraph')
+    expect(codegraphRow.fiber?.state).toBe(3)
+    expect(booted.toolNames()).not.toContain('mcp__codegraph__codegraph_explore')
+    const missingTool = await booted.executeTool('mcp__codegraph__codegraph_explore', {
+      query: harness.defaultIndexedSymbol,
+    })
+    expect(missingTool.isError).toBe(true)
+    expect(missingTool.error?.message).toContain('unknown tool')
+    expect(missingTool.error?.message).toContain('mcp__codegraph__codegraph_explore')
+    expect(bootStderr).toContain('did not activate')
+    expect(bootStderr).toContain('mcp-codegraph (@deepseek-ai/dsh-mcp-client)')
+    expect(bootStderr).toContain('mcp-client(codegraph): initial connection or tool synchronization failed')
+    // The original invariant: a degraded row never leaves an owned child behind.
     expect(harness.ownedProcessCount()).toBe(0)
     await harness.cleanup()
     harnesses.pop()

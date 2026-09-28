@@ -5,6 +5,7 @@ import {
   bootDshProfileWithInstalledBundles,
   fakeMcpServer,
   fakeRtkBin,
+  runShellForeground,
   type BootContext,
   type LoadedDshProfile,
   type RealProfileProof,
@@ -146,7 +147,7 @@ export async function bootProfileWithBundles(bundles: readonly string[]): Promis
     assertHasTool: (name) => {
       if (!ctx.get('tools')?.schemas().some((schema) => schema.name === name)) throw new Error(`missing MCP tool "${name}"`)
     },
-    runShell: (command) => ctx.shell.run(ctx.shell.resolve({ command })),
+    runShell: (command) => runShellForeground(ctx.shell, { command }),
     callTool: async (name, args) => {
       const result = await ctx.get('tools')?.execute({
         callId: `composition-${name}`,

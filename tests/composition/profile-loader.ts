@@ -56,20 +56,50 @@ export interface ShellRunResultLike {
   }
 }
 
+interface ShellRequestLike {
+  readonly command: string
+  readonly workdir?: string
+  readonly timeoutMs?: number
+  readonly env?: Readonly<Record<string, string>>
+  readonly dshEnv?: Readonly<Record<string, string>>
+  readonly sandboxPolicy?: {
+    readonly mode: string
+    readonly workspaceRoot: string
+  }
+}
+
+/**
+ * The dsh 0.1.6+ shell execution handle: the executor's single `execute()` entry
+ * prepares the process and returns this handle; awaiting `result()` is what
+ * makes a call foreground.
+ */
+interface ShellExecutionLike extends ShellProcessLike {
+  result(): Promise<ShellRunResultLike>
+}
+
 interface ShellLike {
-  resolve(request: {
-    readonly command: string
-    readonly workdir?: string
-    readonly timeoutMs?: number
-    readonly env?: Readonly<Record<string, string>>
-    readonly dshEnv?: Readonly<Record<string, string>>
-    readonly sandboxPolicy?: {
-      readonly mode: string
-      readonly workspaceRoot: string
-    }
-  }): unknown
-  run(spec: unknown): Promise<ShellRunResultLike>
-  start(spec: unknown): ShellProcessLike
+  resolve(request: ShellRequestLike): unknown
+  /** dsh 0.1.5 execution entries; removed in 0.1.6 in favour of `execute`. */
+  run?(spec: unknown): Promise<ShellRunResultLike>
+  start?(spec: unknown): ShellProcessLike
+  /** dsh 0.1.6+ execution entry for both foreground and background callers. */
+  execute?(spec: unknown): Promise<ShellExecutionLike>
+}
+
+/** Run one shell command in the foreground across both shell-execution APIs. */
+export async function runShellForeground(shell: ShellLike, request: ShellRequestLike): Promise<ShellRunResultLike> {
+  const spec = shell.resolve(request)
+  if (typeof shell.execute === 'function') return await (await shell.execute(spec)).result()
+  if (typeof shell.run === 'function') return await shell.run(spec)
+  throw new Error('booted shell service exposes neither execute() nor run()')
+}
+
+/** Start one shell command in the background across both shell-execution APIs. */
+export async function startShellProcess(shell: ShellLike, request: ShellRequestLike): Promise<ShellProcessLike> {
+  const spec = shell.resolve(request)
+  if (typeof shell.start === 'function') return shell.start(spec)
+  if (typeof shell.execute === 'function') return await shell.execute(spec)
+  throw new Error('booted shell service exposes neither start() nor execute()')
 }
 
 interface ToolRuntimeLike {
@@ -102,23 +132,45 @@ export interface BootContext {
   get(name: 'loader'): LoaderLike | undefined
 }
 
-export interface LoadedProfile {
-  readonly dir: string
-  readonly layers: Array<{ readonly packageName: string; readonly packageDir: string; readonly patchPath: string; readonly patches: unknown[] }>
+export interface LoadedProfileLayer {
+  readonly packageName: string
+  readonly packageDir: string
+  /** dsh 0.1.5 layout: the bundle's single patch file. */
+  readonly patchPath?: string
+  /** dsh 0.1.6+ layout: the bundle's ordered patch files. */
+  readonly patchPaths?: readonly string[]
   readonly patches: unknown[]
 }
 
-interface ModuleFallbackOptions {
+export interface LoadedProfile {
+  readonly dir: string
+  readonly layers: LoadedProfileLayer[]
+  readonly patches: unknown[]
+}
+
+interface ModuleResolutionOptions {
   readonly installAnchor: string
   readonly profile: LoadedProfile
   readonly home: string
 }
 
+/** Host context handed to `boot`'s prepare hook; only `plugin` is used here. */
+interface HostContextLike {
+  plugin(plugin: unknown, config?: unknown): unknown
+}
+
+/** The prepare hook `boot` runs before the config tree mounts. */
+export type BootPrepare = (ctx: HostContextLike) => Promise<void>
+
 export interface AppBootModule {
   initProfile(dir: string, bundles: string[]): void
   loadProfile(binName: string, name: string, installAnchor: string, home: string): LoadedProfile
-  healProfilesModuleFallback(options: ModuleFallbackOptions): Promise<void>
-  boot(binName: string, configPath: string, patches: unknown[]): Promise<BootContext>
+  boot(binName: string, configPath: string, patches: unknown[], prepare?: BootPrepare): Promise<BootContext>
+  /** dsh 0.1.6+: the module resolution is installed as a runtime interception. */
+  createRuntimeResolution?(options: ModuleResolutionOptions): Promise<unknown>
+  PluginPackages?: unknown
+  /** dsh 0.1.5: the module resolution was projected into the profiles tree as symlinks. */
+  healProfilesModuleFallback?(options: ModuleResolutionOptions): Promise<void>
 }
 
 export interface LoadedDshProfile {
@@ -126,13 +178,46 @@ export interface LoadedDshProfile {
   readonly proof: RealProfileProof
 }
 
+/** The patch files a bundle layer declared, in application order, across both 0.1.5 and 0.1.6+ layer shapes. */
+export function layerPatchFiles(layer: LoadedProfileLayer): string[] {
+  if (layer.patchPaths !== undefined) return [...layer.patchPaths]
+  return layer.patchPath === undefined ? [] : [layer.patchPath]
+}
+
 export function isAppBootModule(value: unknown): value is AppBootModule {
   if (typeof value !== 'object' || value === null) return false
   const module = value as Partial<Record<keyof AppBootModule, unknown>>
-  return typeof module.initProfile === 'function'
-    && typeof module.loadProfile === 'function'
-    && typeof module.healProfilesModuleFallback === 'function'
-    && typeof module.boot === 'function'
+  if (typeof module.initProfile !== 'function'
+    || typeof module.loadProfile !== 'function'
+    || typeof module.boot !== 'function') return false
+  // Require the capability this harness actually calls: dsh 0.1.6+ ships
+  // `createRuntimeResolution` + the `PluginPackages` service that installs it,
+  // while 0.1.5 shipped `healProfilesModuleFallback` instead.
+  return typeof module.healProfilesModuleFallback === 'function'
+    || (typeof module.createRuntimeResolution === 'function' && typeof module.PluginPackages === 'function')
+}
+
+/**
+ * Open the profile module resolution for one launch and return the `boot`
+ * prepare hook that installs it before the config tree mounts.
+ * dsh 0.1.6+ hands installation and bundle-scope packages to Node's resolvers
+ * through a runtime interception owned by the `PluginPackages` service; the
+ * 0.1.5 releases projected the same closure into
+ * `$DSH_HOME/profiles/node_modules` as symlinks and needed no prepare hook.
+ */
+export async function openProfileModuleResolution(
+  appBoot: AppBootModule,
+  options: ModuleResolutionOptions,
+): Promise<BootPrepare | undefined> {
+  const { createRuntimeResolution, PluginPackages, healProfilesModuleFallback } = appBoot
+  if (typeof createRuntimeResolution === 'function' && PluginPackages !== undefined) {
+    const resolution = await createRuntimeResolution(options)
+    return async (ctx) => {
+      await ctx.plugin(PluginPackages, { resolution })
+    }
+  }
+  await healProfilesModuleFallback?.(options)
+  return undefined
 }
 
 export function resolveDshInstallationBin(candidate: string): string {
@@ -190,7 +275,7 @@ function writeTestRoot(profile: string): string {
     "import { Service } from '@deepseek-ai/cordis'",
     "import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'",
     "class TestSystemPrompt extends Service { constructor(ctx){ super(ctx, 'systemPrompt') } tools(){ return () => undefined } context(){ return () => undefined } section(){ return () => undefined } getSectionOrder(){ return 0 } }",
-    "class TestSandbox extends SandboxProvider { confine(argv){ return { argv: [...argv], enforcement: 'full', denialSignatures: ['permission denied'], runnerFailureRules: [{ fatalSignatures: ['fake-runner: '] }] } } }",
+    "class TestSandbox extends SandboxProvider { async confine(argv){ return { argv: [...argv], enforcement: 'full', denialSignatures: ['permission denied'], runnerFailureRules: [{ fatalSignatures: ['fake-runner: '] }] } } }",
     "export default function apply(ctx, config){ if (config.kind === 'systemPrompt') new TestSystemPrompt(ctx); else if (config.kind === 'sandbox') new TestSandbox(ctx); else throw new Error(`unknown test seam ${config.kind}`) }",
   ].join('\n')
   writeFileSync(join(profile, 'test-seams.mjs'), `${seams}\n`)
@@ -240,14 +325,14 @@ export async function bootDshProfileWithInstalledBundles(
   installBundles(dshBin, isolated.dshHome, isolated.profile, bundles)
   writeProfilePatch(isolated.profile)
   const profile = appBoot.loadProfile('dsh', profileName, installAnchor, isolated.dshHome)
-  await appBoot.healProfilesModuleFallback({
+  const prepare = await openProfileModuleResolution(appBoot, {
     installAnchor,
     profile,
     home: isolated.dshHome,
   })
   const rootConfig = writeTestRoot(isolated.profile)
   const patches = [...profile.layers.flatMap((layer) => layer.patches), ...profile.patches]
-  const ctx = await appBoot.boot('dsh', rootConfig, patches)
+  const ctx = await appBoot.boot('dsh', rootConfig, patches, prepare)
   return {
     ctx,
     proof: {
@@ -255,7 +340,7 @@ export async function bootDshProfileWithInstalledBundles(
       profileDir: profile.dir,
       installedBundles: profile.layers.map((layer) => layer.packageName),
       bundlePackageDirs: profile.layers.map((layer) => layer.packageDir),
-      bundlePatchFiles: profile.layers.map((layer) => layer.patchPath),
+      bundlePatchFiles: profile.layers.flatMap((layer) => layerPatchFiles(layer)),
     },
   }
 }

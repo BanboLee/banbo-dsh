@@ -9,7 +9,9 @@ import {
   writeLspProfileFiles,
 } from './lsp-diagnostics-profile-config'
 import {
+  layerPatchFiles,
   loadAppBoot,
+  openProfileModuleResolution,
   type BootContext,
   type LoadedProfile,
   type RealProfileProof,
@@ -120,19 +122,19 @@ export async function bootLspDiagnosticsProfile(
       },
     })
     const profile: LoadedProfile = appBoot.loadProfile('dsh', profileName, installAnchor, isolated.dshHome)
-    await appBoot.healProfilesModuleFallback({
+    const prepare = await openProfileModuleResolution(appBoot, {
       installAnchor,
       profile,
       home: isolated.dshHome,
     })
     const patches = [...profile.layers.flatMap((layer) => layer.patches), ...profile.patches]
-    ctx = await appBoot.boot('dsh', rootConfig, patches)
+    ctx = await appBoot.boot('dsh', rootConfig, patches, prepare)
     proof = {
       loader: 'dsh-app-boot',
       profileDir: profile.dir,
       installedBundles: profile.layers.map((layer) => layer.packageName),
       bundlePackageDirs: profile.layers.map((layer) => layer.packageDir),
-      bundlePatchFiles: profile.layers.map((layer) => layer.patchPath),
+      bundlePatchFiles: profile.layers.flatMap((layer) => layerPatchFiles(layer)),
     }
     return {
       ctx,

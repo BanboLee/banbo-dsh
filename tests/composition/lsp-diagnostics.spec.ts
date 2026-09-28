@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { goBuildStatus } from '../helpers/go-tool'
@@ -75,23 +75,24 @@ async function writeFileThroughRealTool(
 /**
  * Remove the live loader entry and await that plugin's async cleanup.
  *
- * `entry.update({ disabled: true })` is not sufficient on its own. On macOS it
- * happens to resolve only after the plugin's dispose has finished (measured:
- * ~26 ms, with the shutdown/exit handshake already written to the protocol log),
- * but on the ubuntu runner it returns in about 1 ms while that dispose is still
- * in flight — so the LSP `shutdown` and `exit` have not happened yet when the
- * assertions read the log. That one difference produces every symptom the
- * composition job reported: no 'shutdown', a -1 index for it, cleanup appearing
- * to finish inside the 25 ms the spec asserts it cannot, and an afterEach left
- * waiting on a server nobody shut down.
+ * `entry.update({ disabled: true })` is not sufficient on its own: it fires
+ * `fiber.dispose()` and returns without awaiting it, so it can resolve in about
+ * 1 ms while that dispose is still in flight — the LSP `shutdown` and `exit`
+ * have not happened yet when the assertions read the protocol log. That one
+ * difference produces every symptom the composition job reported: no
+ * 'shutdown', a -1 index for it, cleanup appearing to finish inside the 25 ms
+ * the spec asserts it cannot, and an afterEach left waiting on a server nobody
+ * shut down.
  *
- * Watching `entry.fiber.uid` cannot detect it, and neither can `_disposing`: on
- * the runner the entry still HAS a fiber whose `uid` is already null — the fiber
- * has been unregistered but its dispose has not run — so a uid-based check exits
- * immediately and a counter-based one reads zero. `fiber` becoming `undefined`
- * is the signal that actually fires, because the loader's `_dispose` clears that
- * field as part of disposing. The wait is bounded so a genuine hang still fails
- * the test instead of stalling the lane.
+ * Watching the entry's fiber cannot detect it either. The vendored Loader never
+ * clears `entry.fiber` on this path, and the fiber's `uid` is cleared when its
+ * unload starts rather than when it ends, so a `fiber`/`uid`/`_disposing` poll
+ * either exits immediately or burns its entire budget. The stop that actually
+ * settles is the fiber's own disposer, so capture its promise BEFORE the update
+ * (a repeated call on the already-disposed effect wrapper returns early —
+ * `cordis/lib/index.js:1240`) and await it after. That disposal is bounded by
+ * the plugin's own shutdown budgets, so a genuine hang still fails the test
+ * instead of stalling the lane.
  *
  * This belongs in the helper rather than the plugin: AGENTS.md forbids modifying
  * the harness, and the early return is in the loader's update path.
@@ -100,11 +101,9 @@ async function unloadDiagnostics(booted: LspDiagnosticsBooted): Promise<void> {
   const loader = (booted.ctx as any).get('loader')
   const entry = [...loader.entries()].find((candidate: any) => candidate.options.name === '@banbolee/dsh-lsp-diagnostics')
   if (entry === undefined) throw new Error('live @banbolee/dsh-lsp-diagnostics loader entry not found')
+  const disposal = entry.fiber?.dispose()
   await entry.update({ disabled: true })
-  const deadline = Date.now() + 10_000
-  while ((entry.fiber !== undefined || (entry._disposing ?? 0) > 0) && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 5))
-  }
+  await disposal
 }
 
 /** Return the real Loader-backed catalog exposed to model tool calls. */
@@ -122,10 +121,20 @@ function renderedToolText(result: any): string {
     .join('\n')
 }
 
+/**
+ * Whether one message/context source is this plugin's diagnostics notice.
+ * dsh 0.1.7 message sources declare the producer's own `MessageSourceMap` kind
+ * plus its bounded `notice` form; 0.1.5 used the shared `plugin` kind with a
+ * producer-name field.
+ */
+function isDiagnosticsNoticeSource(source: any): boolean {
+  return source?.kind === 'lsp-diagnostics' && source?.form === 'notice'
+}
+
 /** Extract the plugin notice text from a tool result, or undefined. */
 function pluginNoticeText(result: any): string | undefined {
   const contexts: any[] = result?.additionalContexts ?? []
-  const notice = contexts.find((context: any) => context?.source?.kind === 'plugin' && context?.source?.plugin === '@banbolee/dsh-lsp-diagnostics')
+  const notice = contexts.find((context: any) => isDiagnosticsNoticeSource(context?.source))
   if (notice === undefined) return undefined
   const text = notice?.content?.find((block: any) => block?.type === 'text')?.text
   return typeof text === 'string' ? text : undefined
@@ -382,30 +391,105 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     }
   }, 30_000)
 
-  it('diagnoses a readable external file while preserving the session workspace as the LSP root', async () => {
+  it('diagnoses a readable external file at its own project marker without moving the session workspace root', async () => {
     const booted = await bootLspDiagnosticsProfile({ typescriptMode: 'clean' })
     bootedProfiles.push(booted)
     mkdirSync(join(booted.workspace, 'src'), { recursive: true })
     writeFileSync(join(booted.workspace, 'src', 'unsupported.js'), 'const value = 1;\n')
-    const outsidePath = join(booted.profile, 'outside.ts')
+    // The external project is a sibling of the session workspace carrying its
+    // own tsconfig marker, so the tool's root resolution has a project to find.
+    // It holds two files on purpose: the second external request addresses a
+    // distinct URI, so the same pooled session serves both — the runtime only
+    // rotates for a URI the session already opened (`runtime.js:679-683`).
+    const insidePath = join(booted.workspace, 'src', 'inside.ts')
+    const outsideDirectory = join(booted.profile, 'external-project')
+    const outsideAbsolutePath = join(outsideDirectory, 'outside.ts')
+    const outsideSiblingPath = join(outsideDirectory, 'sibling.ts')
     const outsideContents = 'const outside: number = 1;\n'
-    writeFileSync(outsidePath, outsideContents)
+    mkdirSync(outsideDirectory, { recursive: true })
+    writeFileSync(join(outsideDirectory, 'tsconfig.json'), '{}\n')
+    writeFileSync(insidePath, 'const inside: number = 1;\n')
+    writeFileSync(outsideAbsolutePath, outsideContents)
+    writeFileSync(outsideSiblingPath, outsideContents)
 
     const noCwd = await executeTool(booted, 'lsp_diagnostics', { file_path: 'src/unsupported.js' })
     expect(noCwd.isError).toBe(true)
     expect(noCwd.error?.message).toBe('lsp_diagnostics requires a session workspace cwd')
     expect(renderedToolText(noCwd)).toContain('Error: lsp_diagnostics requires a session workspace cwd')
 
-    for (const filePath of [outsidePath, relative(booted.workspace, outsidePath)]) {
-      const outside = await executeTool(booted, 'lsp_diagnostics', { file_path: filePath }, booted.workspace)
-      expect(outside.isError, filePath).toBe(false)
-      expect(outside.value, filePath).toEqual({ kind: 'no_diagnostics', file_path: outsidePath })
-      expect(renderedToolText(outside), filePath).toContain(`File: ${outsidePath}`)
-      expect(readFileSync(outsidePath, 'utf8'), filePath).toBe(outsideContents)
+    // A target INSIDE the session workspace keeps the session workspace root:
+    // the tool never consults project markers for a contained target
+    // (`tool.js:386-401` short-circuits `resolveWorkspaceRoot` whenever
+    // `fs.contains(sessionWorkspace, target)`), so this call must be served by
+    // the first runtime the session starts.
+    const inside = await executeTool(
+      booted,
+      'lsp_diagnostics',
+      { file_path: relative(booted.workspace, insidePath) },
+      booted.workspace,
+    )
+    expect(inside.isError).toBe(false)
+    expect(inside.value).toEqual({ kind: 'no_diagnostics', file_path: insidePath })
+
+    // 0.1.7 `@deepseek-ai/dsh-fs-local` established the model-facing path
+    // convention this pins: `localDisplayPath` keeps the caller's physical
+    // spelling whenever the requested path contains a `..` segment on POSIX
+    // (`dsh-fs-local/lib/index.js:154-160`: "POSIX preserves physical
+    // traversal"), and the official fs tools render `target.displayPath`
+    // verbatim for the same target (`dsh-tool-fs/lib/index.js`'s
+    // `formatReadOutput`/`<path>` envelope, `dsh-tool-str-replace-editor`'s
+    // error and listing messages) rather than a lexically collapsed path. This
+    // plugin therefore reports the seam's display spelling unchanged — a full,
+    // absolute, locatable path, never empty or truncated.
+    const outsideSiblingRequest = relative(booted.workspace, outsideSiblingPath)
+    const outsideCases = [
+      { requested: outsideAbsolutePath, filePath: outsideAbsolutePath, displayPath: outsideAbsolutePath },
+      {
+        requested: outsideSiblingRequest,
+        filePath: outsideSiblingPath,
+        displayPath: `${booted.workspace}${sep}${outsideSiblingRequest}`,
+      },
+    ] as const
+
+    for (const { requested, filePath, displayPath } of outsideCases) {
+      const outside = await executeTool(booted, 'lsp_diagnostics', { file_path: requested }, booted.workspace)
+      expect(outside.isError, requested).toBe(false)
+      expect(outside.value, requested).toEqual({ kind: 'no_diagnostics', file_path: displayPath })
+      expect(renderedToolText(outside), requested).toContain(`File: ${displayPath}`)
+      // The reported spelling must still locate exactly the diagnosed file.
+      expect(resolve(displayPath), requested).toBe(filePath)
+      expect(readFileSync(filePath, 'utf8'), requested).toBe(outsideContents)
     }
+
+    // Neither external target is diagnosed through the session-rooted runtime:
+    // for a target outside the session workspace `tool.js:392-401` resolves a
+    // workspace with `sessionFallback: 'always'`, and `workspace-root.js:141-154`
+    // prefers the nearest marked directory before that session fallback. The
+    // `.ts` marker list is tsconfig.json/jsconfig.json/package.json/.git
+    // (`workspace-root.js:13-26`), so the marker written above is the root. The
+    // runtime pools one LSP session per canonical workspace key
+    // (`runtime.js:559`, `:727`), so the session target and the external project
+    // mean exactly two `initialize` handshakes, and the session-rooted runtime
+    // still owns the contained target.
     const protocol = readFileSync(booted.typescriptLog, 'utf8').trim().split('\n')
-    const outsideUri = canonicalFileUrl(outsidePath)
-    expect(protocol.filter((entry) => entry === `didOpen ${outsideUri} v1`)).toHaveLength(2)
+    const insideUri = canonicalFileUrl(insidePath)
+    const initializes = protocol.flatMap((entry, index) => entry === 'initialize' ? [index] : [])
+    const insideOpens = protocol.flatMap((entry, index) => entry === `didOpen ${insideUri} v1` ? [index] : [])
+    const outsideOpens = outsideCases.map(({ filePath }) => {
+      const uri = canonicalFileUrl(filePath)
+      return protocol.flatMap((entry, index) => entry === `didOpen ${uri} v1` ? [index] : [])
+    })
+    expect(initializes).toHaveLength(2)
+    expect(insideOpens).toHaveLength(1)
+    // The contained target is served by the first (session workspace) runtime...
+    expect(insideOpens[0]).toBeGreaterThan(initializes[0]!)
+    expect(insideOpens[0]).toBeLessThan(initializes[1]!)
+    // ...while both external targets are served by the second (their project
+    // marker) runtime, started after that contained diagnosis.
+    for (const opens of outsideOpens) {
+      expect(opens).toHaveLength(1)
+      expect(opens[0]).toBeGreaterThan(initializes[1]!)
+    }
 
     const unsupported = await executeTool(booted, 'lsp_diagnostics', { file_path: 'src/unsupported.js' }, booted.workspace)
     expect(unsupported.isError).toBe(true)
@@ -709,8 +793,8 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
       typescriptMode: 'push-versioned',
       maxDiagnostics: 1,
       extraRootEntries: [
-        '- id: code-runtime',
-        "  name: '@deepseek-ai/dsh-code-runtime-worker-thread'",
+        '- id: ptc-runtime',
+        "  name: '@deepseek-ai/dsh-ptc-runtime-node'",
       ],
     })
     bootedProfiles.push(booted)
@@ -728,10 +812,16 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
       // The code-mode transport threads the agent down to nested tool calls,
       // which append dispatch events to the session; mirror the official
       // ptc.spec fakeAgent seam (header cwd + append) rather than faking parent.
+      // The PTC path also resolves the calling session's sandbox policy, which
+      // folds the session log through `sessionProjections`: the fake session
+      // therefore also carries the log cursor (`snapshotEvents` + `seq`) the
+      // projection cell reads.
       agent: {
         session: {
           header: { cwd: booted.workspace },
           append: () => {},
+          snapshotEvents: () => [],
+          seq: 0,
         },
       },
       signal: new AbortController().signal,
@@ -812,16 +902,14 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
         "  name: '@deepseek-ai/dsh-llm'",
         '- id: sessions',
         "  name: '@deepseek-ai/dsh-session'",
-        '- id: session-projections',
-        "  name: '@deepseek-ai/dsh-session-projection'",
         '- id: agents',
         "  name: '@deepseek-ai/dsh-agent'",
         '- id: agent-loop',
         "  name: '@deepseek-ai/dsh-agent-loop'",
         '  config:',
         '    agents: []',
-        '- id: code-runtime',
-        "  name: '@deepseek-ai/dsh-code-runtime-worker-thread'",
+        '- id: ptc-runtime',
+        "  name: '@deepseek-ai/dsh-ptc-runtime-node'",
       ],
     })
     bootedProfiles.push(booted)
@@ -849,7 +937,7 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     // The nested run_code write's plugin notice reached the session log as a
     // user/message with the plugin source.
     const events: any[] = agent.session.snapshotEvents()
-    const pluginMessages = events.filter((event) => event.type === 'user/message' && event.data?.source?.kind === 'plugin')
+    const pluginMessages = events.filter((event) => event.type === 'user/message' && isDiagnosticsNoticeSource(event.data?.source))
     expect(pluginMessages.length).toBeGreaterThan(0)
     const noticeText = pluginMessages
       .flatMap((event) => event.data?.content ?? [])
@@ -995,7 +1083,7 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
 
     // The plugin notice reached the session log as a user/message with the plugin source.
     const events: any[] = agent.session.snapshotEvents()
-    const pluginMessages = events.filter((event) => event.type === 'user/message' && event.data?.source?.kind === 'plugin')
+    const pluginMessages = events.filter((event) => event.type === 'user/message' && isDiagnosticsNoticeSource(event.data?.source))
     expect(pluginMessages.length).toBeGreaterThan(0)
     const noticeText = pluginMessages
       .flatMap((event) => event.data?.content ?? [])

@@ -197,7 +197,7 @@ realDescribe('real RTK decoration in the headless profile', () => {
     ].join('\n'), { mode: 0o755 })
 
     // When the real fish provider starts the ask and deny commands
-    const asked = booted.startShell({
+    const asked = await booted.startShell({
       command: askCommand,
       workdir: harness.gitProject,
       env: {
@@ -207,7 +207,7 @@ realDescribe('real RTK decoration in the headless profile', () => {
       },
       sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: harness.gitProject },
     })
-    const denied = booted.startShell({
+    const denied = await booted.startShell({
       command: 'git branch --show-current',
       workdir: harness.gitProject,
       sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: harness.gitProject },

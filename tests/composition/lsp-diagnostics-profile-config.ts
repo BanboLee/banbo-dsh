@@ -1,3 +1,5 @@
+/// <reference types="node" />
+
 import { cpSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -104,7 +106,7 @@ export function installBundles(input: {
 
 function baseRootEntries(toolsMode: 'native' | 'code' | 'ptc', workspace: string): string[] {
   const mode = toolsMode === 'code' ? 'ptc' : toolsMode
-  return [
+  const entries = [
     '- id: tools',
     "  name: '@deepseek-ai/dsh-tools'",
     '  config:',
@@ -122,6 +124,25 @@ function baseRootEntries(toolsMode: 'native' | 'code' | 'ptc', workspace: string
     '- id: system-prompt',
     "  name: '@deepseek-ai/dsh-system-prompt'",
   ]
+  if (mode === 'ptc') {
+    // PTC programs run through the node PTC runtime, which injects the sandbox
+    // seams (`fs`, `subprocess`, `sandbox`, `sandboxPolicy`); `sandboxPolicy`
+    // in turn injects `sessionProjections`. `danger-full-access` skips
+    // confinement entirely, matching the unconfined runtime this harness
+    // mounted before the PTC/sandbox seams were split.
+    entries.push(
+      '- id: session-projection',
+      "  name: '@deepseek-ai/dsh-session-projection'",
+      '- id: sandbox',
+      "  name: '@deepseek-ai/dsh-sandbox-local'",
+      '- id: sandbox-policy',
+      "  name: '@deepseek-ai/dsh-sandbox-policy'",
+      '  config:',
+      '    mode: danger-full-access',
+      `    workspaceRoot: ${JSON.stringify(workspace)}`,
+    )
+  }
+  return entries
 }
 
 function serverArgs(mode: FakeLspMode, logPath: string, missing: boolean): string[] {

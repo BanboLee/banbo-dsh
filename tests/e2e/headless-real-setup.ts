@@ -3,7 +3,12 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { loadAppBoot, type LoadedProfile } from '../composition/profile-loader'
+import {
+  loadAppBoot,
+  openProfileModuleResolution,
+  type BootPrepare,
+  type LoadedProfile,
+} from '../composition/profile-loader'
 import type { IsolatedProfile } from '../helpers/profile'
 import {
   restoreEnvironment,
@@ -35,6 +40,8 @@ export type PreparedProfile = {
   readonly gitProject: string
   readonly profile: LoadedProfile
   readonly rootConfig: string
+  /** `boot` prepare hook that installs this profile's module resolution. */
+  readonly prepare: BootPrepare | undefined
 }
 
 export async function prepareRealProfile(options: SetupOptions): Promise<PreparedProfile> {
@@ -57,8 +64,12 @@ export async function prepareRealProfile(options: SetupOptions): Promise<Prepare
     const { appBoot, installAnchor } = await loadAppBoot(DSH_BIN)
     appBoot.initProfile(options.isolated.profile, [...BASE_BUNDLES])
     installLocalBundles(options.isolated.profile, options.isolated.dshHome)
-    appBoot.healProfilesModuleFallback(installAnchor, options.isolated.dshHome)
     const profile = appBoot.loadProfile('dsh', 'headless-real', installAnchor, options.isolated.dshHome)
+    const prepare = await openProfileModuleResolution(appBoot, {
+      installAnchor,
+      profile,
+      home: options.isolated.dshHome,
+    })
     const rootConfig = join(options.isolated.profile, 'cordis.yml')
     writeFileSync(rootConfig, '[]\n')
     const nonce = randomUUID().replaceAll('-', '')
@@ -85,6 +96,7 @@ export async function prepareRealProfile(options: SetupOptions): Promise<Prepare
       gitProject,
       profile,
       rootConfig,
+      prepare,
     }
   } catch (error) {
     try {
