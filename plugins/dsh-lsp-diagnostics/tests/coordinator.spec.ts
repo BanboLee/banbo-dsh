@@ -1,4 +1,5 @@
 import { Context } from '@deepseek-ai/cordis'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMutationCollector } from '../collector.js'
 import { createDiagnosticsCoordinator } from '../coordinator.js'
@@ -815,12 +816,18 @@ describe('@banbolee/dsh-lsp-diagnostics coordinator aggregate context', () => {
     expect(contexts![0]).toBe(existing)
     const notice = noticeOf(decision)
     expect(notice).toBeDefined()
-    expect(notice!.source).toEqual({
-      kind: 'plugin',
-      plugin: '@banbolee/dsh-lsp-diagnostics',
+    // The expected source is written in the harness's own 0.1.7-rc.2 vocabulary
+    // (`UserMessage['source']` is the merge-extensible `MessageSourceMap`
+    // union), so `tsc` rejects this literal unless `message-source.d.ts`
+    // declares the plugin-owned `lsp-diagnostics` kind carrying the `notice`
+    // form and its required summary. The runtime lane below pins that the
+    // plugin really emits exactly this source.
+    const expectedSource: UserMessage['source'] = {
+      kind: 'lsp-diagnostics',
       form: 'notice',
       summary: expect.stringContaining('[LSP diagnostics after write]'),
-    })
+    }
+    expect(notice!.source).toEqual(expectedSource)
     const text = notice!.content[0]!.text
     expect(text.startsWith('[LSP diagnostics after write]')).toBe(true)
     expect(fileLinesOf(text)).toEqual(['src/a.ts', 'src/b.ts'])

@@ -15,6 +15,7 @@
  * @module @banbolee/dsh-lsp-diagnostics/coordinator
  */
 
+/// <reference path="./message-source.d.ts" />
 import { boundContextSummary, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { compareEligibleTargets, renderDiagnostics, sanitizeDisplayPath } from './render.js'
 import { resolveWorkspaceRoot } from './workspace-root.js'
@@ -630,9 +631,12 @@ export function createDiagnosticsCoordinator({ collector, runtime, config, fs, n
         if (rendered.text !== null) {
           const message = createUserMessage({
             content: [{ type: 'text', text: rendered.text }],
+            // 0.1.7-rc.2 vocabulary: the producer declares its own
+            // `MessageSourceMap` kind (message-source.d.ts) and owns its bounded
+            // one-line `notice` account; there is no shared catch-all `plugin`
+            // kind and no producer-name field.
             source: {
-              kind: 'plugin',
-              plugin: '@banbolee/dsh-lsp-diagnostics',
+              kind: 'lsp-diagnostics',
               form: 'notice',
               summary: boundContextSummary(rendered.text),
             },
