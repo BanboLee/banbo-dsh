@@ -6,6 +6,7 @@ import {
   mockGateway,
   stubApiKey,
   textEvents,
+  toGenerateOptions,
   toolEvents,
   userMessage,
   type CredentialsStub,
@@ -219,6 +220,20 @@ describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
     expect(ids).not.toContain('deepseek-session')
     expect(ids).not.toContain('deepseek-affinity')
     expect(ids).toEqual(['light-affinity'])
+  })
+
+  it('releases the registered routes when the plugin unloads', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { ctx, fiber } = await createHarness({ providers: demoProviders(gateway.url), routes: DEMO_ROUTE })
+
+    expect(ctx.llm.listProviders().map(entry => entry.id)).toEqual(['demo-affinity'])
+
+    await fiber.dispose()
+
+    // The registration is fiber-owned: unloading the plugin takes its routes
+    // with it instead of leaking them into the service.
+    expect(ctx.llm.listProviders()).toEqual([])
   })
 
   it('routes each mirrored provider to its own gateway with its own api key', async () => {
@@ -505,8 +520,11 @@ describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
       sessionId: 'session-image',
     })
 
+    // The route derives an exact request target: aspect-preserving dimensions
+    // within the pixel budget, plus the encoded-byte target.
     expect(readImageRequest).toHaveBeenCalledWith(attachment, {
-      maxPixels: 2048 * 2048,
+      width: 1,
+      height: 1,
       maxBytes: 1024 * 1024,
     }, undefined)
     expect(gateway.headers[0]?.['x-session-id']).toBe('session-image')
@@ -563,25 +581,94 @@ describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
     expect(JSON.stringify(gateway.requests[0])).toContain('data:image/png;base64,Ag==')
   })
 
-  it('keeps a mapped attachment path when an image is offloaded by the request budget', async () => {
+  it('downscales the request target to the provider pixel budget', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
     const attachment = {
       attachmentId: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
       mediaType: 'image/png',
-      bytes: 9,
-      width: 1,
-      height: 1,
+      bytes: 1,
+      width: 4,
+      height: 4,
     }
-    const readImageRequest = vi.fn(async () => {
-      throw new Error('offloaded images must not be read')
-    })
+    const readImageRequest = vi.fn(async () => ({
+      variantId: 'sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef',
+      attachment,
+      data: Uint8Array.of(1),
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 2,
+      height: 2,
+      depth: 'uchar',
+      space: 'srgb',
+      hasAlpha: true,
+    }))
     const { ctx, stream } = await createHarness({
       providers: {
         demo: {
           apiKeyEnv: 'DEEPSEEK_API_KEY',
           baseURL: gateway.url,
-          maxRequestImageBytes: 4,
+          requestImagePixelBudget: 4,
+          models: [{ id: 'demo-model', input: ['text', 'image'] }],
+        },
+      },
+      routes: DEMO_ROUTE,
+    })
+    ctx.provide('attachments', { readImageRequest })
+
+    await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: [{
+        role: 'user',
+        content: [{ type: 'image', attachment }],
+        id: 'm-pixel-budget',
+        source: { kind: 'user' },
+      }],
+      sessionId: 'session-pixel-budget',
+    })
+
+    expect(readImageRequest).toHaveBeenCalledWith(attachment, {
+      width: 2,
+      height: 2,
+      maxBytes: 1024 * 1024,
+    }, undefined)
+  })
+
+  it('projects a surface-offloaded occurrence to placeholder text without reading it', async () => {
+    const gateway = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const offloaded = {
+      attachmentId: 'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+      mediaType: 'image/png',
+      bytes: 9,
+      width: 1,
+      height: 1,
+    }
+    const retained = {
+      attachmentId: 'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+    }
+    const readImageRequest = vi.fn(async () => ({
+      variantId: 'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+      attachment: retained,
+      data: Uint8Array.of(7),
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+      depth: 'uchar',
+      space: 'srgb',
+      hasAlpha: true,
+    }))
+    const { ctx, stream } = await createHarness({
+      providers: {
+        demo: {
+          apiKeyEnv: 'DEEPSEEK_API_KEY',
+          baseURL: gateway.url,
           models: [{ id: 'demo-model', input: ['text', 'image'] }],
         },
       },
@@ -590,36 +677,59 @@ describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
     ctx.provide('attachments', { imageHostPath: () => '/host/image.png', readImageRequest })
     ctx.provide('fs', { processPathFromHostPath: () => '/sandbox/image.png' })
 
-    await stream({
+    const chunks = await stream({
       provider: 'demo-affinity',
       model: 'demo-model',
       messages: [{
         role: 'user',
-        content: [{ type: 'image', attachment }],
-        id: 'm-offloaded-image',
+        content: [
+          { type: 'image', attachment: offloaded, offloaded: true },
+          { type: 'image', attachment: retained },
+        ],
+        id: 'm-mixed-images',
         source: { kind: 'user' },
       }],
-      sessionId: 'session-offloaded-image',
+      sessionId: 'session-offloaded-mark',
     })
 
-    expect(readImageRequest).not.toHaveBeenCalled()
-    expect(JSON.stringify(gateway.requests[0])).toContain('/sandbox/image.png')
-    expect(JSON.stringify(gateway.requests[0])).not.toContain('No local normalized image path is available')
+    // The occurrence the durable surface marked offloaded is never read and is
+    // projected to its placeholder, which keeps the mapped execution-world path.
+    expect(readImageRequest).toHaveBeenCalledOnce()
+    expect(readImageRequest).toHaveBeenCalledWith(retained, {
+      width: 1,
+      height: 1,
+      maxBytes: 1024 * 1024,
+    }, undefined)
+    const body = JSON.stringify(gateway.requests[0])
+    expect(body).toContain('image omitted to fit request image limits')
+    expect(body).toContain('/sandbox/image.png')
+    expect(body).not.toContain('No local normalized image path is available')
+    // The retained occurrence still travels as its exact request version.
+    expect(body).toContain('data:image/png;base64,Bw==')
+    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
+    expect((finish as { reason?: { kind?: string } } | undefined)?.reason?.kind).toBe('stop')
   })
 
-  it('keeps a mapped path when exact encoded bytes exceed the request budget', async () => {
+  it('fails with IMAGE_OFFLOAD_REQUIRED naming how many oldest occurrences must be offloaded', async () => {
     const gateway = await mockGateway([{ events: textEvents }])
     stubApiKey('DEEPSEEK_API_KEY', 'test-key')
-    const attachment = {
-      attachmentId: 'sha256:abababababababababababababababababababababababababababababababab',
+    const first = {
+      attachmentId: 'sha256:4444444444444444444444444444444444444444444444444444444444444444',
+      mediaType: 'image/png',
+      bytes: 1,
+      width: 1,
+      height: 1,
+    }
+    const second = {
+      attachmentId: 'sha256:5555555555555555555555555555555555555555555555555555555555555555',
       mediaType: 'image/png',
       bytes: 1,
       width: 1,
       height: 1,
     }
     const readImageRequest = vi.fn(async () => ({
-      variantId: 'sha256:bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc',
-      attachment,
+      variantId: 'sha256:6666666666666666666666666666666666666666666666666666666666666666',
+      attachment: first,
       data: Uint8Array.of(1, 2, 3, 4, 5),
       mediaType: 'image/png',
       bytes: 5,
@@ -634,30 +744,41 @@ describe('@banbolee/dsh-llm-pi-ai-with-session adapter', () => {
         demo: {
           apiKeyEnv: 'DEEPSEEK_API_KEY',
           baseURL: gateway.url,
-          maxRequestImageBytes: 4,
+          // Two retained occurrences of 5 bytes each are 8 base64 bytes apiece,
+          // so 16 represented bytes exceed this budget by one occurrence.
+          maxRequestImageBytes: 12,
           models: [{ id: 'demo-model', input: ['text', 'image'] }],
         },
       },
       routes: DEMO_ROUTE,
     })
-    ctx.provide('attachments', { imageHostPath: () => '/host/image.png', readImageRequest })
-    ctx.provide('fs', { processPathFromHostPath: () => '/sandbox/image.png' })
+    ctx.provide('attachments', { readImageRequest })
 
-    await stream({
+    const chunks = await stream({
       provider: 'demo-affinity',
       model: 'demo-model',
       messages: [{
         role: 'user',
-        content: [{ type: 'image', attachment }],
-        id: 'm-exact-offload',
+        content: [
+          { type: 'image', attachment: first },
+          { type: 'image', attachment: second },
+        ],
+        id: 'm-over-budget',
         source: { kind: 'user' },
       }],
-      sessionId: 'session-exact-offload',
+      sessionId: 'session-over-budget',
     })
 
-    expect(readImageRequest).toHaveBeenCalledOnce()
-    expect(JSON.stringify(gateway.requests[0])).toContain('/sandbox/image.png')
-    expect(JSON.stringify(gateway.requests[0])).not.toContain('data:image/png')
+    // Every retained occurrence is read for exact byte accounting, the route
+    // refuses instead of offloading on its own, and the failure names the
+    // additional oldest occurrence the durable surface must offload.
+    expect(readImageRequest).toHaveBeenCalledTimes(2)
+    expect(gateway.headers).toHaveLength(0)
+    const finish = chunks.find(chunk => (chunk as { type?: string }).type === 'finish')
+    const reason = (finish as { reason?: { kind?: string; failure?: { code?: string; offloadImages?: number } } } | undefined)?.reason
+    expect(reason?.kind).toBe('error')
+    expect(reason?.failure?.code).toBe('IMAGE_OFFLOAD_REQUIRED')
+    expect(reason?.failure?.offloadImages).toBe(1)
   })
 
   it('projects user images to text when the mirrored model is text-only', async () => {
@@ -979,12 +1100,12 @@ describe('@banbolee/dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
     })
     const chunksPromise = (async () => {
       const chunks: unknown[] = []
-      for await (const chunk of prepared.stream({
+      for await (const chunk of prepared.stream(toGenerateOptions({
         provider: 'demo-affinity',
         model: 'demo-model',
         messages: MESSAGES,
         sessionId: 'session-prepared',
-      } as Parameters<typeof prepared.stream>[0])) chunks.push(chunk)
+      }))) chunks.push(chunk)
       return chunks
     })()
 
@@ -1032,12 +1153,12 @@ describe('@banbolee/dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
       model: 'demo-model',
     })
     const beforeChunks: unknown[] = []
-    for await (const chunk of before.stream({
+    for await (const chunk of before.stream(toGenerateOptions({
       provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-before',
-    } as Parameters<typeof before.stream>[0])) beforeChunks.push(chunk)
+    }))) beforeChunks.push(chunk)
     await stream({
       provider: 'demo-affinity',
       model: 'demo-model',
@@ -1045,12 +1166,12 @@ describe('@banbolee/dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
       sessionId: 'session-after-direct',
     })
     const afterChunks: unknown[] = []
-    for await (const chunk of after.stream({
+    for await (const chunk of after.stream(toGenerateOptions({
       provider: 'demo-affinity',
       model: 'demo-model',
       messages: MESSAGES,
       sessionId: 'session-after',
-    } as Parameters<typeof after.stream>[0])) afterChunks.push(chunk)
+    }))) afterChunks.push(chunk)
 
     expect(beforeChunks.some(chunk => (chunk as { type?: string }).type === 'finish')).toBe(true)
     expect(afterChunks.some(chunk => (chunk as { type?: string }).type === 'finish')).toBe(true)
@@ -1086,5 +1207,72 @@ describe('@banbolee/dsh-llm-pi-ai-with-session settings mirror (way B)', () => {
     expect(chunks.some(chunk => (chunk as { type?: string }).type === 'finish')).toBe(true)
     expect(gateway.headers).toHaveLength(1)
     expect(gateway.headers[0]?.['x-session-id']).toBe('session-after-delete')
+  })
+
+  it('registers its routes once the mirrored providers appear after apply', async () => {
+    const light = await mockGateway([{ events: textEvents }])
+    stubApiKey('LIGHT_API_KEY', 'light-key')
+    const { ctx, fiber, stream } = await createSettingsHarness({}, {
+      routes: [{ route: 'light-affinity', source: 'light' }],
+    })
+
+    // The entry is mounted with no provider yet: dormant, zero routes, no error.
+    expect(ctx.llm.listProviders()).toEqual([])
+
+    await ctx.settings.update('llm-pi-ai', {
+      providers: { light: { apiKeyEnv: 'LIGHT_API_KEY', baseURL: light.url, models: [{ id: 'gpt-5.5' }] } },
+    })
+
+    // Configured while running: the route appears without a plugin reload.
+    expect(ctx.llm.listProviders().map(entry => entry.id)).toEqual(['light-affinity'])
+    const chunks = await stream({
+      provider: 'light-affinity',
+      model: 'gpt-5.5',
+      messages: MESSAGES,
+      sessionId: 'session-mirror-added',
+    })
+    expect(light.headers).toHaveLength(1)
+    expect(light.headers[0]?.['x-session-id']).toBe('session-mirror-added')
+    expect(chunks.some(chunk => (chunk as { type?: string }).type === 'finish')).toBe(true)
+
+    // A registration created while running is fiber-owned too: unloading the
+    // plugin must not leak it.
+    await fiber.dispose()
+    expect(ctx.llm.listProviders()).toEqual([])
+  })
+
+  it('re-applies a working configuration after a refused settings update', async () => {
+    const first = await mockGateway([{ events: textEvents }])
+    const second = await mockGateway([{ events: textEvents }])
+    stubApiKey('DEEPSEEK_API_KEY', 'test-key')
+    const { ctx, stream } = await createSettingsHarness({
+      demo: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: first.url, models: [{ id: 'demo-model' }] },
+    }, { routes: DEMO_ROUTE })
+
+    // Emptying the table is refused as a whole: the last accepted snapshot
+    // keeps serving instead of a half-live route appearing.
+    await ctx.settings.update('llm-pi-ai', { providers: {} })
+    await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-after-refusal',
+    })
+    expect(first.headers).toHaveLength(1)
+    expect(first.headers[0]?.['x-session-id']).toBe('session-after-refusal')
+
+    // Returning to a serviceable table is applied without a plugin reload.
+    await ctx.settings.update('llm-pi-ai', {
+      providers: { demo: { apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: second.url, models: [{ id: 'demo-model' }] } },
+    })
+    await stream({
+      provider: 'demo-affinity',
+      model: 'demo-model',
+      messages: MESSAGES,
+      sessionId: 'session-after-restore',
+    })
+    expect(ctx.llm.listProviders().map(entry => entry.id)).toEqual(['demo-affinity'])
+    expect(second.headers).toHaveLength(1)
+    expect(second.headers[0]?.['x-session-id']).toBe('session-after-restore')
   })
 })

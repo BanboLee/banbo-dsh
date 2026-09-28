@@ -1,21 +1,31 @@
 /**
  * GenerateOptions → pi-ai Context conversion for the session wrapper adapter.
  *
+ * Image handling follows the harness request-image contract: an occurrence the
+ * durable surface marked `offloaded` becomes deterministic placeholder text and
+ * is never read, while retained occurrences that exceed the route's request
+ * budget fail the call with `IMAGE_OFFLOAD_REQUIRED`, naming how many more of
+ * the oldest occurrences must be offloaded — an adapter never offloads on its
+ * own (dsh-compaction-image-offload records the decision and retries).
+ *
  * @module @banbolee/dsh-llm-pi-ai-with-session/context
  */
 
 import {
   contentHasImage,
+  IMAGE_OFFLOAD_REQUIRED_CODE,
   LlmError,
   offloadedImageText,
-  offloadRequestImagesWithPolicy,
+  projectOffloadedImages,
   requestImageHandleText,
+  requiredImageOffload,
 } from '@deepseek-ai/dsh-llm'
+import { requestImageTarget } from './model.js'
 
 /**
  * Join the text blocks of one harness message.
- * @param content - harness content blocks.
- * @returns the concatenated text.
+ * @param {readonly import('@deepseek-ai/dsh-llm').ContentBlock[]} content - harness content blocks.
+ * @returns {string} the concatenated text.
  */
 function flattenText(content) {
   return content
@@ -24,9 +34,15 @@ function flattenText(content) {
     .join('')
 }
 
+/**
+ * Reject image input in a history role pi-ai cannot represent. Tool results
+ * are their own role since 0.1.7, so they carry images exactly like user
+ * content does; the native dsh-llm-pi-ai adapter accepts the same two roles.
+ * @param {readonly import('@deepseek-ai/dsh-llm').RequestMessage[]} messages - the request history.
+ */
 export function assertSupportedImageRoles(messages) {
   for (const message of messages) {
-    if (message.role !== 'user' && contentHasImage(message.content)) {
+    if (message.role !== 'user' && message.role !== 'tool' && contentHasImage(message.content)) {
       throw new LlmError(
         `@banbolee/dsh-llm-pi-ai-with-session: image input is not supported in ${message.role} history`,
         'UNSUPPORTED_CONTENT',
@@ -35,27 +51,53 @@ export function assertSupportedImageRoles(messages) {
   }
 }
 
+/**
+ * Collect the durable image references one request must resolve, in message
+ * order. An occurrence the surface already marked offloaded keeps its text
+ * placeholder and is never read.
+ * @param {readonly import('@deepseek-ai/dsh-llm').ContentBlock[]} content - harness content blocks.
+ * @param {Map<string, any>} refs - attachment-id → durable reference map to fill.
+ */
 function collectImageRefs(content, refs) {
   for (const block of content) {
-    if (block.type === 'image') refs.set(block.attachment.attachmentId, block.attachment)
-    if (block.type === 'tool-result') collectImageRefs(block.content, refs)
+    if (block.type === 'image' && block.offloaded !== true) refs.set(block.attachment.attachmentId, block.attachment)
   }
 }
 
+/**
+ * Prepare the deterministic request version of every retained image. The
+ * attachment service derives one version per attachment id under the route's
+ * pixel and encoded-byte budgets.
+ * @param {readonly import('@deepseek-ai/dsh-llm').RequestMessage[]} messages - the request history.
+ * @param {import('./model.js').ImageRequestContext} images - image conversion inputs.
+ * @param {AbortSignal | undefined} signal - request cancellation.
+ * @returns {Promise<Map<string, any>>} attachment-id → request-image version.
+ */
 async function prepareRequestImages(messages, images, signal) {
   const refs = new Map()
   for (const message of messages) collectImageRefs(message.content, refs)
+  const orderedRefs = [...refs.values()]
+  const prepared = await Promise.all(orderedRefs.map(ref => images.attachments.readImageRequest(
+    ref,
+    requestImageTarget(ref, images.requestImagePolicy),
+    signal,
+  )))
   const requestImages = new Map()
-  await Promise.all([...refs.values()].map(async (ref) => {
-    requestImages.set(
-      ref.attachmentId,
-      await images.attachments.readImageRequest(ref, images.requestImagePolicy, signal),
-    )
-  }))
+  for (const [index, ref] of orderedRefs.entries()) requestImages.set(ref.attachmentId, prepared[index])
   return requestImages
 }
 
-async function toPiUserContent(content, requestImages, resolveImageAccess) {
+/**
+ * Convert one harness content list into pi-ai user content: text joins into a
+ * single string, an image contributes its deterministic handle text plus the
+ * inline base64 request version, and blocks pi-ai cannot represent are dropped.
+ * @param {readonly import('@deepseek-ai/dsh-llm').ContentBlock[]} content - harness content blocks.
+ * @param {Map<string, any>} requestImages - attachment-id → request-image version.
+ * @param {(ref: any) => { readonlyPath: string } | undefined} resolveImageAccess - current execution-world access resolver.
+ * @returns {string | Array<import('@earendil-works/pi-ai').TextContent | import('@earendil-works/pi-ai').ImageContent>} the pi-ai content.
+ */
+function toPiUserContent(content, requestImages, resolveImageAccess) {
+  /** @type {Array<import('@earendil-works/pi-ai').TextContent | import('@earendil-works/pi-ai').ImageContent>} */
   const converted = []
   for (const block of content) {
     if (block.type === 'text') {
@@ -69,15 +111,6 @@ async function toPiUserContent(content, requestImages, resolveImageAccess) {
         text: requestImageHandleText(block.attachment, image, resolveImageAccess?.(block.attachment)),
       })
       converted.push({ type: 'image', data: Buffer.from(image.data).toString('base64'), mimeType: image.mediaType })
-      continue
-    }
-    if (block.type === 'tool-result') {
-      const nested = await toPiUserContent(block.content, requestImages, resolveImageAccess)
-      if (typeof nested === 'string') {
-        if (nested.length > 0) converted.push({ type: 'text', text: nested })
-      } else {
-        converted.push(...nested)
-      }
     }
   }
   if (converted.every(block => block.type === 'text')) return converted.map(block => block.text).join('')
@@ -88,10 +121,11 @@ async function toPiUserContent(content, requestImages, resolveImageAccess) {
  * Reconstruct a pi-ai assistant message from durable harness content. The
  * harness keeps tool-call arguments as raw JSON strings; pi-ai wants them
  * parsed, so a malformed payload degrades to an empty object.
- * @param message - a harness assistant message.
- * @returns the pi-ai assistant message.
+ * @param {import('@deepseek-ai/dsh-llm').AssistantMessage} message - a durable assistant message.
+ * @returns {import('@earendil-works/pi-ai').AssistantMessage} the pi-ai assistant message.
  */
 function toPiAssistant(message) {
+  /** @type {Array<import('@earendil-works/pi-ai').TextContent | import('@earendil-works/pi-ai').ThinkingContent | import('@earendil-works/pi-ai').ToolCall>} */
   const content = []
   for (const block of message.content) {
     switch (block.type) {
@@ -143,34 +177,25 @@ function toPiAssistant(message) {
 }
 
 /**
- * Convert one harness user message into pi-ai messages. Text goes into a
- * single user message; each tool result becomes its own toolResult message.
- * @param message - a harness user-role message.
- * @param toolNames - tool-call id → name map recovered from assistant turns.
- * @returns the pi-ai messages.
+ * Convert one durable tool-role message into its pi-ai toolResult message.
+ * @param {import('@deepseek-ai/dsh-llm').ToolResultMessage} message - a durable tool-result message.
+ * @param {Map<string, string>} toolNames - tool-call id → name map recovered from assistant turns.
+ * @param {Map<string, any>} requestImages - attachment-id → request-image version.
+ * @param {(ref: any) => { readonlyPath: string } | undefined} resolveImageAccess - current execution-world access resolver.
+ * @returns {import('@earendil-works/pi-ai').ToolResultMessage} the pi-ai tool result.
  */
-async function toPiUserMessages(message, toolNames, requestImages, resolveImageAccess) {
-  const results = message.content.filter(block => block.type === 'tool-result')
-  const regular = message.content.filter(block => block.type !== 'tool-result')
-  const messages = []
-  const content = await toPiUserContent(regular, requestImages, resolveImageAccess)
-  if (content.length > 0 || results.length === 0) {
-    messages.push({ role: 'user', content, timestamp: 0 })
+function toPiToolResult(message, toolNames, requestImages, resolveImageAccess) {
+  const nested = toPiUserContent(message.content, requestImages, resolveImageAccess)
+  return {
+    role: 'toolResult',
+    toolCallId: message.toolCallId,
+    toolName: toolNames.get(message.toolCallId) ?? 'unknown',
+    content: typeof nested === 'string'
+      ? [{ type: 'text', text: nested || '(no output)' }]
+      : nested,
+    isError: message.isError ?? false,
+    timestamp: 0,
   }
-  for (const result of results) {
-    const nested = await toPiUserContent(result.content, requestImages, resolveImageAccess)
-    messages.push({
-      role: 'toolResult',
-      toolCallId: result.toolCallId,
-      toolName: toolNames.get(result.toolCallId) ?? 'unknown',
-      content: typeof nested === 'string'
-        ? [{ type: 'text', text: nested || '(no output)' }]
-        : nested,
-      isError: result.isError ?? false,
-      timestamp: 0,
-    })
-  }
-  return messages
 }
 
 /**
@@ -181,34 +206,35 @@ async function toPiUserMessages(message, toolNames, requestImages, resolveImageA
  * slot), and any in-history system messages are folded into user messages to
  * preserve order — the harness sends the system prompt via `options.system`.
  *
- * @param options - the harness request.
- * @param images - durable attachment service and request-image policy.
- * @returns the pi-ai context (`tools` omitted when the request declares none).
+ * @param {import('@deepseek-ai/dsh-llm').GenerateOptions} options - the harness request.
+ * @param {import('./model.js').ImageRequestContext | undefined} images - durable attachment service and request-image budgets.
+ * @returns {Promise<import('@earendil-works/pi-ai').Context>} the pi-ai context (`tools` omitted when the request declares none).
  */
 export async function toContext(options, images) {
   assertSupportedImageRoles(options.messages)
-  const requestMessages = images === undefined
-    ? options.messages
-    : offloadRequestImagesWithPolicy(options.messages, {
-        representation: 'base64',
-        ...images.maxRequestImageBytes === undefined ? {} : { maxBytes: images.maxRequestImageBytes },
-        byteQuantum: 1,
-        byteLength: ref => Math.min(ref.bytes, images.requestImagePolicy.maxBytes),
-        placeholder: ref => offloadedImageText(ref, images.resolveImageAccess?.(ref)),
-      })
+  const resolveImageAccess = images?.resolveImageAccess ?? (() => undefined)
   const requestImages = images === undefined
     ? new Map()
-    : await prepareRequestImages(requestMessages, images, options.signal)
+    : await prepareRequestImages(options.messages, images, options.signal)
+  if (images?.maxRequestImageBytes !== undefined) {
+    const offloadImages = requiredImageOffload(options.messages, {
+      representation: 'base64',
+      maxBytes: images.maxRequestImageBytes,
+    }, block => requestImages.get(block.attachment.attachmentId).bytes)
+    if (offloadImages > 0) {
+      throw new LlmError(
+        `@banbolee/dsh-llm-pi-ai-with-session: request images exceed the ${images.maxRequestImageBytes}-byte`
+        + ` base64 bound; ${offloadImages} more oldest occurrence(s) must be offloaded.`,
+        IMAGE_OFFLOAD_REQUIRED_CODE,
+        { offloadImages },
+      )
+    }
+  }
   const exactMessages = images === undefined
-    ? requestMessages
-    : offloadRequestImagesWithPolicy(requestMessages, {
-        representation: 'base64',
-        ...images.maxRequestImageBytes === undefined ? {} : { maxBytes: images.maxRequestImageBytes },
-        byteQuantum: 1,
-        byteLength: ref => requestImages.get(ref.attachmentId).bytes,
-        placeholder: ref => offloadedImageText(ref, images.resolveImageAccess?.(ref)),
-      })
+    ? options.messages
+    : projectOffloadedImages(options.messages, ref => offloadedImageText(ref, resolveImageAccess(ref)))
   const toolNames = new Map()
+  /** @type {import('@earendil-works/pi-ai').Message[]} */
   const messages = []
   for (const message of exactMessages) {
     if (message.role === 'system') {
@@ -223,17 +249,32 @@ export async function toContext(options, images) {
       messages.push(assistant)
       continue
     }
-    messages.push(...await toPiUserMessages(message, toolNames, requestImages, images?.resolveImageAccess))
-  }
-  const context = {
-    ...options.system === undefined ? {} : { systemPrompt: options.system },
-    messages,
+    if (message.role === 'tool') {
+      messages.push(toPiToolResult(message, toolNames, requestImages, resolveImageAccess))
+      continue
+    }
+    if (message.role === 'developer') {
+      // The runtime strips developer messages for a route that declares no
+      // toolUpdate; one reaching this adapter is not representable in pi-ai.
+      throw new LlmError(
+        '@banbolee/dsh-llm-pi-ai-with-session: developer messages are not representable in pi-ai history',
+        'UNSUPPORTED_CONTENT',
+      )
+    }
+    messages.push({
+      role: 'user',
+      content: toPiUserContent(message.content, requestImages, resolveImageAccess),
+      timestamp: 0,
+    })
   }
   const tools = options.tools?.map(tool => ({
     name: tool.name,
     description: tool.description,
     parameters: tool.parameters,
   }))
-  if (tools !== undefined && tools.length > 0) context.tools = tools
-  return context
+  return {
+    ...options.system === undefined ? {} : { systemPrompt: options.system },
+    messages,
+    ...tools === undefined || tools.length === 0 ? {} : { tools },
+  }
 }

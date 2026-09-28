@@ -15,7 +15,7 @@ Harness 官方有两条 LLM 通路：
 
 本插件通过公开的 `ctx.llm.registerAdapter` 扩展点注册一个自定义 `LlmAdapter`。内部复用 pi-ai 的 `streamSimple`（`@earendil-works/pi-ai/compat` 的公开导出，按 `model.api` 自动分发），并把动态会话 header 注入 `options.headers`——既保留 pi-ai 的协议行为，又补上动态 session id。
 
-> 它不修改官方 `llm-pi-ai` provider，也不全局拦截 fetch；它通过公开的 `ctx.llm.registerAdapter` 注册独立 session 路由。每条 session 路由都显式声明 `source`，并从 `ctx.settings.get('llm-pi-ai')` 读取对应 source provider 的配置。
+> 它不修改官方 `llm-pi-ai` provider，也不全局拦截 fetch；它通过公开的 `ctx.llm.registerAdapter` 注册独立 session 路由。每条 session 路由都显式声明 `source`，并从 settings forms 服务（`ctx.settings.describe()`）镜像对应 source provider 的配置。
 
 ## 安装
 
@@ -37,7 +37,7 @@ dsh plugin --profile <profile> add -w ./plugins/dsh-llm-pi-ai-with-session
 **共享配置——网关、凭据、模型、推理档位、重试与超时——只写一份**，就在 `llm-pi-ai` 的 providers 里。插件自身只声明需要创建哪些 session 路由，以及会话 header 名；其余一切（baseURL、apiKeyEnv、headers、models、reasoning、reasoningEfforts、retryPolicy、timeoutMs、streamIdleTimeoutMs）都从 source provider 继承：
 
 ```yaml
-# settings.yaml —— llm-pi-ai 的 providers 是唯一的事实来源
+# active profile 的插件配置 —— llm-pi-ai 的 providers 是唯一的事实来源
 llm-pi-ai:
   providers:
     deepseek:
@@ -71,6 +71,16 @@ llm-pi-ai-with-session:
 
 装好后，只有 `routes` 中声明的路由会注册。上例只注册 `light-session`，不会自动创建 `deepseek-session`，因此本插件不会在模型选择器里把所有 provider 翻倍。
 
+### 配置写在哪里、何时生效
+
+在 harness 的 config/settings 界面里编辑 `llm-pi-ai` 条目，或用 `ctx.settings.update` / `ctx.settings.replace` / `ctx.settings.mutate` 写入：这条路径经 config editor 自行 reconcile profile patch，最终调用 `SettingsForms.describe()`，把变化以 `settings/document-updated` 广播出来——正是本插件镜像的事件，因此无需重启即可生效，也不依赖任何文件 watcher。
+
+手工编辑 profile patch 文件则是另一回事：只有当该 profile 挂了 `@deepseek-ai/dsh-hmr` 时，它的 watcher 才会重新读取并通过同一条链路 reconcile。默认的 `dsh-base` 组合在有 profile 时会挂它（仅在没有 `profileContext` 时该行被禁用），而 headless profile 明确禁用它（`dsh-headless/cordis.patch.yml`）；因此在那种 profile 下手工改 `<profile>/cordis.patch.yml`，需要 reload 或 restart 后插件才会看到。
+
+`settings.yaml` 是**legacy**：升级后 Harness 只在 Loader settled 时导入它一次，随后重命名为 `settings.yaml.imported`；之后再改它，对正在运行或重启后的 profile 都没有效果。
+
+profile 应用变化后，热更新覆盖镜像 provider 条目里的：`baseURL`、`apiKeyEnv`、`headers`、`models`、`reasoning`、`timeoutMs`、`streamIdleTimeoutMs`（下一次请求生效）、providers 集合变化（出现、跟随或被拒绝），以及 `retryPolicy`（插件原地重注册同一个 adapter）。有哪些路由仍然来自本插件自己的 `routes` 配置，所以改 `routes` 需要 profile 重载。无法服务已声明路由的更新——source provider 被移除、profile 正在编辑——会整体被拒绝：最后接受的 providers 与路由继续生效，下次变更再重新应用。
+
 ### 字段说明
 
 | 字段 | 默认值 | 说明 |
@@ -80,7 +90,7 @@ llm-pi-ai-with-session:
 | `routes[].source` | 必填 | 继承配置的 `llm-pi-ai.providers.<source>` 条目。 |
 | `routes[].displayName` | `route` | 模型选择器显示名；建议加上 `(session)`，以便与原 provider 区分。 |
 
-插件没有 `suffix`、`reasoning`、`reasoningEfforts` 配置——**路由名只来自 `routes[].route`，推理与输入模态从 source provider 继承**：默认档位取 source provider 的 `reasoning`，可选档位取 source 模型声明的 `reasoningEfforts` dict（未声明时用默认列表 `[off, low, medium, high, xhigh, max]`，`false` 表示禁用推理）。输入模态按以下顺序解析：source 模型上非空的 `input`、pi-ai 内置 catalog、provider 的 `defaultInput`，最后是 `[text]`。图片模型使用 Harness 的持久附件服务生成受像素和字节预算约束的请求图片；超出请求预算的历史图片会保留可用的只读附件路径。文本模型由 Harness 把各角色中的图片投影为稳定文本占位符。`baseURL`、`apiKeyEnv`、`headers`、`models` 同样从 `ctx.settings.get('llm-pi-ai')` 的对应 provider 逐字段继承。若 settings namespace 未注册、providers 为空或 routes 为空，插件以零路由 dormant 启动，不报错。
+插件没有 `suffix`、`reasoning`、`reasoningEfforts` 配置——**路由名只来自 `routes[].route`，推理与输入模态从 source provider 继承**：默认档位取 source provider 的 `reasoning`，可选档位取 source 模型声明的 `reasoningEfforts` dict（未声明时用默认列表 `[off, low, medium, high, xhigh, max]`，`false` 表示禁用推理）。输入模态按以下顺序解析：source 模型上非空的 `input`、pi-ai 内置 catalog、provider 的 `defaultInput`，最后是 `[text]`。图片模型使用 Harness 的持久附件服务生成受像素和字节预算约束的请求图片；被 surface 标记 `offloaded` 的图片不会被读取，而是投影为占位文本；保留图片超出请求预算时，请求以 `IMAGE_OFFLOAD_REQUIRED` 失败。文本模型由 Harness 把各角色中的图片投影为稳定文本占位符。`baseURL`、`apiKeyEnv`、`headers`、`models` 同样从 `ctx.settings.describe()` 报告的那个 `llm-pi-ai` 条目逐字段继承。若 settings 条目未挂载、providers 为空或 routes 为空，插件以零路由 dormant 启动，不报错。
 
 ### 重试与超时（自 0.1.2 起继承）
 
@@ -90,7 +100,7 @@ session 路由的**重试策略、请求超时、流式空闲超时**同样继�
 - `timeoutMs`：透传给底层 pi-ai / SDK 作为单次请求超时。
 - `streamIdleTimeoutMs`：由本插件通过与官方 adapter 相同的 `idleWatchdog` 施加在流读取上；空闲超时映射为 `TIMEOUT` 错误（可重试错误码）。未配置时默认 5 分钟（300000ms），与官方默认一致。
 
-在 settings.yaml 中修改这三个字段会**热生效**：`timeoutMs` / `streamIdleTimeoutMs` 下一次请求即用新值，`retryPolicy` 通过订阅 `settings/updated` 自动重新注册路由——无需重启。
+在 profile 应用变化后（见上文"配置写在哪里、何时生效"），在镜像的 provider 条目里修改这三个字段会**热生效**，无需改 `settings.yaml`（legacy）、也无需重启：`timeoutMs` / `streamIdleTimeoutMs` 下一次请求即用新值，`retryPolicy` 通过订阅 `settings/document-updated` 自动重新注册路由。
 
 ### 请求头
 
@@ -108,7 +118,7 @@ source provider 的静态 `headers` 也会一起发送；若静态 header 与会
 装好后，把 dsh-tui 或 agent 的默认 provider 指向某条会话路由即可：
 
 ```yaml
-# settings.yaml
+# active profile 的插件配置（config 界面 / <profile>/cordis.patch.yml）
 agent-default-model:
   provider: light-session
   model: gpt-5.5
@@ -118,8 +128,8 @@ agent-default-model:
 
 ## 行为细节
 
-- **显式路由**：插件在 apply 时读取 `ctx.settings.get('llm-pi-ai')` 的 providers，只注册 `routes` 中声明的路由；网关（baseURL）、凭据（apiKeyEnv）、静态 headers、模型表、推理能力全部继承自 source provider。声明的 source 不存在时插件加载失败；未声明的路由由 Harness 以 `NO_ADAPTER` 拒绝。
-- **消息转换**：`GenerateOptions.messages` → pi-ai Context（文本、用户图片、工具、工具结果、assistant 重放）。系统提示走 `options.system` → pi-ai 的 `systemPrompt` 槽；历史中的 system 消息折叠为 user 消息以保持顺序。图片模型通过持久附件服务读取确定性的请求版本，并在图片前加上附件标识、实际请求尺寸和可用的只读路径；pi-ai 不能重放的 system 或 assistant 图片以 `UNSUPPORTED_CONTENT` 拒绝。文本模型则由 Harness 在 adapter dispatch 前把所有角色中的图片投影为稳定文本占位符。
+- **显式路由**：插件在 apply 时镜像 settings forms 服务（`ctx.settings.describe()`）报告的 providers，并持续跟随：订阅 `settings/document-updated`，重新读取快照，并用 `registerAdapter` 返回的 handle（`.replace(routes)`）原地重注册同一个 adapter——在 profile 应用新条目后（见"配置写在哪里、何时生效"），新增或改动 provider（网关、headers、超时、重试策略）无需重启即可生效，而会让已声明路由失去 source 的删除则被整体拒绝。镜像为空表示"尚未配置"：插件以零路由 dormant，等 provider 可服务时再注册声明的路由；无法服务已声明路由的更新（声明的 source 消失、profile 正在编辑等）保持最后接受的快照与路由继续生效，下次变更再重新应用。网关（baseURL）、凭据（apiKeyEnv）、静态 headers、模型表、推理能力、重试策略与超时全部继承自 source provider；未声明的路由由 Harness 以 `NO_ADAPTER` 拒绝。
+- **消息转换**：`GenerateOptions.messages` → pi-ai Context（文本、用户图片、工具、工具结果、assistant 重放）。系统提示走 `options.system` → pi-ai 的 `systemPrompt` 槽；历史中的 system 消息折叠为 user 消息以保持顺序。图片模型通过持久附件服务读取确定性的请求版本，并在图片前加上附件标识、实际请求尺寸和可用的只读路径。被 surface 标记 `offloaded` 的图片不会被读取，而是投影为确定性的占位文本；保留图片超出路由请求预算时，请求以 `IMAGE_OFFLOAD_REQUIRED` 失败，并给出 `dsh-compaction-image-offload` 还需 offload 的最旧图片数量——adapter 从不自行 offload。图片可以出现在 user 与 tool 角色消息中；pi-ai 不能重放的 system 或 assistant 图片以 `UNSUPPORTED_CONTENT` 拒绝。文本模型则由 Harness 在 adapter dispatch 前把所有角色中的图片投影为稳定文本占位符。
 - **事件转换**：pi-ai 的 `AssistantMessageEventStream` → harness `StreamChunk`（text / reasoning / tool-call 增量、usage、finish）。工具参数从 pi-ai 的已解析对象序列化回 raw JSON 字符串。
 - **错误映射**：把 pi-ai 的错误文案归类为 harness 的 `LlmError` code——上下文超限归 `CONTEXT_WINDOW_EXCEEDED`（触发 harness 自动压缩）、配额/余额耗尽归 `QUOTA`、`429`/限流归 `RATE_LIMIT`，其余按 `AUTH` / `INVALID_REQUEST` / `SERVER` / `TIMEOUT` / `TRANSPORT` 归类。
 - **推理档位**：完全继承源 provider——默认档位取 provider 级 `reasoning`，可选档位取模型级 `reasoningEfforts` dict（其 wire spelling 原样透传给 pi-ai，所以 `xhigh` / `max` 会真实发送，不会被钳到 `high`）；模型未声明时用默认列表，`false` 禁用推理。
@@ -138,17 +148,20 @@ env -u NODE_ENV npx vitest run plugins/dsh-llm-pi-ai-with-session
 - 请求体模型与消息正确、带 `stream: true`
 - 带 harness 的 `user-agent` 归因头
 - 文本 / 工具 SSE 事件被正确翻译成 harness chunk
+- tool 角色转换：tool 结果保留 call id、从前一条 assistant 调用回溯出的工具名、成败、文本与图片
 - 显式路由注册：只有配置中声明的 route 会注册，显示名可与 source provider 区分
 - 按 provider 分发：各路由请求打到各自的网关、用各自的 api key
 - 缺 API key 时以 `MISSING_CREDENTIAL` 失败；未镜像路由以 `NO_ADAPTER` 失败
 - 推理能力继承：默认档位取源 provider 的 `reasoning`，可选档位取源模型的 `reasoningEfforts` dict
 - 图片能力继承：源模型声明 `input: [text, image]` 后，请求体包含图片且保留动态 session header
-- settings 集成路径：stub `llm-pi-ai` namespace + 内存 settings provider，验证从 settings 镜像
+- 图片 offload 路径：被 surface 标记 `offloaded` 的图片投影为占位文本且从不读取字节，保留图片超出预算时以 `IMAGE_OFFLOAD_REQUIRED`（`offloadImages`）失败
+- settings 集成路径：stub `llm-pi-ai` 条目 + 内存 settings 服务替身，验证从 `describe()` 镜像——apply 之后配置 providers 会出现路由、跟随快照改动、被拒绝的删除保留最后接受的快照，卸载插件时释放路由
 
 ## 限制
 
-- 图片模型仅直接上送 user 消息及其中工具结果的图片；system 和 assistant 图片不能由 pi-ai 重放，会以 `UNSUPPORTED_CONTENT` 拒绝。文本模型的所有历史图片由 Harness 预先投影为文本占位符。
+- 图片模型仅直接上送 user 与 tool 角色消息携带的图片；system 和 assistant 图片不能由 pi-ai 重放，会以 `UNSUPPORTED_CONTENT` 拒绝。文本模型的所有历史图片由 Harness 预先投影为文本占位符。
+- 超出路由请求预算的保留图片不会被静默丢弃：请求以 `IMAGE_OFFLOAD_REQUIRED` 失败，由 harness 的 `dsh-compaction-image-offload` 记录 offload 决策后再重试。
 - 只复用 pi-ai 的 openai-completions 实现，不支持其它线上协议。
 - 只注册配置中声明的 route，且不能与其它已注册路由冲突。
-- 依赖 `llm-pi-ai` 的 settings namespace 已注册（含 providers）；该 namespace 未注册或为空时插件 dormant，不提供任何路由。
+- 依赖 `llm-pi-ai` 的 settings namespace 已注册（含 providers）；该 namespace 未注册或其 providers 为空时插件 dormant、不提供任何路由，等它能服务时立即注册。
 - 高级 profile 字段尚未继承：`compat`、`transport`、`cacheRetention`、`thinkingBudgets`、`modelOverrides`、`websocketConnectTimeoutMs` 等仍使用 pi-ai 的默认行为；需要时再逐字段对齐。

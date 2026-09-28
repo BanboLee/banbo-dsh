@@ -3,7 +3,10 @@ import { Config } from '../index.js'
 
 /** Validate a raw config object through the plugin's standard-schema interface. */
 function parse(value: unknown): unknown {
-  const result = Config['~standard'].validate(value)
+  // The plugin's validator only ever returns a value; the standard-schema
+  // result shape still admits issues, so the guard stays and the result is
+  // widened to keep both halves reachable.
+  const result = Config['~standard'].validate(value) as { value?: unknown; issues?: unknown }
   if (result.issues !== undefined) throw new Error(String(result.issues))
   return result.value
 }

@@ -6,16 +6,21 @@
  * - `createHarness({ providers })` passes the llm-pi-ai-shaped providers table
  *   directly as the plugin config (way A) — exercises adapter dispatch without
  *   any settings service.
- * - `createSettingsHarness(providers)` mounts a minimal in-memory settings
- *   provider plus a stub plugin that registers the `llm-pi-ai` namespace, so
- *   the plugin reads providers through `ctx.settings.get('llm-pi-ai')` (way B).
+ * - `createSettingsHarness(providers)` mounts an in-memory settings-service
+ *   stand-in plus a stub plugin whose Config declares the `llm-pi-ai`
+ *   namespace, so the plugin mirrors `ctx.settings.describe()` (way B).
  */
 
 import { createServer } from 'node:http'
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
-import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime, { createUserMessage, type ContentBlock } from '@deepseek-ai/dsh-llm'
-import { SettingsProvider } from '@deepseek-ai/dsh-settings'
+import { Context, Service, type Fiber } from '@deepseek-ai/cordis'
+import LlmRuntime, {
+  createUserMessage,
+  type ContentBlock,
+  type GenerateOptions,
+  type ModelModality,
+} from '@deepseek-ai/dsh-llm'
+import type { SettingsDescriptor, SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import { afterEach, vi } from 'vitest'
 import sessionHeaderPlugin from '../index.js'
@@ -39,7 +44,7 @@ export interface ProviderProfile {
   reasoning?: string
   displayName?: string
   headers?: Record<string, string | null>
-  defaultInput?: string[]
+  defaultInput?: ModelModality[]
   maxRequestImageBytes?: number
   requestImagePixelBudget?: number
   requestImageMaxBytes?: number
@@ -56,7 +61,7 @@ export interface ProviderProfile {
     name?: string
     contextWindow?: number
     maxTokens?: number
-    input?: string[]
+    input?: ModelModality[]
     reasoningEfforts?: Record<string, string | null> | false
   }>
 }
@@ -164,10 +169,67 @@ export interface SessionHeaderHarnessConfig {
   credentials?: CredentialsStub
 }
 
+/**
+ * One test request. The specs build plain fixture objects whose durable-message
+ * ids and session ids are unbranded, so this envelope names only the fields a
+ * spec sets and {@link toGenerateOptions} crosses the branded boundary once.
+ */
+export interface TestStreamOptions {
+  provider: string
+  model: string
+  messages: unknown[]
+  sessionId?: string
+  reasoningEffort?: string
+  maxTokens?: number
+  temperature?: number
+}
+
 export interface SessionHeaderHarness {
   ctx: Context
+  /** The wrapper plugin's fiber, so specs can unload it and assert route release. */
+  fiber: Fiber
   /** Drain one stream call through ctx.llm and return the raw chunks. */
-  stream: (options: Record<string, unknown>) => Promise<unknown[]>
+  stream: (options: TestStreamOptions) => Promise<unknown[]>
+}
+
+/**
+ * Forward one test fixture into the fully assembled harness request: the specs
+ * build durable-message literals with unbranded ids and session ids, so the
+ * fixture payload crosses the branded boundary through this one cast.
+ */
+export function toGenerateOptions(options: TestStreamOptions): GenerateOptions {
+  return {
+    provider: options.provider,
+    model: options.model,
+    messages: options.messages as GenerateOptions['messages'],
+    ...options.sessionId === undefined
+      ? {}
+      : { sessionId: options.sessionId as NonNullable<GenerateOptions['sessionId']> },
+    ...options.reasoningEffort === undefined
+      ? {}
+      : { reasoningEffort: options.reasoningEffort as NonNullable<GenerateOptions['reasoningEffort']> },
+    ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
+    ...options.temperature === undefined ? {} : { temperature: options.temperature },
+  }
+}
+
+/** Drain one request through the llm service, collecting every chunk. */
+async function drainStream(ctx: Context, options: TestStreamOptions): Promise<unknown[]> {
+  const chunks: unknown[] = []
+  for await (const chunk of ctx.llm.stream(toGenerateOptions(options))) chunks.push(chunk)
+  return chunks
+}
+
+/**
+ * Mount the wrapper plugin with a raw, partially specified config. Cordis runs
+ * the plugin's `Config.validate` before `apply`, so the specs keep exercising
+ * default materialization; the cast only bridges the declared (resolved) config
+ * type of the plugin signature.
+ */
+async function mountSessionHeaderPlugin(ctx: Context, raw: Record<string, unknown>): Promise<Fiber> {
+  const fiber = ctx.plugin(sessionHeaderPlugin, raw as unknown as Parameters<typeof sessionHeaderPlugin>[1])
+  await fiber
+  return fiber
 }
 
 /** Mount LlmRuntime + the session wrapper plugin (way A: providers in config). */
@@ -175,19 +237,12 @@ export async function createHarness(config: SessionHeaderHarnessConfig = {}): Pr
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   if (config.credentials !== undefined) ctx.provide('credentials', config.credentials)
-  await ctx.plugin(sessionHeaderPlugin, {
+  const fiber = await mountSessionHeaderPlugin(ctx, {
     ...(config.providers === undefined ? {} : { providers: config.providers }),
     ...(config.routes === undefined ? {} : { routes: config.routes }),
     ...(config.pluginConfig === undefined ? {} : config.pluginConfig),
   })
-  return {
-    ctx,
-    stream: async (options) => {
-      const chunks: unknown[] = []
-      for await (const chunk of ctx.llm.stream(options)) chunks.push(chunk)
-      return chunks
-    },
-  }
+  return { ctx, fiber, stream: options => drainStream(ctx, options) }
 }
 
 /** Standard vitest setup for gateway-based specs: close servers, unset env. */
@@ -204,30 +259,97 @@ export function stubApiKey(name: string, value: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Way B: in-memory settings provider + a stub plugin registering the
-// `llm-pi-ai` namespace, so `ctx.settings.get('llm-pi-ai')` resolves.
+// Way B: an in-memory settings-service stand-in plus a stub plugin whose Config
+// declares the `llm-pi-ai` namespace, so the mirror path reads it through
+// `ctx.settings.describe()`.
 // ---------------------------------------------------------------------------
 
 /** The settings namespace llm-pi-ai owns; the mirror source. */
 export const LLM_PI_AI_NS = 'llm-pi-ai'
 
-/** Minimal in-memory settings provider: stores one raw document in memory. */
-export class MemorySettingsProvider extends SettingsProvider {
-  readonly writable = true
+/**
+ * Project one in-memory section the way `SettingsForms.describe()` projects a
+ * profile entry: only fields whose nearest ancestor declares `volatile` are
+ * exposed, and an entry with no such field is omitted entirely. Mirrors the
+ * (unexported) `volatileForm`/`projectForm` helpers of dsh-settings.
+ */
+function projectVolatile(schema: any, value: unknown): unknown {
+  if (schema?.meta?.volatile === true) return value
+  if (schema?.type !== 'object' || value === null || typeof value !== 'object') return undefined
+  const projected: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(schema.dict ?? {})) {
+    if (!(key in value)) continue
+    const field = projectVolatile(child, Reflect.get(value, key))
+    if (field !== undefined) projected[key] = field
+  }
+  return Object.keys(projected).length === 0 ? undefined : projected
+}
 
-  private doc: Record<string, unknown>
+/**
+ * In-memory stand-in for the harness settings service.
+ *
+ * 0.1.7 deleted the `SettingsProvider` base class and `SettingsForms.get()`: a
+ * plugin's profile entry is now its own Config, and the read path is
+ * `describe()`, which reports each active entry's live value projected onto the
+ * fields that entry declares volatile. This double implements that surface over
+ * an in-memory document, including the change notification the real service
+ * derives from its own revision bookkeeping: `describe()` advances an entry's
+ * revision and emits `settings/document-updated` once its raw section moved,
+ * and each write ends in `describe()` exactly like `SettingsForms.write()`.
+ */
+export class MemorySettingsForms extends Service {
+  private readonly ownerContext: Context
+  private readonly entries = new Map<string, { schema: unknown; document: unknown; raw?: string; revision: number }>()
 
-  constructor(ctx: Context, config: Record<string, unknown> = {}) {
-    super(ctx)
-    this.doc = config
+  constructor(ctx: Context) {
+    super(ctx, 'settings')
+    this.ownerContext = ctx
   }
 
-  protected async load(): Promise<Record<string, unknown>> {
-    return this.doc
+  /** The Loader's half of the contract: mount one profile entry with its schema and live config. */
+  mount(ns: string, schema: unknown, document: unknown): void {
+    this.entries.set(ns, { schema, document, revision: 0 })
   }
 
-  protected async persist(ns: string, section: Record<string, unknown>): Promise<void> {
-    this.doc[ns] = section
+  describe(): SettingsDescriptor[] {
+    const descriptors: SettingsDescriptor[] = []
+    for (const [ns, entry] of this.entries) {
+      const value = projectVolatile(entry.schema, entry.document)
+      if (value === undefined) continue
+      const raw = JSON.stringify(entry.document ?? null)
+      const revision = entry.revision + Number(entry.raw !== raw)
+      if (entry.raw !== raw) this.ownerContext.emit('settings/document-updated', ns as SettingsNamespace, revision)
+      entry.raw = raw
+      entry.revision = revision
+      descriptors.push({
+        ns: ns as SettingsNamespace,
+        autoGenerate: true,
+        schema: entry.schema,
+        value,
+        revision,
+        applies: 'live',
+      })
+    }
+    return descriptors
+  }
+
+  /** Merge editable fields into one entry's config. */
+  async update(ns: string, patch: object): Promise<void> {
+    const entry = this.require(ns)
+    entry.document = { ...(entry.document as object), ...patch }
+    this.describe()
+  }
+
+  /** Reset one entry's live fields to the supplied section. */
+  async replace(ns: string, section: object): Promise<void> {
+    this.require(ns).document = section
+    this.describe()
+  }
+
+  private require(ns: string): { schema: unknown; document: unknown; raw?: string; revision: number } {
+    const entry = this.entries.get(ns)
+    if (entry === undefined) throw new Error(`settings: namespace "${ns}" is not mounted`)
+    return entry
   }
 }
 
@@ -259,28 +381,30 @@ export const llmPiAiSchema = z.object({
       maxTokens: z.number(),
       input: z.array(z.union(['text', 'image'])),
     })),
-  })).default({}),
+  })).default({}).volatile(),
 })
 
 /**
- * Minimal llm-pi-ai stand-in: registers the `llm-pi-ai` settings namespace so
- * `ctx.settings.get('llm-pi-ai')` resolves. The plugin config acts as the
- * composition base layer, so `{ providers }` passed here is what the session
- * wrapper plugin will read back through the settings service.
+ * Minimal llm-pi-ai stand-in: declares the `llm-pi-ai` settings entry with the
+ * providers dict volatile, exactly as the real plugin's Config exposes it. The
+ * Loader owns this mounting in a real run; the in-memory settings double models
+ * it here so `ctx.settings.describe()` reports the namespace. The plugin config
+ * acts as the composition base layer, so `{ providers }` passed here is what
+ * the session wrapper plugin mirrors.
  */
 export const stubLlmPiAiPlugin = {
   name: 'stub-llm-pi-ai',
   inject: ['settings'],
   apply(ctx: Context, config: { providers?: Record<string, ProviderProfile> }): void {
-    ctx.settings.register(LLM_PI_AI_NS, llmPiAiSchema, { base: config ?? {} })
+    (ctx.settings as unknown as MemorySettingsForms).mount(LLM_PI_AI_NS, llmPiAiSchema, config ?? {})
   },
 }
 
 /**
- * Mount the full way-B path: LlmRuntime + in-memory settings provider + the
+ * Mount the full way-B path: LlmRuntime + the in-memory settings stand-in + the
  * stub llm-pi-ai namespace plugin + the session wrapper plugin with no
- * providers in its own config. The wrapper must mirror what the stub's
- * settings section supplies.
+ * providers in its own config. The wrapper must mirror what the stub's settings
+ * entry supplies.
  */
 export async function createSettingsHarness(
   providers: Record<string, ProviderProfile>,
@@ -288,15 +412,8 @@ export async function createSettingsHarness(
 ): Promise<SessionHeaderHarness> {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
-  await ctx.plugin(MemorySettingsProvider, {})
+  await ctx.plugin(MemorySettingsForms)
   await ctx.plugin(stubLlmPiAiPlugin, { providers })
-  await ctx.plugin(sessionHeaderPlugin, pluginConfig)
-  return {
-    ctx,
-    stream: async (options) => {
-      const chunks: unknown[] = []
-      for await (const chunk of ctx.llm.stream(options)) chunks.push(chunk)
-      return chunks
-    },
-  }
+  const fiber = await mountSessionHeaderPlugin(ctx, pluginConfig)
+  return { ctx, fiber, stream: options => drainStream(ctx, options) }
 }

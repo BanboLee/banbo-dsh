@@ -26,7 +26,7 @@ function errorEvent(errorMessage: string) {
 /** Drain one pi-ai event stream through the harness chunk translation. */
 async function drain(events: unknown[]): Promise<Array<Record<string, unknown>>> {
   const chunks: Array<Record<string, unknown>> = []
-  for await (const chunk of toStreamChunks(events as never)) chunks.push(chunk as Record<string, unknown>)
+  for await (const chunk of toStreamChunks(events as never, 1_000_000)) chunks.push(chunk as Record<string, unknown>)
   return chunks
 }
 

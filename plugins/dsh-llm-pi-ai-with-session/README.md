@@ -40,8 +40,8 @@ session id.
 > It does not modify the official `llm-pi-ai` provider and does not intercept
 > fetch globally; it registers independent session routes through the public
 > `ctx.llm.registerAdapter`. Every session route declares its `source`
-> explicitly and reads that source provider's configuration from
-> `ctx.settings.get('llm-pi-ai')`.
+> explicitly and mirrors that source provider's configuration from the settings
+> forms service (`ctx.settings.describe()`).
 
 ## Install
 
@@ -68,7 +68,7 @@ reasoningEfforts, retryPolicy, timeoutMs, streamIdleTimeoutMs) is inherited from
 the source provider:
 
 ```yaml
-# settings.yaml — llm-pi-ai's providers are the single source of truth
+# The active profile's plugin configuration — llm-pi-ai's providers are the single source of truth
 llm-pi-ai:
   providers:
     deepseek:
@@ -105,6 +105,37 @@ above registers `light-session` only and does not automatically create
 `deepseek-session`, so the plugin never doubles every provider in the model
 picker.
 
+### Editing the configuration
+
+Edit the `llm-pi-ai` entry through the harness config/settings surface, or with
+`ctx.settings.update` / `ctx.settings.replace` / `ctx.settings.mutate`: that path
+goes through the config editor, which reconciles the profile patch itself and
+ends in `SettingsForms.describe()`, announcing the change as
+`settings/document-updated` — the event this plugin mirrors. It therefore takes
+effect without a restart, with no file watcher involved.
+
+Editing the profile patch by hand is different: it is re-read automatically only
+while that profile runs `@deepseek-ai/dsh-hmr`, whose watcher reconciles the file
+through the same chain. The default `dsh-base` composition mounts it for a
+profiled run (its row is disabled only without a `profileContext`), while a
+headless profile disables it (`dsh-headless/cordis.patch.yml`); a hand-edited
+`<profile>/cordis.patch.yml` there needs a reload or restart before the plugin
+sees it.
+
+`settings.yaml` is **legacy**: after the upgrade, Harness imports it once (once
+the Loader has settled) and renames it to `settings.yaml.imported`, so editing it
+after that has no effect on a running or a restarted profile.
+
+Once the profile has applied a change, the hot update covers, per the mirrored
+provider entry: `baseURL`, `apiKeyEnv`, `headers`, `models`, `reasoning`,
+`timeoutMs`, `streamIdleTimeoutMs` (next request), the set of providers (routes
+appear, follow, or are refused), and `retryPolicy` (the plugin re-registers the
+same adapter in place). Which routes
+exist still comes from this plugin's own `routes` config, so changing `routes`
+needs a profile reload. An update that cannot serve the declared routes — a
+removed source provider, a profile mid-edit — is refused as a whole: the last
+accepted providers and routes stay live, and the next change re-applies.
+
 ### Field reference
 
 | Field | Default | Meaning |
@@ -123,13 +154,16 @@ the default list `[off, low, medium, high, xhigh, max]` is used, and `false`
 disables reasoning). Input modalities resolve in this order: a non-empty `input`
 on the source model, pi-ai's built-in catalog, the provider's `defaultInput`,
 then `[text]`. Image models use Harness's persistent attachment service to
-produce request images bounded by pixel and byte budgets; historical images
-beyond the request budget keep their usable read-only attachment paths. For text
-models, Harness projects the images in every role into stable text placeholders.
+produce request images bounded by pixel and byte budgets; an occurrence the
+durable surface marked `offloaded` is never read and becomes placeholder text
+instead, and retained images beyond the request budget fail the request with
+`IMAGE_OFFLOAD_REQUIRED`. For text models, Harness projects the images in every
+role into stable text placeholders.
 `baseURL`, `apiKeyEnv`, `headers`, and `models` are likewise inherited field by
-field from the matching provider in `ctx.settings.get('llm-pi-ai')`. If the
-settings namespace is not registered, providers is empty, or routes is empty,
-the plugin starts dormant with zero routes and reports no error.
+field from the matching provider in the `llm-pi-ai` entry that
+`ctx.settings.describe()` reports. If the settings entry is not mounted,
+providers is empty, or routes is empty, the plugin is dormant with zero routes
+and reports no error.
 
 ### Retry and timeouts (inherited since 0.1.2)
 
@@ -148,10 +182,12 @@ resolves them:
   error (a retryable error code). When unset it defaults to 5 minutes
   (300000ms), the same as the official default.
 
-Changing these three fields in settings.yaml takes effect **hot**: `timeoutMs` /
+Changing these three fields in the mirrored provider entry takes effect **hot**
+once the profile applies the change (see Editing the configuration above),
+without editing `settings.yaml` (legacy) and without a restart: `timeoutMs` /
 `streamIdleTimeoutMs` use the new values on the next request, and `retryPolicy`
-re-registers the routes automatically by subscribing to `settings/updated` — no
-restart required.
+re-registers the routes automatically by subscribing to
+`settings/document-updated`.
 
 ### Request headers
 
@@ -173,7 +209,7 @@ Once installed, point the default provider used by dsh-tui or an agent at one of
 the session routes:
 
 ```yaml
-# settings.yaml
+# The active profile's plugin configuration (config surface / <profile>/cordis.patch.yml)
 agent-default-model:
   provider: light-session
   model: gpt-5.5
@@ -185,21 +221,37 @@ declared in the configuration.
 
 ## Behavior
 
-- **Explicit routes**: at apply time the plugin reads the providers from
-  `ctx.settings.get('llm-pi-ai')` and registers only the routes declared in
-  `routes`; the gateway (baseURL), credentials (apiKeyEnv), static headers,
-  model table, and reasoning capabilities are all inherited from the source
-  provider. A declared source that does not exist makes plugin loading fail; a
-  route that was never declared is rejected by Harness with `NO_ADAPTER`.
+- **Explicit routes**: at apply time the plugin mirrors the providers reported by
+  the settings forms service (`ctx.settings.describe()`), and it keeps following
+  them: it subscribes to `settings/document-updated`, re-reads the snapshot, and
+  re-registers the same adapter through the `registerAdapter` handle
+  (`.replace(routes)`), so an added or changed provider (gateway, headers,
+  timeout, retry policy) takes effect without a restart once the profile applies
+  the new entry (see Editing the configuration), while a removal that
+  would leave a declared route without its source is refused as a whole. An
+  empty mirror is "not configured yet": the plugin stays dormant with zero routes
+  and picks the declared routes up as soon as a provider can serve them, and an
+  update that cannot serve the declared routes — a declared source that
+  disappeared, a profile mid-edit — keeps the last accepted snapshot and routes
+  live while the next change re-applies. The gateway (baseURL), credentials (apiKeyEnv), static
+  headers, model table, reasoning capabilities, retry policy, and timeouts are
+  inherited from the source provider; a route that was never declared is rejected
+  by Harness with `NO_ADAPTER`.
 - **Message conversion**: `GenerateOptions.messages` → a pi-ai Context (text,
   user images, tools, tool results, assistant replay). The system prompt goes
   through `options.system` → pi-ai's `systemPrompt` slot; system messages in the
   history are folded into user messages to preserve order. Image models read a
   deterministic request version through the persistent attachment service and
   prefix each image with its attachment identity, actual request dimensions, and
-  usable read-only paths; system or assistant images that pi-ai cannot replay
-  are rejected with `UNSUPPORTED_CONTENT`. For text models, Harness projects the
-  images in every role into stable text placeholders before adapter dispatch.
+  usable read-only paths. An occurrence the durable surface marked `offloaded`
+  is never read and becomes deterministic placeholder text instead, while
+  retained occurrences that exceed the route's request budget fail the call with
+  `IMAGE_OFFLOAD_REQUIRED`, naming how many more of the oldest occurrences
+  `dsh-compaction-image-offload` must offload — an adapter never offloads on its
+  own. Images may ride in user and tool-role messages; system or assistant
+  images that pi-ai cannot replay are rejected with `UNSUPPORTED_CONTENT`. For
+  text models, Harness projects the images in every role into stable text
+  placeholders before adapter dispatch.
 - **Event conversion**: pi-ai's `AssistantMessageEventStream` → harness
   `StreamChunk` (text / reasoning / tool-call deltas, usage, finish). Tool
   arguments are serialized from pi-ai's parsed object back into a raw JSON
@@ -234,6 +286,8 @@ play the OpenAI-completions endpoint, and assert that:
 - the request body carries the right model and messages, with `stream: true`
 - harness's `user-agent` attribution header is present
 - text / tool SSE events are translated correctly into harness chunks
+- tool-role conversion: a tool result keeps its call id, the tool name recovered
+  from the preceding assistant call, its outcome, its text, and its images
 - explicit route registration: only the routes declared in the configuration are
   registered, and the display name can be distinguished from the source provider
 - per-provider dispatch: each route's requests hit its own gateway with its own
@@ -246,22 +300,32 @@ play the OpenAI-completions endpoint, and assert that:
 - image capability inheritance: once the source model declares
   `input: [text, image]`, the request body contains images and still keeps the
   dynamic session header
-- the settings integration path: a stubbed `llm-pi-ai` namespace plus an
-  in-memory settings provider verify mirroring from settings
+- image offload path: an occurrence the surface marked `offloaded` is projected
+  to placeholder text and never read, and retained occurrences over the budget
+  fail with `IMAGE_OFFLOAD_REQUIRED` (`offloadImages`)
+- the settings integration path: a stubbed `llm-pi-ai` entry plus an in-memory
+  settings-service stand-in verify mirroring from `describe()` — routes appear
+  when providers are configured after apply, follow a changed snapshot, keep the
+  last accepted one after a refused removal, and are released when the plugin
+  unloads
 
 ## Limitations
 
-- Image models only send the images in user messages and in their tool results;
+- Image models only send the images carried by user and tool-role messages;
   system and assistant images cannot be replayed by pi-ai and are rejected with
   `UNSUPPORTED_CONTENT`. For text models, Harness projects all historical images
   into text placeholders up front.
+- Retained images that exceed the route's request budget are never silently
+  dropped: the request fails with `IMAGE_OFFLOAD_REQUIRED` and the harness's
+  `dsh-compaction-image-offload` records the offload decision before retrying.
 - Only pi-ai's openai-completions implementation is reused; no other wire
   protocol is supported.
 - Only the routes declared in the configuration are registered, and they must
   not collide with any other registered route.
 - It depends on the `llm-pi-ai` settings namespace being registered (including
-  providers); when that namespace is unregistered or empty the plugin stays
-  dormant and provides no routes.
+  providers); while that namespace is unregistered or its providers are empty
+  the plugin stays dormant and provides no routes, and it registers them as soon
+  as the namespace can serve them.
 - Advanced profile fields are not inherited yet: `compat`, `transport`,
   `cacheRetention`, `thinkingBudgets`, `modelOverrides`,
   `websocketConnectTimeoutMs`, and others still use pi-ai's default behavior;

@@ -10,7 +10,7 @@
  * @module @banbolee/dsh-llm-pi-ai-with-session/adapter
  */
 
-import { contentHasImage, LlmAdapter, LlmError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { contentHasImage, LlmAdapter, LlmError, ReasoningEffortId, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { streamSimple } from '@earendil-works/pi-ai/compat'
 import { assertSupportedImageRoles, toContext } from './context.js'
@@ -31,19 +31,41 @@ const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
  * Every thinking level pi-ai knows, in its precedence order. Levels absent
  * from the advertised efforts are pinned to `null` (unsupported) in the wire
  * map so the advertised and wire capabilities never diverge.
+ * @type {readonly import('@earendil-works/pi-ai').ModelThinkingLevel[]}
  */
 const ALL_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+/**
+ * One explicitly configured session route.
+ * @typedef {object} SessionRoute
+ * @property {string} route - provider route this adapter registers.
+ * @property {string} source - mirrored llm-pi-ai provider profile key.
+ * @property {string} [displayName] - human-readable route name.
+ */
+
+/**
+ * Validated plugin configuration plus the harness context the adapter resolves
+ * its services through. `providers` is either a static table (local injection)
+ * or the live getter a settings-backed install owns.
+ * @typedef {object} SessionHeaderConfig
+ * @property {string} sessionHeader - request header carrying the live session id.
+ * @property {SessionRoute[]} routes - every session route this plugin owns.
+ * @property {Record<string, import('./model.js').ProviderProfile> | (() => Record<string, import('./model.js').ProviderProfile> | undefined) | undefined} [providers] - mirrored llm-pi-ai provider table.
+ * @property {{ resolve: (ref: string) => Promise<{ value?: string } | undefined> }} [credentials] - pre-resolved credentials service.
+ * @property {import('@deepseek-ai/cordis').Context} [ctx] - harness context for lazy service resolution.
+ */
 
 /**
  * The wire dispatch for reasoning levels: each advertised level maps to its
  * own spelling (so xhigh/max are actually sendable), every other level is
  * pinned to `null`. `off` stays absent — pi-ai reads that as "supported, send
  * nothing", the correct dispatch where not thinking is the parameter's absence.
- * @param efforts - advertised reasoning effort ids.
- * @returns the pi-ai `thinkingLevelMap`, or `undefined` when nothing is advertised.
+ * @param {readonly string[]} efforts - advertised reasoning effort ids.
+ * @returns {import('@earendil-works/pi-ai').ThinkingLevelMap | undefined} the pi-ai `thinkingLevelMap`, or `undefined` when nothing is advertised.
  */
 function buildThinkingLevelMap(efforts) {
   if (efforts.length === 0) return undefined
+  /** @type {import('@earendil-works/pi-ai').ThinkingLevelMap} */
   const map = {}
   for (const level of ALL_THINKING_LEVELS) {
     if (efforts.includes(level)) {
@@ -60,13 +82,14 @@ function buildThinkingLevelMap(efforts) {
  * declared `reasoningEfforts` dict (level → wire spelling; an undeclared level
  * is pinned unsupported, `off` with no value stays absent). When the model
  * declares nothing the default effort list applies; `false` disables reasoning.
- * @param entry - the mirrored source model entry, when one exists.
- * @returns the pi-ai `thinkingLevelMap`, or `undefined` when reasoning is off.
+ * @param {any} entry - the mirrored source model entry, when one exists.
+ * @returns {import('@earendil-works/pi-ai').ThinkingLevelMap | undefined} the pi-ai `thinkingLevelMap`, or `undefined` when reasoning is off.
  */
 function thinkingLevelMapFromSource(entry) {
   const efforts = entry?.reasoningEfforts
   if (efforts === undefined) return buildThinkingLevelMap(DEFAULT_REASONING_EFFORTS)
   if (efforts === false) return undefined
+  /** @type {import('@earendil-works/pi-ai').ThinkingLevelMap} */
   const map = {}
   for (const level of ALL_THINKING_LEVELS) {
     if (efforts[level] === undefined) {
@@ -76,6 +99,18 @@ function thinkingLevelMapFromSource(entry) {
     }
   }
   return map
+}
+
+/**
+ * The pi-ai `reasoning` option for one harness effort. `off` is pi-ai's
+ * "send no reasoning parameter" level, so it is expressed by omitting the
+ * option — exactly what pi-ai's own `streamSimple` resolves it to.
+ * @param {import('@deepseek-ai/dsh-llm').ReasoningEffortId} effort - the request's selected effort.
+ * @returns {{ reasoning?: import('@earendil-works/pi-ai').ThinkingLevel }} the options fragment to spread.
+ */
+function reasoningOption(effort) {
+  if (effort === 'off') return {}
+  return { reasoning: /** @type {import('@earendil-works/pi-ai').ThinkingLevel} */ (effort) }
 }
 
 /**
@@ -89,7 +124,7 @@ function thinkingLevelMapFromSource(entry) {
  */
 export class SessionHeaderAdapter extends LlmAdapter {
   /**
-   * @param config - validated plugin configuration. The harness context may
+   * @param {SessionHeaderConfig} config - validated plugin configuration. The harness context may
    * ride along as `config.ctx` (injected by `apply`) so the credentials
    * service is resolved lazily at request time; a pre-resolved
    * `config.credentials` reference is honoured too. When neither yields a
@@ -101,6 +136,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
     this.config = config
     this.credentials = config.credentials
     this.ctx = config.ctx
+    /** @type {Map<string, SessionRoute>} */
     this.routeByName = new Map(config.routes.map(route => [route.route, route]))
   }
 
@@ -109,7 +145,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
    * static `providers` table (explicit local injection) or a live getter
    * (settings-backed) returning the latest accepted snapshot, so every
    * per-request fact — timeouts, headers, models — is internally consistent.
-   * @returns the providers table keyed by source provider.
+   * @returns {Record<string, import('./model.js').ProviderProfile> | undefined} the providers table keyed by source provider.
    */
   providersOf() {
     const providers = this.config.providers
@@ -120,7 +156,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
    * Return one request/configuration snapshot. Callers that cross an async
    * boundary must keep passing this object instead of calling `providersOf()`
    * again, so a settings write cannot mix generations inside one LLM call.
-   * @returns the providers table keyed by source provider.
+   * @returns {Record<string, import('./model.js').ProviderProfile>} the providers table keyed by source provider.
    */
   providersSnapshot() {
     return this.providersOf() ?? {}
@@ -131,8 +167,8 @@ export class SessionHeaderAdapter extends LlmAdapter {
    * exactly as dsh-llm-pi-ai resolves it. A source profile without
    * `retryPolicy` returns `undefined`, so the registry applies its normal
    * defaults (five retries).
-   * @param provider - a route passed to `registerAdapter()` for this instance.
-   * @returns the resolved policy, or `undefined` for the registry defaults.
+   * @param {string} provider - a route passed to `registerAdapter()` for this instance.
+   * @returns {import('@deepseek-ai/dsh-llm').ResolvedRetryPolicy | undefined} the resolved policy, or `undefined` for the registry defaults.
    */
   providerRetryPolicy(provider) {
     const providers = this.providersSnapshot()
@@ -150,8 +186,8 @@ export class SessionHeaderAdapter extends LlmAdapter {
    * a service mounted after this plugin applies is still honoured. A
    * reference that yields nothing usable resolves to `undefined`; the caller
    * turns that into MISSING_CREDENTIAL.
-   * @param ref - the mirrored provider's `apiKeyEnv` reference, when set.
-   * @returns the resolved key, or `undefined` when nothing usable is found.
+   * @param {string | undefined} ref - the mirrored provider's `apiKeyEnv` reference, when set.
+   * @returns {Promise<string | undefined>} the resolved key, or `undefined` when nothing usable is found.
    */
   async resolveApiKey(ref) {
     if (ref === undefined) return undefined
@@ -164,6 +200,13 @@ export class SessionHeaderAdapter extends LlmAdapter {
     return undefined
   }
 
+  /**
+   * The route one request targets, refusing an undeclared route or a route
+   * whose mirrored source provider is missing from the given snapshot.
+   * @param {string} providerRoute - the provider route named by the request.
+   * @param {Record<string, import('./model.js').ProviderProfile>} [providers] - the snapshot to validate against; defaults to the current one.
+   * @returns {SessionRoute} the configured route.
+   */
   routeFor(providerRoute, providers = this.providersSnapshot()) {
     const route = this.routeByName.get(providerRoute)
     if (route === undefined) {
@@ -181,12 +224,23 @@ export class SessionHeaderAdapter extends LlmAdapter {
     return route
   }
 
+  /**
+   * @param {string} provider - one registered provider route.
+   * @returns {import('@deepseek-ai/dsh-llm').LlmProviderInfo} the route's display metadata.
+   */
   providerInfo(provider) {
     const providers = this.providersSnapshot()
     const route = this.routeFor(provider, providers)
     return { id: provider, name: route.displayName ?? providers[route.source]?.displayName ?? provider }
   }
 
+  /**
+   * Resolve one exact model against a caller-held providers snapshot.
+   * @param {string} provider - one registered provider route.
+   * @param {string} model - exact model id.
+   * @param {Record<string, import('./model.js').ProviderProfile>} providers - the snapshot this resolution must stay consistent with.
+   * @returns {import('@deepseek-ai/dsh-llm').LlmResolvedModelInfo} model metadata mirrored from the source provider.
+   */
   resolveModelFromSnapshot(provider, model, providers) {
     const { source } = this.routeFor(provider, providers)
     const sourceProvider = providers[source] ?? {}
@@ -203,6 +257,11 @@ export class SessionHeaderAdapter extends LlmAdapter {
     }
   }
 
+  /**
+   * @param {string} provider - one registered provider route.
+   * @param {string} model - exact model id.
+   * @returns {Promise<import('@deepseek-ai/dsh-llm').LlmResolvedModelInfo>} model metadata mirrored from the source provider.
+   */
   async resolveModel(provider, model) {
     return this.resolveModelFromSnapshot(provider, model, this.providersSnapshot())
   }
@@ -212,9 +271,10 @@ export class SessionHeaderAdapter extends LlmAdapter {
    * source provider: the default effort comes from the provider's `reasoning`,
    * and the offered levels from the source model's declared `reasoningEfforts`
    * (or the default list when the model declares none).
-   * @param source - the mirrored source provider name.
-   * @param entry - the mirrored source model entry, when one exists.
-   * @param providers - provider snapshot to read default reasoning from.
+   * @param {string} source - the mirrored source provider name.
+   * @param {any} entry - the mirrored source model entry, when one exists.
+   * @param {Record<string, import('./model.js').ProviderProfile>} [providers] - provider snapshot to read default reasoning from.
+   * @returns {import('@deepseek-ai/dsh-llm').LlmModelReasoningInfo | undefined} the advertised capability, or `undefined` when reasoning is off.
    */
   reasoningMetadata(source, entry, providers = this.providersSnapshot()) {
     const efforts = entry?.reasoningEfforts
@@ -225,11 +285,15 @@ export class SessionHeaderAdapter extends LlmAdapter {
     if (ids.length === 0) return undefined
     const sourceReasoning = providers[source]?.reasoning
     return {
-      efforts: ids.map(id => ({ id, name: `${id.charAt(0).toUpperCase()}${id.slice(1)}` })),
-      ...sourceReasoning === undefined ? {} : { defaultEffort: sourceReasoning },
+      efforts: ids.map(id => ({ id: ReasoningEffortId(id), name: `${id.charAt(0).toUpperCase()}${id.slice(1)}` })),
+      ...sourceReasoning === undefined ? {} : { defaultEffort: ReasoningEffortId(sourceReasoning) },
     }
   }
 
+  /**
+   * @param {string} provider - one registered provider route.
+   * @returns {Promise<import('@deepseek-ai/dsh-llm').LlmModelInfo[]>} the mirrored source catalog.
+   */
   async listModels(provider) {
     const providers = this.providersSnapshot()
     const { source } = this.routeFor(provider, providers)
@@ -242,6 +306,11 @@ export class SessionHeaderAdapter extends LlmAdapter {
     }))
   }
 
+  /**
+   * @param {string} provider - one registered provider route.
+   * @param {string} model - exact model id.
+   * @returns {Promise<import('@deepseek-ai/dsh-llm').PreparedAdapterCall>} model metadata bound to this providers generation plus its stream entry point.
+   */
   async prepareCall(provider, model) {
     const providers = this.providersSnapshot()
     return {
@@ -250,10 +319,20 @@ export class SessionHeaderAdapter extends LlmAdapter {
     }
   }
 
+  /**
+   * @param {import('@deepseek-ai/dsh-llm').GenerateOptions} options - the fully assembled request.
+   * @returns {AsyncIterable<import('@deepseek-ai/dsh-llm').StreamChunk>} the harness chunk stream.
+   */
   async * stream(options) {
     yield* this.streamWithSnapshot(options, this.providersSnapshot())
   }
 
+  /**
+   * Stream one request against one pinned providers snapshot.
+   * @param {import('@deepseek-ai/dsh-llm').GenerateOptions} options - the fully assembled request.
+   * @param {Record<string, import('./model.js').ProviderProfile>} providers - the snapshot this call must stay consistent with.
+   * @returns {AsyncIterable<import('@deepseek-ai/dsh-llm').StreamChunk>} the harness chunk stream.
+   */
   async * streamWithSnapshot(options, providers) {
     const { source } = this.routeFor(options.provider, providers)
     const provider = providers[source] ?? {}
@@ -305,7 +384,7 @@ export class SessionHeaderAdapter extends LlmAdapter {
       ...provider.timeoutMs === undefined ? {} : { timeoutMs: provider.timeoutMs },
       ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
       ...options.temperature === undefined ? {} : { temperature: options.temperature },
-      ...options.reasoningEffort === undefined ? {} : { reasoning: options.reasoningEffort },
+      ...options.reasoningEffort === undefined ? {} : reasoningOption(options.reasoningEffort),
     })
     const iterator = toStreamChunks(events, model.contextWindow)[Symbol.asyncIterator]()
     let exhausted = false

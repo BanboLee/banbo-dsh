@@ -17,7 +17,11 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import { isContextOverflow } from '@earendil-works/pi-ai'
 
-/** Map pi-ai usage into harness token counts. */
+/**
+ * Map pi-ai usage into harness token counts.
+ * @param {any} usage - usage reported by the terminal pi-ai event.
+ * @returns {import('@deepseek-ai/dsh-llm').TokenUsage} harness token counts.
+ */
 function mapUsage(usage) {
   return {
     inputTokens: usage.input,
@@ -28,7 +32,11 @@ function mapUsage(usage) {
   }
 }
 
-/** Classify a pi-ai error message into a harness LlmError code. */
+/**
+ * Classify a pi-ai error message into a harness LlmError code.
+ * @param {string} message - the terminal pi-ai error message.
+ * @returns {string} the harness failure code.
+ */
 function classifyPiAiError(message) {
   if (/\b(?:401|403)\b/.test(message)) return 'AUTH'
   // Terminal quota/balance wording is not a transient rate limit: resending
@@ -49,9 +57,9 @@ function classifyPiAiError(message) {
 
 /**
  * Map a terminal pi-ai event to the harness finish reason.
- * @param message - the assistant message carried by the `done` or `error` event.
- * @param contextWindow - resolved model capacity for usage-based overflow detection.
- * @returns the mapped harness reason.
+ * @param {any} message - the assistant message carried by the `done` or `error` event.
+ * @param {number} contextWindow - resolved model capacity for usage-based overflow detection.
+ * @returns {import('@deepseek-ai/dsh-llm').FinishReason} the mapped harness reason.
  */
 function mapStopReason(message, contextWindow) {
   // Context overflow must be recognized before the generic error switch: the
@@ -95,9 +103,9 @@ function mapStopReason(message, contextWindow) {
 
 /**
  * Translate the pi-ai event stream into StreamChunks.
- * @param events - one assistant turn's pi-ai event stream.
- * @param contextWindow - resolved model capacity for usage-based overflow detection.
- * @returns the harness chunks, ending with `usage` then `finish`.
+ * @param {AsyncIterable<any>} events - one assistant turn's pi-ai event stream.
+ * @param {number} contextWindow - resolved model capacity for usage-based overflow detection.
+ * @returns {AsyncGenerator<import('@deepseek-ai/dsh-llm').StreamChunk>} the harness chunks, ending with `usage` then `finish`.
  */
 export async function* toStreamChunks(events, contextWindow) {
   const toolIds = new Map()
