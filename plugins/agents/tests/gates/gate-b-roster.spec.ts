@@ -272,4 +272,111 @@ describe('B3 — the 0.1.5 directory-roster model is gone', () => {
     expect(host).not.toMatch(/verifyRosterRoots|findPresetIdConflicts|shippedPresetIds/)
     expect(host).not.toMatch(/settings\.register\(/)
   })
+
+  it('owns no dsh-tui seat and depends on no TUI package', () => {
+    // 0.1.5 made this bundle patch the TUI's roster row as well
+    // (`dsh-tui-agent-presets`, the id of the 0.1.2-era model). A preset is a
+    // declaration now, so the registry row a profile composes manages it; a
+    // TUI-specific patch target would be an assumption about another bundle's
+    // internals, and neither the id nor the dead package may come back here.
+    expect(patchText).not.toContain('dsh-tui')
+    expect(patchText).not.toContain('@deepseek-ai/dsh-agent-presets')
+    const manifest = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>
+      devDependencies: Record<string, string>
+      peerDependencies: Record<string, string>
+    }
+    const declared = [...Object.keys(manifest.dependencies), ...Object.keys(manifest.devDependencies), ...Object.keys(manifest.peerDependencies)]
+    expect(declared.filter((name) => name.startsWith('@deepseek-harness-tui/'))).toEqual([])
+  })
+})
+
+/* ------------------------------------------------------------------- B4 --- */
+
+/**
+ * dsh-tui's side of the same contract, read from the TUI bundle the way the
+ * profile Loader reads it — never assumed.
+ *
+ * dsh-tui 0.11.1 is the release that adopts 0.1.7: its patch declares its OWN
+ * registry row (`dsh-tui-agent-preset-registry`, package
+ * `@deepseek-ai/dsh-agent-preset-registry`, config `{ default: standard }`) and
+ * retires the 0.1.2-era `dsh-tui-agent-presets` roster whenever that registry
+ * package resolves. A preset declared as a row therefore mounts under whichever
+ * registry row the profile composes, which is why this bundle needs no TUI
+ * patch target — and why the probe has to pin the BOUNDARY rather than one
+ * happy version: an installed TUI that does not speak 0.1.7 is recorded as out
+ * of family (no registry seat, and a peer range that stops below this bundle's
+ * family), so a silent downgrade cannot pass as compatibility.
+ */
+describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => {
+  const TUI_PACKAGE = '@deepseek-harness-tui/dsh-tui'
+
+  function tuiBundle(): { version: string, text: string, peer: string | undefined } | undefined {
+    try {
+      const root = packageRoot(TUI_PACKAGE)
+      const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
+        version: string
+        peerDependencies?: Record<string, string>
+      }
+      return {
+        version: manifest.version,
+        text: readFileSync(join(root, 'cordis.patch.yml'), 'utf8'),
+        peer: manifest.peerDependencies?.['@deepseek-ai/dsh-agent'],
+      }
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Numeric compare of `x.y.z`, enough for the one floor this gate pins. */
+  const atLeast = (version: string, floor: readonly number[]): boolean => {
+    const parts = version.split('.')
+    for (let index = 0; index < floor.length; index += 1) {
+      const left = Number.parseInt(parts[index] ?? '0', 10)
+      const right = floor[index]!
+      if (left !== right) return left > right
+    }
+    return true
+  }
+
+  const tui = tuiBundle()
+
+  it.skipIf(tui === undefined)('records which dsh-tui generation is installed, and that it is consistent', () => {
+    const rows = flatten(parsePatches(tui!.text))
+    const registry = rows.find((row) => row.name === PRESET_REGISTRY)
+    const legacy = rows.find((row) => row.name === '@deepseek-ai/dsh-agent-presets')
+    if (registry !== undefined) {
+      // 0.1.7 generation (verified against 0.11.1).
+      expect(atLeast(tui!.version, [0, 11, 0]), `registry seat from 0.11.0, installed ${tui!.version}`).toBe(true)
+      expect(registry.config).toMatchObject({ default: 'standard' })
+      expect(tui!.peer, 'its own peer range must accept this bundle family').toContain('0.1.7-rc.2')
+      // The legacy roster survives only for a profile the registry cannot
+      // serve: its disable expression names the registry package.
+      expect(legacy, 'the legacy row is still declared for old profiles').toBeDefined()
+      expect(JSON.stringify(legacy!.disabled)).toContain(PRESET_REGISTRY)
+      return
+    }
+    // 0.1.5 generation (0.10.2 and older): no registry seat at all, and its
+    // `@deepseek-ai/dsh-agent` peer stops below this bundle's family. This
+    // bundle therefore does not support it — README states the floor.
+    expect(tui!.peer, 'an old TUI must not claim this family').not.toContain('0.1.7-rc.2')
+    expect(legacy, 'an old TUI has only the directory-scanning roster').toBeDefined()
+  })
+
+  it.skipIf(tui === undefined || !tui.text.includes(PRESET_REGISTRY))(
+    'our rows are registry declarations, so the TUI layer manages them unchanged',
+    async () => {
+      // The same rows, composed with the TUI layer instead of the Web layer: no
+      // id collision, and it is the TUI's registry row that carries them.
+      const result = await composeOfficial([bundlePatches(TUI_PACKAGE), parsePatches(patchText)])
+      const composed = flatten(result.rows)
+      expect(composed.find((row) => row.name === PRESET_REGISTRY), 'the TUI layer must leave a registry row composed').toBeDefined()
+      for (const row of presetRows) {
+        expect(composed.find((candidate) => candidate.id === row.id)?.config).toEqual(row.config)
+      }
+      const ids = composed.map((row) => row.id).filter((id): id is string => id !== undefined)
+      expect(new Set(ids).size, 'our layer must not duplicate a composed row id').toBe(ids.length)
+      expect(result.warnings.filter((warning) => /preset-banbo|preset-planner|banbo-agents/.test(warning))).toEqual([])
+    },
+  )
 })
