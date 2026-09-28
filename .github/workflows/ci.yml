@@ -31,21 +31,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # The composition suite boots real isolated DSH profiles, so the dsh
-      # CLI (and its bundled @deepseek-ai package tree) must be on PATH. The
-      # version must match the plugin dependency family (AGENTS.md).
+      # The gates lane needs this, not the composition suite (which is its own
+      # job): Gate B resolves `@deepseek-ai/dsh-app-boot` and the real 0.1.7
+      # packages beside the global `dsh`, and the install/uninstall gate shells
+      # out to `dsh`. The version must match the plugin dependency family
+      # (AGENTS.md).
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.1.5-rc.2
+        run: npm install -g @deepseek-ai/dsh@0.1.7-rc.2
 
-      # Gate B resolves the TUI's own roster patch to prove the two seats are
-      # disjoint, and it finds it beside the global `dsh`, not inside it: the
-      # TUI ships as a separate global package. Without this the gate fails with
-      # `cannot resolve Gate B package @deepseek-harness-tui/dsh-tui`. The
-      # version is the one Gate B's assertions name.
-      - name: Install dsh TUI package (Gate B)
-        run: npm install -g @deepseek-harness-tui/dsh-tui@0.10.2
-
-      # fish-shell bundle composition tests execute the real fish binary.
+      # The real fish PTY lane runs in this job (`DSH_REAL_FISH_PTY=1` below),
+      # so the binary has to be here; that spec still skips itself when fish is
+      # missing from PATH.
       - name: Install fish
         run: sudo apt-get update && sudo apt-get install -y fish
 
@@ -55,7 +51,20 @@ jobs:
       - name: Build agents bundle artifacts
         run: pnpm build:agents
 
+      # `pnpm test` never runs tsc, so every plugin's tsconfig is checked here:
+      # without it a deleted or renamed API can regress while the suite stays
+      # green. Runs after the agents build so the emitted declarations exist.
+      - name: Typecheck every plugin tsconfig
+        run: pnpm typecheck
+
+      # The real fish PTY lane is ON in this job: fish is installed above, and
+      # that spec gates itself on the binary being on PATH, so a runner without
+      # fish still skips instead of failing. The headless real e2e lane stays
+      # opt-in (RUN_REAL_HEADLESS_E2E=1) for a different reason: it needs the
+      # real `rtk` and `codegraph` binaries, which this runner does not have.
       - name: Run test suite
+        env:
+          DSH_REAL_FISH_PTY: '1'
         run: pnpm test
 
       # Gate green is its own lane: it must not be inferred from an overall
@@ -102,7 +111,7 @@ jobs:
       # These specs shell out to the `dsh` CLI to boot profiles, so it must be on
       # PATH at the version the plugin family is pinned to (AGENTS.md).
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.1.5-rc.2
+        run: npm install -g @deepseek-ai/dsh@0.1.7-rc.2
 
       # fish-shell is the only shell these profiles mount, so without the binary
       # the sandbox executor refuses to run anything: fish-rtk-coexist.spec.ts
