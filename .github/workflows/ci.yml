@@ -4,6 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The real headless e2e lane (tests/e2e/**, RUN_REAL_HEADLESS_E2E=1) needs two
+  # third-party artifacts this repository does not vendor, so it never joins the
+  # push/PR pipeline. A manual dispatch runs the whole pipeline and, with it,
+  # the self-provisioning `real-e2e` job at the bottom of this file.
+  workflow_dispatch:
+    inputs:
+      rtk_version:
+        description: rtk release tag to download (github.com/rtk-ai/rtk)
+        required: false
+        default: v0.50.0
+      codegraph_ref:
+        description: codegraph git ref to build (github.com/colbymchenry/codegraph)
+        required: false
+        default: v1.6.0
 
 env:
   # Keep pnpm in development mode so devDependencies (the plugin bundles'
@@ -165,3 +179,75 @@ jobs:
           plugins/agents/tests/gates/gate-c-scope-depth.spec.ts
           plugins/agents/tests/gates/gate-d-lifecycle.spec.ts
           plugins/agents/tests/gates/gate-e-settings-web.spec.ts
+
+  # The real headless lane (`tests/e2e/**`, gated by RUN_REAL_HEADLESS_E2E=1)
+  # exercises the local bundles against the real rtk and codegraph CLIs, so it
+  # needs two third-party artifacts this repository does not vendor. The lane
+  # pins their paths and refuses to run without them
+  # (tests/e2e/headless-real-runtime.ts), and this job provisions them there:
+  #   ../rtk/target/release/rtk            published rtk release, checksum-verified
+  #   ../codegraph/dist/bin/codegraph.js   source build of the public repo
+  # Both siblings hang off `dirname(repoRoot)`, which is what the checkout
+  # already gives this job. Manual dispatch only: it downloads third-party
+  # artifacts, which the deterministic push/PR pipeline must not depend on
+  # (AGENTS.md, "真实 headless e2e 车道").
+  real-e2e:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.3.0
+
+      # Node 22 is what the lane asserts and what codegraph supports. The global
+      # `dsh` installed below lands in this same node's bin directory, which is
+      # how the lane discovers its `node`: it looks beside `dsh` before PATH.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install dsh CLI
+        run: npm install -g @deepseek-ai/dsh@0.1.7-rc.2
+
+      - name: Install fish
+        run: sudo apt-get update && sudo apt-get install -y fish
+
+      - name: Provision the real rtk CLI at the pinned sibling path
+        env:
+          RTK_VERSION: ${{ inputs.rtk_version || 'v0.50.0' }}
+        run: |
+          set -euo pipefail
+          asset=rtk-x86_64-unknown-linux-musl.tar.gz
+          base="https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}"
+          curl -fsSL -o "/tmp/${asset}" "${base}/${asset}"
+          curl -fsSL -o /tmp/rtk-checksums.txt "${base}/checksums.txt"
+          (cd /tmp && grep " ${asset}\$" rtk-checksums.txt | sha256sum -c -)
+          mkdir -p ../rtk/target/release
+          tar -xzf "/tmp/${asset}" -C ../rtk/target/release rtk
+          chmod +x ../rtk/target/release/rtk
+          ../rtk/target/release/rtk --version
+
+      - name: Provision the real codegraph CLI at the pinned sibling path
+        env:
+          CODEGRAPH_REF: ${{ inputs.codegraph_ref || 'v1.6.0' }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "${CODEGRAPH_REF}" \
+            https://github.com/colbymchenry/codegraph.git ../codegraph
+          cd ../codegraph
+          # `npm ci` skips devDependencies when NODE_ENV=production, and the
+          # build needs the repository's own tsc, so include them explicitly.
+          NODE_ENV=development npm ci --include=dev --no-audit --no-fund
+          NODE_ENV=development npm run build
+          node dist/bin/codegraph.js --version
+
+      - name: Run the real headless e2e lane
+        run: pnpm test:e2e:headless
