@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { createRtkShellHarness, installFakeRtkPathHooks } from './helpers.js'
+import type { PostExecuteExecution, PostExecuteResult, PostToolDecision } from '../grep-compress.js'
+import { createRtkShellHarness, installFakeRtkPathHooks, runForeground } from './helpers.js'
 
 const GREP_INPUT = 'alpha\nbeta\n\ncharlie\n'
 
-type TextContent = { readonly type: 'text'; readonly text: string }
-type PostToolDecision =
-  | { readonly kind: 'accept'; readonly content?: readonly TextContent[] }
-  | { readonly kind: 'block'; readonly feedback: readonly TextContent[] }
-
+// This plugin deliberately does not depend on `@deepseek-ai/dsh-tools`, so the
+// `tools/post-execute` contract it registers against is declared here as the
+// mirror of that package's 0.1.7-rc.2 event, using the exact shapes
+// `createGrepPostExecuteListener` is typed against.
 declare module '@deepseek-ai/cordis' {
   interface Events {
     'tools/post-execute'(
-      exec: { readonly name: string },
-      result: { readonly content: readonly TextContent[] },
+      exec: PostExecuteExecution,
+      result: PostExecuteResult,
       next: () => Promise<PostToolDecision>,
     ): Promise<PostToolDecision>
   }
@@ -27,7 +27,7 @@ describe('duplicate mounts', () => {
     const { shell, calls, mounts } = await createRtkShellHarness({ mounts: 2 })
 
     // When
-    const result = await shell.run(shell.resolve({ command: 'rewrite printf done' }))
+    const result = await runForeground(shell, shell.resolve({ command: 'rewrite printf done' }))
 
     // Then
     expect(calls).toHaveLength(1)
@@ -39,7 +39,7 @@ describe('duplicate mounts', () => {
   it('keeps the decoration until the last owner unmounts out of order', async () => {
     // Given
     process.env.FAKE_RTK_MODE = 'rewrite'
-    const { shell, shellTarget, mounts, originalRun, originalStart } = await createRtkShellHarness({ mounts: 2 })
+    const { shell, shellTarget, mounts, originalExecute } = await createRtkShellHarness({ mounts: 2 })
     const firstMount = mounts[0]
     const secondMount = mounts[1]
     if (firstMount === undefined || secondMount === undefined) {
@@ -48,7 +48,7 @@ describe('duplicate mounts', () => {
 
     // When
     await firstMount.dispose()
-    const decorated = await shell.run(shell.resolve({ command: 'rewrite printf active' }))
+    const decorated = await runForeground(shell, shell.resolve({ command: 'rewrite printf active' }))
 
     // Then
     expect(decorated.stdout.text).toBe('rtk printf active\n')
@@ -57,9 +57,8 @@ describe('duplicate mounts', () => {
     await secondMount.dispose()
 
     // Then
-    expect(shellTarget.run).toBe(originalRun)
-    expect(shellTarget.start).toBe(originalStart)
-    const restored = await shell.run(shell.resolve({ command: "printf 'restored\\n'" }))
+    expect(shellTarget.execute).toBe(originalExecute)
+    const restored = await runForeground(shell, shell.resolve({ command: "printf 'restored\\n'" }))
     expect(restored.stdout.text).toBe('restored\n')
   })
 

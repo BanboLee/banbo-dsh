@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
 import rtkShellPlugin, { Config, createGrepPostExecuteListener, inject, rtkPipeCompress } from '../index.js'
 import { installFakeRtkPathHooks } from './helpers.js'
 
@@ -138,6 +139,32 @@ describe('createGrepPostExecuteListener()', () => {
 
     expect(decision).toBe(downstream)
   })
+
+  it('fails open promptly when the caller aborts during the rtk pipe', async () => {
+    // Given a hung pipe whose timeout is far longer than the wait this test
+    // tolerates.
+    process.env.FAKE_RTK_PIPE_MODE = 'timeout'
+    const listener = createGrepPostExecuteListener({ timeoutMs: 3_000 })
+    const downstream = { kind: 'accept' as const, content: [{ type: 'text' as const, text: INPUT }] }
+    const controller = new AbortController()
+    const pending = listener(
+      { name: 'grep', signal: controller.signal },
+      { isError: false, value: { matches: [] }, content: [{ type: 'text' as const, text: INPUT }] },
+      async () => downstream,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // When the caller cancels while the pipe is still running.
+    const startedAt = performance.now()
+    controller.abort()
+    const decision = await pending
+    const elapsed = performance.now() - startedAt
+
+    // Then the pipe fails open to the original text immediately: the downstream
+    // decision is returned unchanged, without waiting out the pipe timeout.
+    expect(decision).toBe(downstream)
+    expect(elapsed).toBeLessThan(250)
+  })
 })
 
 describe('plugin registration', () => {
@@ -145,10 +172,11 @@ describe('plugin registration', () => {
     const on = vi.fn()
     const effect = vi.fn()
     const shell = {
-      run: vi.fn(),
-      start: vi.fn(),
+      execute: vi.fn(),
     }
-    return { ctx: { shell, on, effect }, on }
+    // Minimal structural stand-in: the plugin only reads `ctx.shell.execute`,
+    // `ctx.shell[CORDIS_ORIGINAL]`, `ctx.on` and `ctx.effect` here.
+    return { ctx: { shell, on, effect } as unknown as Context, on }
   }
 
   it('injects tools and prepends the post-execute listener by default', () => {

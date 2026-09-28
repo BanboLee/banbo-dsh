@@ -21,16 +21,16 @@ describe('foreground lifecycle', () => {
     const { shell, calls } = await createRtkShellHarness()
     const controller = new AbortController()
     const spec = shell.resolve({ command: 'sleep 30', signal: controller.signal })
-    const promise = shell.run(spec)
+    const execution = shell.execute(spec)
     await expect.poll(() => calls.length, { timeout: 10_000 }).toBe(1)
 
     // The delegated executor settles caller cancellation differently per
-    // containment path: with a user systemd scope (author machines) run()
-    // resolves {aborted: true}; on containerized runners the fallback
-    // containment path (no systemd inside the runner container) rejects the
-    // run promise with the AbortError reason instead. Both prove the abort
-    // terminated the run, so accept either settlement shape while keeping
-    // the cancel call itself strict.
+    // containment path: with a user systemd scope (author machines) the
+    // published handle's result() resolves {aborted: true}; on containerized
+    // runners the fallback containment path (no systemd inside the runner
+    // container) rejects the preparation/result promise with the AbortError
+    // reason instead. Both prove the abort terminated the run, so accept
+    // either settlement shape while keeping the cancel call itself strict.
     let abortError: unknown
     try {
       controller.abort()
@@ -43,10 +43,10 @@ describe('foreground lifecycle', () => {
     let outcome: { readonly aborted: boolean; readonly timedOut: boolean } | undefined
     let rejection: unknown
     try {
-      outcome = await promise
+      outcome = await (await execution).result()
     } catch (error) {
       rejection = error
-      console.error('[abort-lifecycle] run promise rejected:', error)
+      console.error('[abort-lifecycle] execute/result promise rejected:', error)
     }
 
     if (outcome !== undefined) {
@@ -57,13 +57,39 @@ describe('foreground lifecycle', () => {
       expect((rejection as Error).name).toBe('AbortError')
     }
   })
+
+  it('cancels the rewrite oracle promptly when the caller aborts during the rewrite', async () => {
+    // Given a hung oracle whose rewriteTimeoutMs is far longer than the wait
+    // this test tolerates.
+    process.env.FAKE_RTK_MODE = 'timeout'
+    const { shell, calls } = await createRtkShellHarness({ rewriteTimeoutMs: 3_000 })
+    const controller = new AbortController()
+    const execution = shell.execute(shell.resolve({ command: 'true', signal: controller.signal }))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // When the caller cancels while the oracle is still running.
+    const startedAt = performance.now()
+    controller.abort()
+    const caught = await execution.then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    const elapsed = performance.now() - startedAt
+
+    // Then preparation rejects with the caller's own abort reason long before
+    // the oracle timeout, and nothing is delegated for the cancelled command.
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).name).toBe('AbortError')
+    expect(elapsed).toBeLessThan(250)
+    expect(calls).toHaveLength(0)
+  })
 })
 
 describe('background lifecycle (start)', () => {
   it('starts a rewritten command and preserves the process lifecycle', async () => {
     process.env.FAKE_RTK_MODE = 'rewrite'
     const { shell } = await createRtkShellHarness()
-    const proc = shell.start(shell.resolve({ command: 'rewrite printf done' }))
+    const proc = await shell.execute(shell.resolve({ command: 'rewrite printf done' }))
 
     expect(proc.status).toBe('running')
     await proc.done
@@ -78,7 +104,7 @@ describe('background lifecycle (start)', () => {
   it('starts an ask rewrite without prefixing RTK text to its first read', async () => {
     process.env.FAKE_RTK_MODE = 'ask'
     const { shell } = await createRtkShellHarness()
-    const proc = shell.start(shell.resolve({ command: 'rewrite printf done' }))
+    const proc = await shell.execute(shell.resolve({ command: 'rewrite printf done' }))
 
     await proc.done
     expect(proc.exitCode).toBe(3)
@@ -90,7 +116,7 @@ describe('background lifecycle (start)', () => {
     const workdir = mkdtempSync(join(tmpdir(), 'dsh-rtk-background-context-'))
     try {
       const { shell } = await createRtkShellHarness()
-      const proc = shell.start(shell.resolve({
+      const proc = await shell.execute(shell.resolve({
         command: 'context',
         workdir,
         env: { RTK_CONTEXT: 'request-env' },
@@ -108,7 +134,7 @@ describe('background lifecycle (start)', () => {
   it('keeps the pinned oracle when a background request replaces PATH', async () => {
     process.env.FAKE_RTK_MODE = 'deny'
     const { shell, calls } = await createRtkShellHarness()
-    const proc = shell.start(shell.resolve({ command: 'git status', env: { PATH: '/usr/bin:/bin' } }))
+    const proc = await shell.execute(shell.resolve({ command: 'git status', env: { PATH: '/usr/bin:/bin' } }))
 
     await proc.done
     expect(proc.status).toBe('killed')
@@ -119,42 +145,45 @@ describe('background lifecycle (start)', () => {
   it('fails closed in start() on deny, settling as killed with a note and zero delegate calls', async () => {
     process.env.FAKE_RTK_MODE = 'deny'
     const { shell, calls } = await createRtkShellHarness()
-    const proc = shell.start(shell.resolve({ command: 'git status' }))
+    const proc = await shell.execute(shell.resolve({ command: 'git status' }))
 
     await proc.done
     expect(proc.status).toBe('killed')
     expect(calls).toHaveLength(0)
     const read = proc.readOutput()
     expect(read.delta).toContain('denied by rule')
+    // The 0.1.7-rc.2 handle also exposes captured streams as offset readers;
+    // the fail-closed handle serves the same note there.
+    expect(proc.observed.stderr.readFrom(0).text).toContain('denied by rule')
   })
 
-  it('throws the delegated provider error synchronously from start() when the sandbox provider fails (passthrough)', async () => {
+  it('propagates the delegated provider error unchanged out of execute() (passthrough)', async () => {
     process.env.FAKE_RTK_MODE = 'passthrough'
+    const boom = new Error('sandbox-boom')
     const { shell } = await createRtkShellHarness({}, () => {
-      throw new Error('sandbox-boom')
+      throw boom
     })
 
-    let caught: unknown
-    try {
-      shell.start(shell.resolve({ command: 'true' }))
-    } catch (error) {
-      caught = error
-    }
+    const caught = await shell.execute(shell.resolve({ command: 'true' })).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(caught).toBe(boom)
     expectSandboxBoom(caught)
   })
 
-  it('throws the delegated provider error synchronously from start() when the sandbox provider fails (rewrite)', async () => {
+  it('propagates the delegated provider error unchanged out of execute() (rewrite)', async () => {
     process.env.FAKE_RTK_MODE = 'rewrite'
+    const boom = new Error('sandbox-boom')
     const { shell } = await createRtkShellHarness({}, () => {
-      throw new Error('sandbox-boom')
+      throw boom
     })
 
-    let caught: unknown
-    try {
-      shell.start(shell.resolve({ command: 'true' }))
-    } catch (error) {
-      caught = error
-    }
+    const caught = await shell.execute(shell.resolve({ command: 'true' })).then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+    expect(caught).toBe(boom)
     expectSandboxBoom(caught)
   })
 })

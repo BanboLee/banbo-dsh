@@ -2,7 +2,7 @@
 
 [English](./README.md) | **中文**
 
-RTK 改写装饰器（DeepSeek Harness 插件）：一个普通的 Cordis 函数插件（`name`/`inject`/`Config`/`apply`），用于装饰运行中的 `ctx.shell` 执行器 —— 用 `rtk rewrite` oracle 包裹其 `run`/`start` —— 并通过 `rtk pipe` 压缩模型侧 `grep` 工具的输出。由于它是包裹而不是替换 shell，因此能与任何 shell 执行器（bash、fish 等）共存，且绝不注册重复的 shell provider。沙箱隔离与结果语义继承自被挂载的执行器。
+RTK 改写装饰器（DeepSeek Harness 插件）：一个普通的 Cordis 函数插件（`name`/`inject`/`Config`/`apply`），用于装饰运行中的 `ctx.shell` 执行器 —— 用 `rtk rewrite` oracle 包裹其唯一的 `execute` 入口 —— 并通过 `rtk pipe` 压缩模型侧 `grep` 工具的输出。由于它是包裹而不是替换 shell，因此能与任何 shell 执行器（bash、fish 等）共存，且绝不注册重复的 shell provider。沙箱隔离与结果语义继承自被挂载的执行器。
 
 ## 前置条件
 
@@ -30,7 +30,7 @@ DSH_HOME="$(mktemp -d)" scripts/sync-rtk-codegraph-to-profile.sh <name>
 
 sync 辅助脚本要求设置 `DSH_HOME`，这样测试与手工 QA 始终作用于隔离的 profile 状态，而不是用户的默认 Harness home。
 
-本插件是函数插件，用于装饰已挂载的 shell 执行器：它用 `rtk rewrite` oracle 包裹运行中的 `ctx.shell` 对象的 `run`/`start`，并注册一个 `tools/post-execute` 监听器来压缩 `grep` 输出。它从不挂载（或替换）shell provider，因此能与宿主挂载为 `ctx.shell` 的任何执行器（bash、fish 等）共存，不会产生重复的 service 注册。
+本插件是函数插件，用于装饰已挂载的 shell 执行器：它用 `rtk rewrite` oracle 包裹运行中的 `ctx.shell` 对象的唯一 `execute` 入口，并注册一个 `tools/post-execute` 监听器来压缩 `grep` 输出。它从不挂载（或替换）shell provider，因此能与宿主挂载为 `ctx.shell` 的任何执行器（bash、fish 等）共存，不会产生重复的 service 注册。
 
 ## 配置
 
@@ -49,13 +49,17 @@ sync 辅助脚本要求设置 `DSH_HOME`，这样测试与手工 QA 始终作用
 
 - Exit 0，改写：使用 stdout 中的改写后命令替代原命令运行，例如 `git status` 变为 `rtk git status`。如果 RTK 原样回显命令，则原命令按原样运行。
 - Exit 1，直通：没有 RTK 等价物；原命令不做改动地运行。
-- Exit 2，拒绝：fail closed。前台运行抛出带类型的 `RtkDenyError`（name 为 `RtkDenyError`，code 为 `RTK_DENY`），且零次委派调用；后台启动最终以被 kill 的进程收束，拒绝原因通过读取路径暴露一次。
+- Exit 2，拒绝：fail closed，且零次委派调用。`execute` 以一个已被 kill 的 `ShellExecution` 收束，其 `result()` 以带类型的 `RtkDenyError` 拒绝（name 为 `RtkDenyError`，code 为 `RTK_DENY`）；因此前台运行会抛出它，而后台运行则通过句柄的 `observed` stderr 读取器与读取路径把拒绝原因暴露一次。
 - Exit 3，ask：不请求交互式批准。改写后的命令静默运行；插件不会向前台 stderr 或后台输出添加任何 RTK 专属文本。
 - `rtk` 缺失、挂起或被信号杀死：fail open 到直通，因此命令执行永不被阻塞。
 
 模型侧 `grep` 工具结果会被压缩：`grep` 工具执行后，其被接受的文本内容会通过 `rtk pipe -f grep` 管道处理。管道失败会 fail open 到原始输出，因此 grep 结果永不丢失或被阻塞。
 
+整个准备阶段都会响应取消：调用方信号在 `rtk rewrite` 期间触发时会立刻杀死 oracle，准备阶段以调用方自己的 abort 原因拒绝，而不是等满 `rewriteTimeoutMs` 后再去委派一条调用方早已取消的命令。`grep` 管道接收同一个信号，因此被取消的调用会立即 fail open 到原始文本。
+
 沙箱隔离、workdir/env/stdin、timeout、abort、退出码、信号、stdout/stderr、沙箱事实以及后台进程生命周期都原样继承自被委派的执行器。本包从不绕过沙箱，也从不挂载 shell provider。
+
+被装饰的接缝是 0.1.7 的 shell API：`execute()` 是前台与后台工作共用的唯一入口，`result()` 是它的前台投影，`observed` 暴露被捕获的流。插件只改写已解析 spec 上的 `command`，因此 `resolve()` 的缺省填充与封顶（`workdir`、`timeoutMs`、`onExpiry`、`stdoutMaxBytes`、`sandboxPolicy`）完全由被挂载的执行器负责。
 
 ## 模型体验
 
@@ -63,7 +67,7 @@ sync 辅助脚本要求设置 `DSH_HOME`，这样测试与手工 QA 始终作用
 
 - 被改写的命令以 `rtk <command>` 运行，其输出是委派方的真实输出。
 - exit 3（`ask`）改写会运行改写后的命令，且不会向模型侧结果添加 RTK 专属消息。
-- 拒绝会以 `RtkDenyError` 暴露，命令永不运行。
+- 拒绝在前台路径上以带类型的 `RtkDenyError` 从 `result()` 抛出，或以后台进程被 kill、原因经其读取路径暴露一次的形式呈现；两种情况下命令都不会运行。
 - `grep` 结果可能以压缩形式返回；当管道 fail open 时，原始文本原样返回。
 
 本集成不量化 token 或 KV-cache 节省；RTK 的实际压缩幅度取决于真实二进制、其规则以及正在运行的命令。
@@ -73,8 +77,8 @@ sync 辅助脚本要求设置 `DSH_HOME`，这样测试与手工 QA 始终作用
 - Exit 3（`ask`）会静默运行改写后的命令，而不是走交互式批准。永远不会提示人类，也没有计划任何交互式批准流程。
 - 确定性的 fake-RTK 测试是本插件的权威验收。它们使用临时 PATH 上的 fake `rtk` fixture，绝不触碰用户全局 `rtk`、用户全局 DSH profile 或网络。
 - 真实 `rtk` 保持可选。安装、测试或运行本插件从不需要真实二进制；当它存在时，本机上的 `rtk rewrite` 会以 exit 3（`ask`）退出，映射为静默改写。
-- `start()`（后台进程）会同步查询 oracle，以便委派启动错误从调用本身传播。这在 oracle 运行期间会短暂阻塞事件循环，最长 `rewriteTimeoutMs`，并在挂起时 fail open。前台 `run()` 完全异步。
-- 范围边界：本插件装饰已挂载的 shell 执行器（用 `rtk rewrite` oracle 包裹其 `run`/`start`），并通过 `rtk pipe` 压缩模型侧 `grep` 输出。它从不挂载 shell provider，从不绕过沙箱，也不修改 DSH core、RTK 或 CodeGraph。
+- 挂载后的插件就地装饰 `ctx.shell.execute`，并为每条命令异步调用 oracle，因此绝不会因决策而阻塞事件循环。同步的 `rtkRewriteDecisionSync` 辅助函数仍保持导出，供必须在自身同步返回前确定决策的调用方使用，但插件本身已不再使用它。
+- 范围边界：本插件装饰已挂载的 shell 执行器（用 `rtk rewrite` oracle 包裹其 `execute`），并通过 `rtk pipe` 压缩模型侧 `grep` 输出。它从不挂载 shell provider，从不绕过沙箱，也不修改 DSH core、RTK 或 CodeGraph。
 
 ## 验证
 

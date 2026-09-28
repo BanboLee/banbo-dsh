@@ -1,33 +1,69 @@
 /**
  * Process-result wrappers for the RTK shell executor: the fail-closed
- * background handle for an RTK deny and deprecated compatibility helpers for
+ * execution handle for an RTK deny and deprecated compatibility helpers for
  * legacy consumers. The mounted plugin never calls the compatibility helpers,
  * so exit-3 (`ask`) execution remains silent.
  *
  * @module @banbolee/dsh-rtk/process-result
  */
 
+import { RtkDenyError } from './rewrite-decision.js'
+
+/** A captured stream with nothing in it: the fail-closed handle spawns nothing. */
+const EMPTY_STREAM = { readFrom: () => ({ text: '', nextOffset: 0, lossy: false }) }
+
 /**
- * The fail-closed background handle for an RTK deny: already killed, no
+ * A non-consuming reader over one fixed note, in the same offset vocabulary as
+ * a real captured stderr stream.
+ * @param {string} note
+ * @returns {import('@deepseek-ai/dsh-subprocess').SubprocessOutputReader}
+ */
+function noteReader(note) {
+  const bytes = Buffer.from(note, 'utf8')
+  return {
+    readFrom: (fromByte) => ({
+      text: bytes.subarray(Math.min(fromByte, bytes.length)).toString('utf8'),
+      nextOffset: bytes.length,
+      lossy: false,
+    }),
+  }
+}
+
+/**
+ * The fail-closed execution handle for an RTK deny: already killed, no
  * delegate invocation, and the deny reason surfaced once through the read
- * path.
- * @param {string} reason
- * @returns {{ status: string; exitCode: number | null; signal: string | null; done: Promise<void>; readOutput: () => { delta: string; lossy: boolean }; kill: () => boolean }}
+ * path. It serves both access paths of the shell seam — a caller that keeps the
+ * handle reads the reason as background output, and one that awaits `result()`
+ * gets the typed {@link RtkDenyError} the denied foreground run would have
+ * thrown.
+ * @param {string} reason - the deny reason from the rtk oracle.
+ * @returns {import('@deepseek-ai/dsh-shell').ShellExecution}
  */
 export function deniedProcess(reason) {
+  const note = `[rtk] rtk rewrite denied the command: ${reason}`
   let delivered = false
+  /** @type {Promise<never> | undefined} */
+  let denial
   return {
     status: 'killed',
     exitCode: null,
     signal: null,
     done: Promise.resolve(),
+    observed: { stdout: EMPTY_STREAM, stderr: noteReader(note) },
     readOutput() {
       if (delivered) return { delta: '', lossy: false }
       delivered = true
-      return { delta: `[rtk] rtk rewrite denied the command: ${reason}`, lossy: false }
+      return { delta: note, lossy: false }
     },
     kill() {
       return false
+    },
+    result() {
+      // Created on demand and memoized, like a real handle's result
+      // projection; a denied process is never spawned, so nothing else can
+      // settle it.
+      denial ??= Promise.reject(new RtkDenyError(reason))
+      return denial
     },
   }
 }

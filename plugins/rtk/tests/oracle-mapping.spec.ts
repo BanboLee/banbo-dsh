@@ -8,7 +8,7 @@ import {
   withNote,
   withNoteProcess,
 } from '../index.js'
-import { createRtkShellHarness, installFakeRtkPathHooks, READ_ONLY_SANDBOX } from './helpers.js'
+import { createRtkShellHarness, installFakeRtkPathHooks, runForeground, READ_ONLY_SANDBOX } from './helpers.js'
 
 installFakeRtkPathHooks()
 
@@ -16,7 +16,7 @@ describe('graceful degradation', () => {
   it('fails open to passthrough when the rtk oracle times out', async () => {
     process.env.FAKE_RTK_MODE = 'timeout'
     const { shell, calls } = await createRtkShellHarness({ rewriteTimeoutMs: 300 })
-    const result = await shell.run(shell.resolve({ command: "printf 'still-ran\\n'" }))
+    const result = await runForeground(shell, shell.resolve({ command: "printf 'still-ran\\n'" }))
 
     expect(calls[0]?.argv).toEqual(['bash', '-c', "printf 'still-ran\\n'"])
     expect(result.exitCode).toBe(0)
@@ -26,7 +26,7 @@ describe('graceful degradation', () => {
   it('routes oracle stdout verbatim even when it is not a valid command', async () => {
     process.env.FAKE_RTK_MODE = 'malformed'
     const { shell, calls } = await createRtkShellHarness()
-    const result = await shell.run(shell.resolve({ command: 'git status' }))
+    const result = await runForeground(shell, shell.resolve({ command: 'git status' }))
 
     expect(calls[0]?.argv).toEqual(['bash', '-c', 'not-a-command {{{ git status'])
     expect(result.signal).toBeNull()

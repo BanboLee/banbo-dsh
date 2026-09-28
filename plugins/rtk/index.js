@@ -4,9 +4,9 @@
  * Every command is transparently rewritten through `rtk rewrite` before the
  * delegate executes it; sandbox confinement, result facts, and lifecycle
  * semantics are inherited verbatim from the delegate because this plugin only
- * wraps the live `ctx.shell` object's `run`/`start` methods — it never mounts
- * (or replaces) a shell provider, so it coexists with any executor (bash,
- * fish, ...) without a duplicate service registration.
+ * wraps the live `ctx.shell` object's single `execute` entry point — it never
+ * mounts (or replaces) a shell provider, so it coexists with any executor
+ * (bash, fish, ...) without a duplicate service registration.
  *
  * Re-exports the {@link module:@banbolee/dsh-rtk/rewrite-decision} oracle and the
  * {@link module:@banbolee/dsh-rtk/process-result} wrappers' public surface.
@@ -16,7 +16,11 @@
 
 import { deniedProcess } from './process-result.js'
 import { createGrepPostExecuteListener } from './grep-compress.js'
-import { RTK_ASK_NOTE, RTK_REWRITE_TIMEOUT_MS, RtkDenyError, resolveRtkBinary, rtkRewriteDecision, rtkRewriteDecisionSync } from './rewrite-decision.js'
+import { RTK_ASK_NOTE, RTK_REWRITE_TIMEOUT_MS, resolveRtkBinary, rtkRewriteDecision } from './rewrite-decision.js'
+
+/** @typedef {import('@deepseek-ai/dsh-shell').ShellExecSpec} ShellExecSpec */
+/** @typedef {import('@deepseek-ai/dsh-shell').ShellExecution} ShellExecution */
+/** @typedef {import('@deepseek-ai/dsh-shell').ShellExecutor} ShellExecutor */
 
 /** Cordis trace proxies expose their stable service target through this symbol. */
 const CORDIS_ORIGINAL = Symbol.for('cordis.original')
@@ -26,8 +30,7 @@ const CORDIS_ORIGINAL = Symbol.for('cordis.original')
  * shell's lifetime or adding plugin-specific properties to a host service.
  * @type {WeakMap<object, {
  *   refs: number;
- *   originalRun: Function;
- *   originalStart: Function;
+ *   originalExecute: (spec: ShellExecSpec) => Promise<ShellExecution>;
  *   opts: { rtkBinary: string | null; timeoutMs: number };
  *   grepCompress: boolean;
  * }>}
@@ -51,8 +54,13 @@ export const Config = {
   '~standard': {
     version: /** @type {1} */ (1),
     vendor: '@banbolee/dsh-rtk',
+    /**
+     * Normalize one mount's raw configuration. Unknown keys are ignored, so the
+     * untyped standard-schema input is narrowed to the knobs this plugin reads.
+     * @param {unknown} value
+     */
     validate(value) {
-      const input = value ?? {}
+      const input = /** @type {{ rtkBinary?: string; rewriteTimeoutMs?: number; askNote?: string; grepCompress?: boolean }} */ (value ?? {})
       return {
         value: {
           rtkBinary: input.rtkBinary ?? 'rtk',
@@ -69,16 +77,20 @@ export const Config = {
 /**
  * Decorate the live `ctx.shell` executor with the `rtk rewrite` decision.
  *
- * `run`/`start` are replaced with wrappers that consult the rtk oracle first
- * (async for the foreground path, synchronous for the background path so a
- * delegate startup failure propagates from the `start()` call frame exactly
- * like the baseline). Deny fails closed with a deterministic `RtkDenyError`
- * (foreground) or a killed process (background) and zero delegate calls;
- * exit-3 `ask` silently executes the rewritten command. The originals are
- * restored when the last owning plugin fiber unloads. Duplicate mounts share
- * the first mount's configuration and only increase the ownership reference
- * count. When enabled, grep results are also compressed exactly once after
- * downstream post-execute listeners run.
+ * The executor's single `execute` entry point is replaced with a wrapper that
+ * consults the rtk oracle once per resolved spec and then delegates the
+ * original or rewritten spec to the live implementation, so the same wrapper
+ * serves both access paths of the shell seam: a caller that awaits
+ * `result()` runs in the foreground, one that keeps the returned process handle
+ * runs in the background. Deny fails closed with zero delegate calls — the
+ * returned handle settles killed with the reason on its read path and rejects
+ * `result()` with a deterministic `RtkDenyError`. Delegate rejections (a
+ * confinement provider throwing, a spawn failure) escape with their original
+ * type and identity. Exit-3 `ask` silently executes the rewritten command. The
+ * original method is restored when the last owning plugin fiber unloads.
+ * Duplicate mounts share the first mount's configuration and only increase the
+ * ownership reference count. When enabled, grep results are also compressed
+ * exactly once after downstream post-execute listeners run.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
  * @param {object} [config] - validated config; falls back to defaults.
@@ -89,62 +101,58 @@ export const Config = {
  */
 export default function apply(ctx, config) {
   const shell = ctx.shell
-  const shellTarget = shell[CORDIS_ORIGINAL] ?? shell
+  // Cordis trace proxies expose their stable service target through this
+  // symbol; the service type itself is not symbol-indexable.
+  const originalShell = /** @type {Record<symbol, ShellExecutor | undefined>} */ (/** @type {unknown} */ (shell))[CORDIS_ORIGINAL]
+  const shellTarget = originalShell ?? shell
   let decoration = decorations.get(shellTarget)
   if (decoration === undefined) {
     const configuredRtkBinary = config?.rtkBinary ?? 'rtk'
     const rtkBinary = resolveRtkBinary(configuredRtkBinary) ?? null
     const rewriteTimeoutMs = config?.rewriteTimeoutMs ?? RTK_REWRITE_TIMEOUT_MS
-    const originalRun = shellTarget.run
-    const originalStart = shellTarget.start
+    const originalExecute = shellTarget.execute
     const opts = { rtkBinary, timeoutMs: rewriteTimeoutMs }
     decoration = {
       refs: 0,
-      originalRun,
-      originalStart,
+      originalExecute,
       opts,
       grepCompress: config?.grepCompress ?? true,
     }
     decorations.set(shellTarget, decoration)
-    shellTarget.run = async (spec) => {
+    /**
+     * The decorated entry point: one oracle call, then the live delegate. The
+     * caller's signal is threaded through the oracle so cancellation during the
+     * rewrite is immediate instead of waiting out `rewriteTimeoutMs`.
+     * @type {(spec: ShellExecSpec) => Promise<ShellExecution>}
+     */
+    shellTarget.execute = async (spec) => {
       if (spec.signal?.aborted === true) spec.signal.throwIfAborted()
       const decision = await rtkRewriteDecision(spec.command, {
         ...opts,
         cwd: spec.workdir,
         env: spec.env,
         dshEnv: spec.dshEnv,
+        signal: spec.signal,
       })
-      if (decision.kind === 'deny') {
-        throw new RtkDenyError(decision.reason)
-      }
-      const target = decision.kind === 'rewrite' ? { ...spec, command: decision.command } : spec
-      return originalRun.call(shellTarget, target)
-    }
-    shellTarget.start = (spec) => {
-      const decision = rtkRewriteDecisionSync(spec.command, {
-        ...opts,
-        cwd: spec.workdir,
-        env: spec.env,
-        dshEnv: spec.dshEnv,
-      })
+      // The whole preparation stage is cancellable: a signal that fired while
+      // the oracle ran wins over the decision it returned.
+      if (spec.signal?.aborted === true) spec.signal.throwIfAborted()
       if (decision.kind === 'deny') {
         return deniedProcess(decision.reason)
       }
       const target = decision.kind === 'rewrite' ? { ...spec, command: decision.command } : spec
-      // Delegate startup errors (confine throwing, runner spawn failure) escape
-      // synchronously here with their original type and message, matching the
-      // baseline SandboxBashExecutor.start() contract.
-      return originalStart.call(shellTarget, target)
+      // Delegate rejections (confine provider errors, spawn failures) escape
+      // from this same call frame with their original type and identity.
+      return originalExecute.call(shellTarget, target)
     }
   }
   decoration.refs += 1
   // Each mount owns one reference. Cordis may unload fibers in any order, so
-  // only the final disposer restores the exact pre-decoration method objects.
+  // only the final disposer restores the exact pre-decoration method object.
   ctx.effect(() => () => {
     decoration.refs -= 1
     if (decoration.refs > 0) return
-    shellTarget.run = decoration.originalRun
-    shellTarget.start = decoration.originalStart
+    shellTarget.execute = decoration.originalExecute
     decorations.delete(shellTarget)
   })
   // Cordis owns listeners per fiber. Register on each owner so non-LIFO

@@ -9,6 +9,7 @@ import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'
 import type { ConfinedArgv, SandboxMode, SandboxPolicy } from '@deepseek-ai/dsh-sandbox'
 import { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import type { ShellExecSpec, ShellRunResult } from '@deepseek-ai/dsh-shell'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import rtkShellPlugin from '../index.js'
 
@@ -31,8 +32,7 @@ export interface RtkShellHarness {
   readonly shellTarget: SandboxBashExecutor
   readonly calls: ConfineCall[]
   readonly mounts: readonly Fiber[]
-  readonly originalRun: SandboxBashExecutor['run']
-  readonly originalStart: SandboxBashExecutor['start']
+  readonly originalExecute: SandboxBashExecutor['execute']
 }
 
 export type ConfineDelegate = (argv: readonly string[], policy: SandboxPolicy) => ConfinedArgv
@@ -76,7 +76,7 @@ export async function createRtkShellHarness(
   const { mode, mounts: mountCount = 1, workspaceRoot, ...execConfig } = config
   const calls: ConfineCall[] = []
   class FakeSandboxProvider extends SandboxProvider {
-    confine(argv: readonly string[], policy: SandboxPolicy): ConfinedArgv {
+    async confine(argv: readonly string[], policy: SandboxPolicy): Promise<ConfinedArgv> {
       calls.push({ argv: [...argv], policy })
       return confine(argv, policy)
     }
@@ -98,7 +98,7 @@ export async function createRtkShellHarness(
   subprocess.internals = { spillDir }
   // Mount a REAL base shell provider as ctx.shell, then decorate it with the
   // rtk function plugin (design A1: the plugin wraps the live ctx.shell's
-  // run/start instead of replacing the shell provider). Design B1 also
+  // execute instead of replacing the shell provider). Design B1 also
   // injects the `tools` runtime, so provide a minimal stand-in here — the
   // plugin only registers a `tools/post-execute` listener against it and
   // never invokes a tool through it.
@@ -110,11 +110,23 @@ export async function createRtkShellHarness(
   }
   const originalShell = Reflect.get(shell, CORDIS_ORIGINAL)
   const shellTarget = originalShell instanceof SandboxBashExecutor ? originalShell : shell
-  const originalRun = shellTarget.run
-  const originalStart = shellTarget.start
+  const originalExecute = shellTarget.execute
   const mounts: Fiber[] = []
   for (let index = 0; index < mountCount; index += 1) {
     mounts.push(await ctx.plugin(rtkShellPlugin, execConfig))
   }
-  return { ctx, shell, shellTarget, calls, mounts, originalRun, originalStart }
+  return { ctx, shell, shellTarget, calls, mounts, originalExecute }
+}
+
+/**
+ * Foreground projection of the 0.1.7-rc.2 shell seam: `execute()` publishes the
+ * process handle, and awaiting `result()` on it is what made the removed `run()`
+ * a foreground call.
+ * @param shell - the decorated executor.
+ * @param spec - a resolved spec from `shell.resolve()`.
+ * @returns the settled foreground result.
+ */
+export async function runForeground(shell: SandboxBashExecutor, spec: ShellExecSpec): Promise<ShellRunResult> {
+  const execution = await shell.execute(spec)
+  return execution.result()
 }

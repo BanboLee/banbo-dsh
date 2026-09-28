@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { createRtkShellHarness, installFakeRtkPathHooks, READ_ONLY_SANDBOX } from './helpers.js'
+import { createRtkShellHarness, installFakeRtkPathHooks, runForeground, READ_ONLY_SANDBOX } from './helpers.js'
 
 installFakeRtkPathHooks()
 
@@ -40,7 +40,7 @@ describe('exit 0 — rewrite', () => {
   it('rewrites a shell command before the delegated provider sees it', async () => {
     process.env.FAKE_RTK_MODE = 'rewrite'
     const { shell, calls } = await createRtkShellHarness()
-    const result = await shell.run(shell.resolve({ command: 'git status' }))
+    const result = await runForeground(shell, shell.resolve({ command: 'git status' }))
 
     expect(calls).toHaveLength(1)
     expect(calls[0]?.argv).toEqual(['bash', '-c', 'rtk git status'])
@@ -55,7 +55,7 @@ describe('exit 0 — rewrite', () => {
   it('executes a rewritten command end to end and preserves its result facts', async () => {
     process.env.FAKE_RTK_MODE = 'rewrite'
     const { shell } = await createRtkShellHarness()
-    const result = await shell.run(shell.resolve({ command: 'rewrite git status' }))
+    const result = await runForeground(shell, shell.resolve({ command: 'rewrite git status' }))
 
     expect(result.exitCode).toBe(0)
     expect(result.stdout.text).toBe('rtk git status\n')
@@ -72,7 +72,7 @@ describe('oracle execution context', () => {
     const workdir = mkdtempSync(join(tmpdir(), 'dsh-rtk-context-'))
     try {
       const { shell } = await createRtkShellHarness()
-      const result = await shell.run(shell.resolve({
+      const result = await runForeground(shell, shell.resolve({
         command: 'context',
         workdir,
         env: { RTK_CONTEXT: 'request-env' },
@@ -101,7 +101,7 @@ describe('oracle execution context', () => {
     try {
       const { shell, calls } = await createRtkShellHarness()
 
-      await expect(shell.run(shell.resolve({
+      await expect(runForeground(shell, shell.resolve({
         command: 'git status',
         env: {
           PATH: `${shadowDir}${delimiter}${process.env.PATH ?? ''}`,
@@ -121,7 +121,7 @@ describe('oracle execution context', () => {
     try {
       const { shell, calls } = await createRtkShellHarness({ rtkBinary: './tests/fixtures/bin/rtk' })
 
-      await expect(shell.run(shell.resolve({ command: 'git status', workdir })))
+      await expect(runForeground(shell, shell.resolve({ command: 'git status', workdir })))
         .rejects.toMatchObject({ code: 'RTK_DENY' })
       expect(calls).toHaveLength(0)
     } finally {
@@ -134,7 +134,7 @@ describe('exit 1 — passthrough', () => {
   it('delegates the original command unchanged and preserves every result fact', async () => {
     process.env.FAKE_RTK_MODE = 'passthrough'
     const { shell, calls } = await createRtkShellHarness()
-    const result = await shell.run(shell.resolve({ command: "printf 'hi\\n'" }))
+    const result = await runForeground(shell, shell.resolve({ command: "printf 'hi\\n'" }))
 
     expect(calls[0]?.argv).toEqual(['bash', '-c', "printf 'hi\\n'"])
     expect(result.exitCode).toBe(0)
@@ -152,7 +152,7 @@ describe('exit 2 — deny', () => {
     process.env.FAKE_RTK_MODE = 'deny'
     const { shell, calls } = await createRtkShellHarness()
 
-    await expect(shell.run(shell.resolve({ command: 'git status' }))).rejects.toMatchObject({
+    await expect(runForeground(shell, shell.resolve({ command: 'git status' }))).rejects.toMatchObject({
       name: 'RtkDenyError',
       code: 'RTK_DENY',
       reason: expect.stringContaining('denied by rule'),
@@ -165,7 +165,7 @@ describe('exit 3 — ask (silent rewrite)', () => {
   it('rewrites the command without adding RTK text to stderr', async () => {
     process.env.FAKE_RTK_MODE = 'ask'
     const { shell, calls } = await createRtkShellHarness({ askNote: 'legacy profile note' })
-    const result = await shell.run(shell.resolve({ command: 'git status' }))
+    const result = await runForeground(shell, shell.resolve({ command: 'git status' }))
 
     expect(calls[0]?.argv).toEqual(['bash', '-c', 'rtk git status'])
     expect(result.stderr.text).toBe('fake-rtk: unsupported subcommand "git" (only "rewrite" and "pipe")\n')

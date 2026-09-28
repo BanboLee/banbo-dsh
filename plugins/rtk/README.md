@@ -4,12 +4,12 @@
 
 RTK rewrite decorator for DeepSeek Harness: a plain Cordis function plugin
 (`name`/`inject`/`Config`/`apply`) that decorates the live `ctx.shell`
-executor — wrapping its `run`/`start` with the `rtk rewrite` oracle — and
-that compresses the model-facing `grep` tool's output through `rtk pipe`.
-Because it wraps rather than replaces the shell, it coexists with any shell
-executor (bash, fish, ...) and never registers a duplicate shell provider.
-Sandbox confinement and result semantics are inherited from the mounted
-executor.
+executor — wrapping its single `execute` entry point with the `rtk rewrite`
+oracle — and that compresses the model-facing `grep` tool's output through
+`rtk pipe`. Because it wraps rather than replaces the shell, it coexists with
+any shell executor (bash, fish, ...) and never registers a duplicate shell
+provider. Sandbox confinement and result semantics are inherited from the
+mounted executor.
 
 ## Prerequisites
 
@@ -48,11 +48,11 @@ The sync helper requires `DSH_HOME` so tests and manual QA always target
 isolated profile state instead of the user's default Harness home.
 
 The plugin is a function plugin that decorates the mounted shell executor: it
-wraps the live `ctx.shell` object's `run`/`start` with the `rtk rewrite`
-oracle and registers a `tools/post-execute` listener that compresses `grep`
-output. It never mounts (or replaces) a shell provider, so it coexists with
-any executor the host mounts as `ctx.shell` (bash, fish, ...) without a
-duplicate service registration.
+wraps the live `ctx.shell` object's single `execute` entry point with the
+`rtk rewrite` oracle and registers a `tools/post-execute` listener that
+compresses `grep` output. It never mounts (or replaces) a shell provider, so
+it coexists with any executor the host mounts as `ctx.shell` (bash, fish, ...)
+without a duplicate service registration.
 
 ## Config
 
@@ -86,10 +86,11 @@ executor runs it. The exit-code contract matches `rtk rewrite`:
   original, for example `git status` becomes `rtk git status`. If RTK echoes
   the command unchanged, the original runs as-is.
 - Exit 1, passthrough: no RTK equivalent; the original command runs unchanged.
-- Exit 2, deny: fails closed. Foreground runs throw a typed `RtkDenyError`
-  (name `RtkDenyError`, code `RTK_DENY`) with zero delegate invocations;
-  background starts settle as killed processes with the deny reason surfaced
-  once through the read path.
+- Exit 2, deny: fails closed with zero delegate invocations. `execute` settles
+  a killed `ShellExecution` whose `result()` rejects with a typed `RtkDenyError`
+  (name `RtkDenyError`, code `RTK_DENY`); foreground runs therefore throw it,
+  while background runs surface the deny reason once through the handle's
+  `observed` stderr reader and read path.
 - Exit 3, ask: no interactive approval is requested. The rewritten command
   runs silently; the plugin adds no RTK-specific text to foreground stderr or
   background output.
@@ -101,10 +102,23 @@ executes, its accepted text content is piped through `rtk pipe -f grep`. A
 pipe failure fails open to the original output, so grep results are never
 lost or blocked.
 
+Cancellation is honored throughout preparation: a caller signal that fires
+during `rtk rewrite` kills the oracle at once, and preparation rejects with the
+caller's own abort reason instead of waiting out `rewriteTimeoutMs` and
+delegating a command the caller already cancelled. The `grep` pipe receives the
+same signal, so an aborted call fails open to the original text immediately.
+
 Sandbox confinement, workdir/env/stdin, timeout, abort, exit code, signal,
 stdout/stderr, sandbox facts, and background-process lifecycle are inherited
 verbatim from the delegated executor. The package never bypasses the sandbox
 and never mounts a shell provider.
+
+The decorated seam is the 0.1.7 shell API: `execute()` is the single entry
+point for foreground and background work alike, `result()` is its foreground
+projection, and `observed` exposes the captured streams. The plugin rewrites
+only `command` on the resolved spec, so `resolve()` defaulting and capping
+(`workdir`, `timeoutMs`, `onExpiry`, `stdoutMaxBytes`, `sandboxPolicy`) stay
+entirely with the mounted executor.
 
 ## Model Experience
 
@@ -118,7 +132,9 @@ differences are limited to what the tests prove:
   genuine output.
 - An exit 3 (`ask`) rewrite runs the rewritten command without adding an
   RTK-specific message to the model-facing result.
-- A deny surfaces as `RtkDenyError` and the command never runs.
+- A deny surfaces as a typed `RtkDenyError` out of `result()` on the foreground
+  path, or as a killed background process carrying the reason once through its
+  read path; the command never runs either way.
 - A `grep` result may be returned compressed; when the pipe fails open the
   original text is returned unchanged.
 
@@ -135,15 +151,15 @@ reduction depends on the real binary, its rules, and the commands being run.
 - Real `rtk` remains optional. A real binary is never required to install,
   test, or run the plugin; when present, `rtk rewrite` on this machine exits 3
   (`ask`), which maps to a silent rewrite.
-- `start()` (background processes) consults the oracle synchronously so
-  delegate startup errors propagate from the call itself. This briefly blocks
-  the event loop for up to `rewriteTimeoutMs` while the oracle runs, and fails
-  open on a hang. Foreground `run()` is fully async.
+- The mounted plugin decorates `ctx.shell.execute` in place and calls the
+  oracle asynchronously for every command, so it never blocks the event loop on
+  a decision. The synchronous `rtkRewriteDecisionSync` helper remains exported
+  for callers that must settle a decision before their own synchronous return,
+  but the plugin itself no longer uses it.
 - Scope boundaries: this plugin decorates the mounted shell executor (wrapping
-  its `run`/`start` with the `rtk rewrite` oracle) and compresses
-  model-facing `grep` output through `rtk pipe`. It never mounts a shell
-  provider, never bypasses the sandbox, and does not modify DSH core, RTK, or
-  CodeGraph.
+  its `execute` with the `rtk rewrite` oracle) and compresses model-facing
+  `grep` output through `rtk pipe`. It never mounts a shell provider, never
+  bypasses the sandbox, and does not modify DSH core, RTK, or CodeGraph.
 
 ## Verification
 

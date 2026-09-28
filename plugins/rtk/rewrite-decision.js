@@ -1,10 +1,10 @@
 /**
  * The `rtk rewrite` decision oracle: exit-code contract, constants, the deny
  * error, and the async/sync invocations that map one `rtk rewrite` outcome
- * onto the exhaustive {@link RtkRewriteDecision} union. The async variant
- * powers the foreground {@link run} path; the synchronous variant powers the
- * background {@link start} path so a delegated startup failure can propagate
- * from the `start()` call frame exactly like the baseline executor. Neither
+ * onto the exhaustive {@link RtkRewriteDecision} union. The async variant is the
+ * one the decorated executor's `execute` entry point consults; the synchronous
+ * variant remains for callers that must settle the decision before their own
+ * synchronous return (the pre-0.1.7 background `start()` contract). Neither
  * variant ever throws for a missing, hung, or failed oracle — those fail open
  * to passthrough so execution is never blocked.
  *
@@ -49,7 +49,11 @@ export class RtkDenyError extends Error {
 
 const execFileAsync = promisify(execFile)
 
-/** Return one canonical executable path, or undefined when it cannot be used. */
+/**
+ * Return one canonical executable path, or undefined when it cannot be used.
+ * @param {string} candidate
+ * @returns {string | undefined}
+ */
 function executablePath(candidate) {
   if (process.platform === 'win32' && ['.bat', '.cmd'].includes(extname(candidate).toLowerCase())) return undefined
   try {
@@ -104,14 +108,17 @@ const SHELL_ENV_OVERRIDES = {
 }
 
 /**
- * Build the local subprocess environment for one resolved shell spec.
+ * Build the local subprocess environment for one resolved shell spec. The
+ * declared shape mirrors Node's `ProcessEnv` because an explicit `undefined`
+ * entry removes an inherited key; no `undefined` entry survives the merge.
  * @param {Record<string, string | undefined> | undefined} env
  * @param {Record<string, string | undefined> | undefined} dshEnv
- * @returns {Record<string, string>}
+ * @returns {Record<string, string | undefined>}
  */
 function effectiveShellEnv(env, dshEnv) {
   const parent = scrubbedParentEnv()
   if (process.platform !== 'win32') {
+    /** @type {Record<string, string | undefined>} */
     const merged = { ...parent, ...SHELL_ENV_OVERRIDES, ...env, ...dshEnv }
     for (const [key, value] of Object.entries(merged)) {
       if (value === undefined) delete merged[key]
@@ -160,12 +167,15 @@ function mapRtkExit(code, stdout, stderr, command, askNote) {
 /**
  * Invoke the `rtk rewrite` oracle for one command and map its exit code to an
  * exhaustive {@link RtkRewriteDecision}. Never throws for a missing, hung, or
- * failed oracle — those fail open to passthrough.
+ * failed oracle — those fail open to passthrough. A caller cancellation is not
+ * an oracle failure: the in-flight child is killed immediately and the caller's
+ * own abort reason propagates, so a cancelled command is never delegated after
+ * waiting out the oracle.
  * @param {string} command - the shell command to rewrite.
- * @param {{ rtkBinary?: string | null; timeoutMs?: number; askNote?: string; cwd?: string; env?: Record<string, string | undefined>; dshEnv?: Record<string, string | undefined> }} [options] - oracle knobs; null means startup resolution found no RTK.
+ * @param {{ rtkBinary?: string | null; timeoutMs?: number; askNote?: string; cwd?: string; env?: Record<string, string | undefined>; dshEnv?: Record<string, string | undefined>; signal?: AbortSignal }} [options] - oracle knobs; null means startup resolution found no RTK.
  * @returns {Promise<RtkRewriteDecision>}
  */
-export async function rtkRewriteDecision(command, { rtkBinary = 'rtk', timeoutMs = RTK_REWRITE_TIMEOUT_MS, askNote = RTK_ASK_NOTE, cwd, env, dshEnv } = {}) {
+export async function rtkRewriteDecision(command, { rtkBinary = 'rtk', timeoutMs = RTK_REWRITE_TIMEOUT_MS, askNote = RTK_ASK_NOTE, cwd, env, dshEnv, signal } = {}) {
   const executable = rtkBinary === null ? undefined : resolveRtkBinary(rtkBinary)
   if (executable === undefined) return { kind: 'passthrough' }
   let code = 0
@@ -175,11 +185,20 @@ export async function rtkRewriteDecision(command, { rtkBinary = 'rtk', timeoutMs
     const result = await execFileAsync(executable, ['rewrite', '--', command], {
       timeout: timeoutMs,
       ...(cwd !== undefined ? { cwd } : {}),
+      // `execFile` kills the child on abort and reports the cancellation
+      // through the callback, so the oracle cannot outlive its caller.
+      ...(signal !== undefined ? { signal } : {}),
       env: effectiveShellEnv(env, dshEnv),
     })
     stdout = result.stdout
     stderr = result.stderr
   } catch (error) {
+    // Cancellation wins over any oracle failure classification: propagating the
+    // caller's own reason keeps cancellation immediate and identical to the
+    // delegated executor's, instead of failing open and running a command the
+    // caller already cancelled. (Checked before `killed`, which an abort also
+    // reports.)
+    if (signal?.aborted === true) signal.throwIfAborted()
     const failure = /** @type {{ code?: number | string; killed?: boolean; stdout?: string; stderr?: string }} */ (error)
     // Fail open: a hung or missing rtk never blocks command execution.
     if (failure?.killed === true || failure?.code === 'ETIMEDOUT' || failure?.code === 'ENOENT') {
@@ -193,12 +212,17 @@ export async function rtkRewriteDecision(command, { rtkBinary = 'rtk', timeoutMs
 }
 
 /**
- * Synchronous variant of {@link rtkRewriteDecision} for `start()`: the
- * background path must consult the oracle before the delegated executor's
- * `start` runs, so a synchronous delegate/provider failure (e.g. a sandbox
- * `confine` throwing) propagates from the `start()` call itself exactly like
- * the baseline. A missing, hung, or signal-killed oracle still fails open to
+ * Synchronous variant of {@link rtkRewriteDecision}, for a caller that must
+ * settle the decision before its own synchronous return — the pre-0.1.7
+ * background `start()` contract, where a synchronous delegate/provider failure
+ * (e.g. a sandbox `confine` throwing) had to propagate from the `start()` call
+ * itself. The decorated `execute` entry point is async and uses the async
+ * variant. A missing, hung, or signal-killed oracle still fails open to
  * passthrough and never blocks execution.
+ *
+ * This variant deliberately takes no `signal`: `spawnSync` cannot be
+ * interrupted by an abort (it blocks the event loop for up to `timeoutMs`), so
+ * a cancellable caller must use {@link rtkRewriteDecision} instead.
  * @param {string} command - the shell command to rewrite.
  * @param {{ rtkBinary?: string | null; timeoutMs?: number; askNote?: string; cwd?: string; env?: Record<string, string | undefined>; dshEnv?: Record<string, string | undefined> }} [options] - oracle knobs; null means startup resolution found no RTK.
  * @returns {RtkRewriteDecision}
