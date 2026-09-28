@@ -10,7 +10,7 @@ command — no need to clone this repository. MIT licensed.
 
 ## Quick install (users)
 
-Prerequisites: `dsh` (0.1.5-rc.2 family), Node.js >= 22, pnpm 9.x.
+Prerequisites: `dsh` (0.1.7-rc.2 family), Node.js >= 22, pnpm 9.x.
 
 Install whichever bundles you need:
 
@@ -32,7 +32,7 @@ dsh plugin --profile <profile> add @banbolee/dsh-agents
 | [`@banbolee/dsh-fish-shell`](plugins/fish-shell/README.md) | Fish executors (sandboxed and local) plus a model-facing `fish` tool and a per-agent policy that swaps bash for fish under any agent preset | fish |
 | [`@banbolee/dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | After `write`/`edit`/`str_replace_editor` mutations, appends a persistent LSP diagnostics notice to the next model inference; also registers a model-callable `lsp_diagnostics(file_path)` tool | `typescript-language-server`, `gopls` (opt-in: `clangd`, `rust-analyzer`, `pyright-langserver`) |
 | [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md) | Generic session wrapper over `llm-pi-ai`: registers explicit session provider routes that carry a dynamic session id header (default `x-session-id`) on every LLM request | none (reuses `llm-pi-ai` providers) |
-| [`@banbolee/dsh-agents`](plugins/agents/README.md) | Define your own Agent team in YAML: named `agent_<id>` tools, a persona and a tool surface per Agent, an explicit delegation graph, and absolute depth/concurrency budgets; takes over the official `agent-presets` roster seat | none |
+| [`@banbolee/dsh-agents`](plugins/agents/README.md) | Define your own Agent team in YAML: named `agent_<id>` tools, a persona and a tool surface per Agent, an explicit delegation graph, and absolute depth/concurrency budgets; ships its presets as `@deepseek-ai/dsh-agent-preset` rows on the profile's preset registry | none |
 
 `@banbolee/dsh-llm-pi-ai-with-session` is a generic session wrapper over `llm-pi-ai`: it registers explicit session provider routes as configured, reuses pi-ai's openai-completions implementation, and carries a configurable session header (default `x-session-id`) on every request; the gateway, credentials, model and reasoning effort are all inherited from the source provider, so nothing has to be configured twice. See [plugins/dsh-llm-pi-ai-with-session/README.md](plugins/dsh-llm-pi-ai-with-session/README.md).
 
@@ -65,9 +65,9 @@ dsh plugin --profile <profile> remove @banbolee/dsh-agents
 ```
 
 > A normal uninstall of `@banbolee/dsh-agents` **keeps** your data
-> (`$DSH_HOME/banbo-agents/`: YAML definitions, personas, generated presets, the
-> ABI manifest), so reinstalling restores it; the bundle simply stops being
-> mounted at runtime. A full wipe is an explicit destructive operation — see
+> (`$DSH_HOME/banbo-agents/`: YAML definitions, personas, the ABI manifest), so
+> reinstalling restores it; the bundle simply stops being mounted at runtime and
+> its preset rows go with it. A full wipe is an explicit destructive operation — see
 > [plugins/agents/README.md](plugins/agents/README.md).
 
 ## Local development / install from source (contributors)

@@ -1,6 +1,6 @@
 {
   "name": "@banbolee/dsh-codegraph-mcp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "CodeGraph MCP bridge bundle for DeepSeek Harness: connects CodeGraph to any DSH profile through the official @deepseek-ai/dsh-mcp-client bridge (codegraph serve --mcp).",
   "type": "module",
   "files": [
@@ -14,18 +14,18 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-mcp-client": "^0.1.5-rc.2"
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-mcp-client": "^0.1.7-rc.2"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-attachment": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-invariants": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-mcp-client": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-scope": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-tools": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-user-approval": "^0.1.5-rc.2",
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-attachment": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-invariants": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-mcp-client": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-scope": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-user-approval": "^0.1.7-rc.2",
     "@types/node": "^22.20.1",
     "yaml": "^2.8.0"
   },

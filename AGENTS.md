@@ -55,17 +55,19 @@
    - 各 `tests/docs-shape-*.spec.ts`（安装命令等契约字符串）
    - 插件自带 `tests/bundle.spec.ts`（patch 行名断言）
 4. 根 `README.md`：插件总览表、卸载命令（`dsh plugin --profile <p> remove @banbolee/dsh-<name>`）
-5. `scripts/qa/lib/profile.mjs`：`[插件目录, 包名]` 映射表
-6. `scripts/sync-to-profile.sh`：fish 部署路径 `profiles/node_modules/@banbolee/dsh-fish-shell`
-7. `pnpm-lock.yaml`：改名后执行 `pnpm install` 重新生成
-8. 测试中的 `pnpm list --filter @banbolee/dsh-<name>` 与断言字符串
+5. 根 `package.json` 的 `typecheck` 脚本：把新插件的 `tsconfig.json` 追加进那条写死的 `tsc -p … --noEmit` 链
+6. `scripts/qa/lib/profile.mjs`：`[插件目录, 包名]` 映射表
+7. `scripts/sync-to-profile.sh`：fish 部署路径 `profiles/node_modules/@banbolee/dsh-fish-shell`
+8. `pnpm-lock.yaml`：改名后执行 `pnpm install` 重新生成
+9. 测试中的 `pnpm list --filter @banbolee/dsh-<name>` 与断言字符串
 
 ## 其它约定
 
-- 依赖族固定在 `@deepseek-ai/* ^0.1.5-rc.2`（与 dsh 0.1.5-rc.2 对齐）；升级依赖族时同步更新测试断言与文档。
+- 依赖族固定在 `@deepseek-ai/* ^0.1.7-rc.2`（与 dsh 0.1.7-rc.2 对齐）；升级依赖族时同步更新测试断言与文档。
 - 插件核心约束：不修改 deepseek-harness 内核、不 monkey-patch 官方对象、只通过公开扩展点（`ctx.llm.registerAdapter`、`tools/post-execute` 等）工作；确定性测试不得依赖网络/真实二进制（可选真实 lane 用环境变量显式开启）。
 - `.omo/`、`research/`、`dist/`、`node_modules/` 为本地证据/草稿/产物，永不提交。
 - 测试统一用 `env NODE_ENV=development pnpm test`（`NODE_ENV=production` 时 pnpm 会跳过 devDependencies，导致安装不全、`pnpm list` 隐藏依赖图）。注意 `pnpm test` **不包含**下面两条独立 lane：
   - `env NODE_ENV=development pnpm test:composition`：`tests/composition/**` 启动**真实**的隔离 DSH profile 与真实子进程（经 `dsh` CLI），又慢又吃资源，混在单元套件里会互相抢资源、并把它自己的信号淹没，所以单独跑（CI 里也是独立 job，且关闭文件并行）。**覆盖率是搬家，不是丢弃**——`tests/vitest-discovery.spec.ts` 同时断言"被排除"和"有 lane 跑它"，两者缺一即红；
   - `env NODE_ENV=development pnpm test:agents:gates`：agents 的平台 Gate 探针与打包产物 lane（§15/§16）。
+- 类型检查用 `env NODE_ENV=development pnpm typecheck`：依次对 8 个插件 tsconfig 跑 `tsc -p <config> --noEmit`；它同样**不在** `pnpm test` 里（CI 的 test job 有独立步骤）。
 - 提交信息遵循 conventional commits（`feat:`/`fix:`/`test:`/`docs:`/`ci:`/`chore:`）。
