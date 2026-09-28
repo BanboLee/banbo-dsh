@@ -1,60 +1,260 @@
 # @banbolee/dsh-agents bundle patch (docs/agents-plugin-plan.md §8.4).
 #
-# Two changes, and nothing else.
+# Two things, and nothing else.
 #
-# 1. OWN the profile's preset-roster seat. DSH Web names it `agent-presets`;
-#    dsh-tui 0.10.2 names it `dsh-tui-agent-presets`. Include patches skip a
-#    missing id, so both targets appear below and exactly one warns in either
-#    profile. Their complete config has one YAML anchor source to prevent drift.
-#    The roster reads its roots once at construction, and re-scans them on every
-#    `list()`/`resolve()` — so the matching row names two stable directories:
+# 1. DECLARE the presets this package ships, one `@deepseek-ai/dsh-agent-preset`
+#    row each (0.1.7's declarative model). A preset is a composition: its
+#    `config.plugins` list IS `presets/<id>` in the 0.1.5 directory model, and it
+#    is generated from `templates/agent.cordis.template.yml` with the agent id
+#    substituted — `tests/preset-compiler.spec.ts` fails when the two drift.
 #
-#      - the presets this package ships (built-in main agents, trust: system);
-#      - `$DSH_HOME/banbo-agents/.generated/current/presets`, the controlled
-#        compile output for user-authored main agents, also trust: system
-#        because the content is generated from validated YAML rather than
-#        hand-authored — a `user` root would let the official authoring API pick
-#        it as its writable target and write into a generation directory that is
-#        supposed to be immutable.
+#    The seat belongs to `@deepseek-ai/dsh-agent-preset-registry`, which the
+#    profile's own bundle declares (`dsh-web-app` inserts
+#    `- id: agent-preset-registry / config: { default: standard }`). This bundle
+#    deliberately does NOT declare or patch that row: another bundle patching the
+#    same row wholesale can no longer remove this bundle's presets, because a
+#    preset is now its own row instead of an entry inside the roster's config.
 #
-#    The `current` component is a symlink swapped atomically by the compiler
-#    (index.js + preset-compiler.js). The string below never changes and needs
-#    no restart, so a freshly compiled generation is live on the very next
-#    roster scan.
-#
-#    Cordis replaces a patched config object wholesale rather than deep-merging
-#    it, so the four official fields are restated here in full, and any other
-#    bundle patching this same row must merge these two roots by hand instead of
-#    removing them. `index.js` verifies at startup that both roots really are
-#    mounted and fails loudly when they are not.
-#
-#    `new URL(…, baseUrl)` resolves against the composition that loaded this
-#    row, which is the installed profile. `dshHomePath` is provided by the
-#    harness host (`@deepseek-ai/dsh-home-paths`); both are the documented
-#    public bindings for a patch expression, not a runtime path rewrite.
+#    A user preset is the same row shape in the user's own profile patch
+#    (`$DSH_HOME/profiles/<profile>/cordis.patch.yml`) or in a bundle they install;
+#    see README.md. Nothing here scans a directory for presets any more.
 #
 # 2. Mount the Host half of this bundle. It reads and validates the catalog,
-#    compiles the generation and publishes it as the `banboAgents` service —
-#    all before the Host reports ready, so a bad definition file fails startup
-#    with the previous generation still active. The per-preset runtimes
-#    (`@banbolee/dsh-agents/main-runtime` and `/delegation`) are NOT mounted
-#    here: they belong to the preset compositions under `presets/`.
-- id: agent-presets
-  name: '@deepseek-ai/dsh-agent-presets'
-  config: &banbo-agent-presets-config
-    default: standard
-    includeShippedRoot: true
-    includeUserRoot: true
-    roots:
-      - path: !!js process.getBuiltinModule('node:url').fileURLToPath(new URL('node_modules/@banbolee/dsh-agents/presets/', baseUrl))
-        trust: system
-      - path: !!js dshHomePath('banbo-agents', '.generated', 'current', 'presets')
-        trust: system
+#    publishes the immutable generation and the `banboAgents` service — all before
+#    the Host reports ready, so a bad definition file fails startup with the
+#    previous generation still active. The per-preset runtimes
+#    (`@banbolee/dsh-agents/main-runtime` and `/delegation`) are NOT mounted here:
+#    they are child rows of the preset declarations above, and they wait for the
+#    `banboAgents` service this row publishes (activation is service-availability
+#    driven, not row-order driven).
+- 'insert':
+    - 'id': 'preset-banbo'
+      'name': '@deepseek-ai/dsh-agent-preset'
+      'config':
+        'id': 'banbo'
+        'name': 'Banbo'
+        'description': '默认总协调 Agent：理解任务、分派给专家、合并结果。'
+        'order': 10
+        'plugins':
+          - 'id': 'persona'
+            'name': '@deepseek-ai/dsh-persona'
+            'config':
+              'prefix': ''
+              'suffix': 'Your working directory is {{cwd}}.'
+          - 'id': 'agent-instructions'
+            'name': '@deepseek-ai/dsh-agent-instructions'
+            'config':
+              'maxBytes': 65536
+          - 'id': 'tool-bash'
+            'name': '@deepseek-ai/dsh-tool-bash'
+            'disabled': !!js process.platform === 'win32'
+          - 'id': 'tool-pwsh'
+            'name': '@deepseek-ai/dsh-tool-pwsh'
+            'disabled': !!js process.platform !== 'win32'
+          - 'id': 'tool-fs'
+            'name': '@deepseek-ai/dsh-tool-fs'
+          - 'id': 'tool-fs-search'
+            'name': '@deepseek-ai/dsh-tool-fs-search'
+            'config':
+              'sampleOverCapGlobResults': false
+          - 'id': 'tool-jobs'
+            'name': '@deepseek-ai/dsh-tool-jobs'
+          - 'id': 'skill-filesystem'
+            'name': '@deepseek-ai/dsh-skill-filesystem'
+          - 'id': 'tool-skill'
+            'name': '@deepseek-ai/dsh-tool-skill'
+          - 'id': 'command-goal'
+            'name': '@deepseek-ai/dsh-command-goal'
+          - 'id': 'tool-goal'
+            'name': '@deepseek-ai/dsh-tool-goal'
+          - 'id': 'planning'
+            'name': 'cordis:group'
+            'group': true
+            'isolate':
+              'planMode': true
+            'config':
+              - 'id': 'plan-mode'
+                'name': '@deepseek-ai/dsh-plan-mode'
+                'config':
+                  'section': 'You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user''s conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
 
-- id: dsh-tui-agent-presets
-  name: '@deepseek-ai/dsh-agent-presets'
-  config: *banbo-agent-presets-config
 
-- insert:
-    - id: banbo-agents
-      name: '@banbolee/dsh-agents'
+                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+
+                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+                    '
+          - 'id': 'compaction'
+            'name': 'cordis:group'
+            'group': true
+            'isolate':
+              'compaction': true
+              'toolResultPruner': true
+            'config':
+              - 'id': 'compaction-basic'
+                'name': '@deepseek-ai/dsh-compaction-basic'
+              - 'id': 'command-compact'
+                'name': '@deepseek-ai/dsh-command-compact'
+              - 'id': 'tool-result-pruner'
+                'name': '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                'config':
+                  'thresholdChars': 8192
+                  'headChars': 4096
+                  'tailChars': 1024
+          - 'id': 'delegation-control'
+            'name': 'cordis:group'
+            'group': true
+            'isolate':
+              'workflowEngine': true
+            'config':
+              - 'id': 'tool-subagent-control'
+                'name': '@deepseek-ai/dsh-tool-subagent-control'
+              - 'id': 'tool-subagent-list-agents'
+                'name': '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+          - 'id': 'banbo-main-runtime'
+            'name': '@banbolee/dsh-agents/main-runtime'
+            'config':
+              'agentId': 'banbo'
+          - 'id': 'banbo-delegation'
+            'name': '@banbolee/dsh-agents/delegation'
+            'config':
+              'agentId': 'banbo'
+          - 'id': 'tool-ask-user'
+            'name': '@deepseek-ai/dsh-tool-ask-user'
+          - 'id': 'tool-todo'
+            'name': '@deepseek-ai/dsh-tool-todo'
+            'config':
+              'allowParallelInProgress': true
+          - 'id': 'tool-web'
+            'name': '@deepseek-ai/dsh-tool-web'
+            'config':
+              'fetch': true
+              'searchTimeoutMs': 60000
+          - 'id': 'present'
+            'name': '@deepseek-ai/dsh-tool-present'
+    - 'id': 'preset-planner'
+      'name': '@deepseek-ai/dsh-agent-preset'
+      'config':
+        'id': 'planner'
+        'name': 'Planner'
+        'description': '拆解任务、识别风险、给出计划；也可作为独立主 Agent 使用。'
+        'order': 20
+        'plugins':
+          - 'id': 'persona'
+            'name': '@deepseek-ai/dsh-persona'
+            'config':
+              'prefix': ''
+              'suffix': 'Your working directory is {{cwd}}.'
+          - 'id': 'agent-instructions'
+            'name': '@deepseek-ai/dsh-agent-instructions'
+            'config':
+              'maxBytes': 65536
+          - 'id': 'tool-bash'
+            'name': '@deepseek-ai/dsh-tool-bash'
+            'disabled': !!js process.platform === 'win32'
+          - 'id': 'tool-pwsh'
+            'name': '@deepseek-ai/dsh-tool-pwsh'
+            'disabled': !!js process.platform !== 'win32'
+          - 'id': 'tool-fs'
+            'name': '@deepseek-ai/dsh-tool-fs'
+          - 'id': 'tool-fs-search'
+            'name': '@deepseek-ai/dsh-tool-fs-search'
+            'config':
+              'sampleOverCapGlobResults': false
+          - 'id': 'tool-jobs'
+            'name': '@deepseek-ai/dsh-tool-jobs'
+          - 'id': 'skill-filesystem'
+            'name': '@deepseek-ai/dsh-skill-filesystem'
+          - 'id': 'tool-skill'
+            'name': '@deepseek-ai/dsh-tool-skill'
+          - 'id': 'command-goal'
+            'name': '@deepseek-ai/dsh-command-goal'
+          - 'id': 'tool-goal'
+            'name': '@deepseek-ai/dsh-tool-goal'
+          - 'id': 'planning'
+            'name': 'cordis:group'
+            'group': true
+            'isolate':
+              'planMode': true
+            'config':
+              - 'id': 'plan-mode'
+                'name': '@deepseek-ai/dsh-plan-mode'
+                'config':
+                  'section': 'You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user''s conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+
+                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+
+                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+                    '
+          - 'id': 'compaction'
+            'name': 'cordis:group'
+            'group': true
+            'isolate':
+              'compaction': true
+              'toolResultPruner': true
+            'config':
+              - 'id': 'compaction-basic'
+                'name': '@deepseek-ai/dsh-compaction-basic'
+              - 'id': 'command-compact'
+                'name': '@deepseek-ai/dsh-command-compact'
+              - 'id': 'tool-result-pruner'
+                'name': '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                'config':
+                  'thresholdChars': 8192
+                  'headChars': 4096
+                  'tailChars': 1024
+          - 'id': 'delegation-control'
+            'name': 'cordis:group'
+            'group': true
+            'isolate':
+              'workflowEngine': true
+            'config':
+              - 'id': 'tool-subagent-control'
+                'name': '@deepseek-ai/dsh-tool-subagent-control'
+              - 'id': 'tool-subagent-list-agents'
+                'name': '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+          - 'id': 'banbo-main-runtime'
+            'name': '@banbolee/dsh-agents/main-runtime'
+            'config':
+              'agentId': 'planner'
+          - 'id': 'banbo-delegation'
+            'name': '@banbolee/dsh-agents/delegation'
+            'config':
+              'agentId': 'planner'
+          - 'id': 'tool-ask-user'
+            'name': '@deepseek-ai/dsh-tool-ask-user'
+          - 'id': 'tool-todo'
+            'name': '@deepseek-ai/dsh-tool-todo'
+            'config':
+              'allowParallelInProgress': true
+          - 'id': 'tool-web'
+            'name': '@deepseek-ai/dsh-tool-web'
+            'config':
+              'fetch': true
+              'searchTimeoutMs': 60000
+          - 'id': 'present'
+            'name': '@deepseek-ai/dsh-tool-present'
+    - 'id': 'banbo-agents'
+      'name': '@banbolee/dsh-agents'

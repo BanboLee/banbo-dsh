@@ -1,51 +1,67 @@
 /**
- * Gate B — rc.2 roster/profile platform probes.
+ * Gate B — rc.2 preset-ROW platform probes.
  *
- * This file locks only platform facts: the Web/TUI row ids, include-patch
- * semantics, profile-root path expressions, and the official roster's root
- * ordering/unmemoized discovery. It never starts an app, provider, or network.
+ * 0.1.7 replaced the 0.1.5 roster model wholesale: `@deepseek-ai/dsh-agent-presets`
+ * does not exist at 0.1.7-rc.2, presets are no longer directories discovered
+ * under `roots`, and a preset is declared as one
+ * `@deepseek-ai/dsh-agent-preset` ROW (`config = { id, name?, description?,
+ * order?, plugins }`) that the profile's own `@deepseek-ai/dsh-agent-preset-registry`
+ * row owns. This file locks only platform facts about that model:
+ *
+ *   - the rows this bundle declares are VALID according to the real 0.1.7
+ *     packages (their own schema and entry-list validator), not according to a
+ *     copy of it;
+ *   - they compose cleanly with the official `dsh-web-app` layer, which is the
+ *     layer that declares the registry row and the four official presets;
+ *   - the dead 0.1.5 model (a `roots` roster patch, `includeShippedRoot`, a
+ *     directory scan) is gone from this bundle.
+ *
+ * It never starts an app, provider, or network. Where a probe needs the real
+ * packages it resolves them the way the Loader does: from this package, else
+ * from the global `dsh` installation CI provisions.
  */
 
 import { createRequire } from 'node:module'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { parseDocument } from 'yaml'
-
-import { Context } from '@deepseek-ai/cordis'
-import { AgentPresets, discoverPresets, SHIPPED_PRESET_ROOT } from '@deepseek-ai/dsh-agent-presets'
-import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pluginRoot = resolve(here, '..', '..')
-const patchPath = join(pluginRoot, 'cordis.patch.yml')
-const patchText = readFileSync(patchPath, 'utf8')
+const patchText = readFileSync(join(pluginRoot, 'cordis.patch.yml'), 'utf8')
 const require = createRequire(import.meta.url)
 
+const AGENT_PRESET = '@deepseek-ai/dsh-agent-preset'
+const PRESET_REGISTRY = '@deepseek-ai/dsh-agent-preset-registry'
+const OFFICIAL_BUNDLE = '@deepseek-ai/dsh-web-app'
+const PRESET_ROW_PREFIX = 'preset-'
+
 interface JsExpr { __jsExpr: string }
-interface RootConfig { path: JsExpr; trust: 'system' | 'user' }
-interface RosterPatch {
+interface PatchRow {
   id?: string
   name?: string
-  config?: {
-    default?: string
-    includeShippedRoot?: boolean
-    includeUserRoot?: boolean
-    roots?: RootConfig[]
-  }
+  config?: Record<string, unknown>
   insert?: unknown[]
+  disabled?: unknown
 }
 
-function parsePatches(text = patchText): RosterPatch[] {
+function parsePatches(text: string): PatchRow[] {
   const document = parseDocument(text, { schema: 'core', customTags: [{
     tag: 'tag:yaml.org,2002:js',
     resolve: (value: string) => ({ __jsExpr: value }),
   }] })
   if (document.errors.length > 0) throw document.errors[0]
-  return document.toJS() as RosterPatch[]
+  return document.toJS() as PatchRow[]
 }
+
+function flatten(rows: PatchRow[]): PatchRow[] {
+  return rows.flatMap((row) => [row, ...(Array.isArray(row.insert) ? flatten(row.insert as PatchRow[]) : [])])
+}
+
+const ownRows = flatten(parsePatches(patchText))
+const presetRows = ownRows.filter((row) => row.name === AGENT_PRESET)
 
 function executable(name: string): string {
   for (const directory of (process.env.PATH ?? '').split(delimiter)) {
@@ -55,6 +71,7 @@ function executable(name: string): string {
   throw new Error(`${name} is required on PATH for Gate B`)
 }
 
+/** Resolve a package the Loader would resolve: local first, then beside `dsh`. */
 function packageRoot(name: string): string {
   try {
     return dirname(require.resolve(`${name}/package.json`))
@@ -71,20 +88,19 @@ function packageRoot(name: string): string {
   }
 }
 
-function upstreamPatches(name: string): RosterPatch[] {
-  const path = join(packageRoot(name), 'cordis.patch.yml')
-  return parsePatches(readFileSync(path, 'utf8'))
+/** Every bundle patch file the package declares, in `dsh.bundle.patch` order. */
+function bundlePatches(name: string): PatchRow[] {
+  const root = packageRoot(name)
+  const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
+    dsh?: { bundle?: { patch?: string | string[] } }
+  }
+  const declared = manifest.dsh?.bundle?.patch
+  const files = declared === undefined ? [] : (Array.isArray(declared) ? declared : [declared])
+  return files.flatMap((relative) => parsePatches(readFileSync(join(root, relative.replace(/^\.\//, '')), 'utf8')))
 }
 
-function flatten(rows: RosterPatch[]): RosterPatch[] {
-  return rows.flatMap((row) => [row, ...(Array.isArray(row.insert) ? flatten(row.insert as RosterPatch[]) : [])])
-}
-
-function targetIds(rows: RosterPatch[]): string[] {
-  return rows.filter((row) => row.name === '@deepseek-ai/dsh-agent-presets').map((row) => row.id!).sort()
-}
-
-async function composeOfficial(layers: RosterPatch[][]): Promise<{ rows: RosterPatch[]; warnings: string[] }> {
+/** Compose layers through the platform's own patch composer. */
+async function composeOfficial(layers: PatchRow[][]): Promise<{ rows: PatchRow[]; warnings: string[] }> {
   const dshRoot = dirname(dirname(executable('dsh')))
   const requireFromDsh = createRequire(join(dshRoot, 'package.json'))
   const appBootPath = requireFromDsh.resolve('@deepseek-ai/dsh-app-boot')
@@ -92,157 +108,168 @@ async function composeOfficial(layers: RosterPatch[][]): Promise<{ rows: RosterP
     composeEntries(layers: unknown[][], warn?: (message: string) => void): unknown[]
   }
   const warnings: string[] = []
-  const rows = appBoot.composeEntries(layers, (message) => warnings.push(message)) as RosterPatch[]
+  const rows = appBoot.composeEntries(layers, (message) => warnings.push(message)) as PatchRow[]
   return { rows, warnings }
 }
 
-const scratch: string[] = []
-function tempRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), 'banbo-gate-b-'))
-  scratch.push(root)
-  return root
+/** The real preset plugin, whose `Config` is the registry's `PresetDefinition`. */
+async function realPresetContract(): Promise<{
+  validate(config: Record<string, unknown>): Record<string, unknown>
+  entryListProblem(rows: unknown): string | undefined
+}> {
+  const presetRoot = packageRoot(AGENT_PRESET)
+  const { default: AgentPreset } = await import(pathToFileURL(join(presetRoot, 'lib', 'index.js')).href) as {
+    default: { Config: (value: unknown) => Record<string, unknown> }
+  }
+  const definitions = await import(
+    pathToFileURL(join(packageRoot(PRESET_REGISTRY), 'lib', 'types', 'definition.js')).href
+  ) as { entryListProblem(rows: unknown): string | undefined }
+  return {
+    validate: (config) => AgentPreset.Config(config),
+    entryListProblem: (rows) => definitions.entryListProblem(rows),
+  }
 }
 
-afterEach(() => {
-  vi.unstubAllEnvs()
-  while (scratch.length > 0) rmSync(scratch.pop()!, { recursive: true, force: true })
-})
+/* ------------------------------------------------------------------- B1 --- */
 
-function writePreset(root: string, id: string): void {
-  const dir = join(root, id)
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'agent.cordis.yml'), '[]\n')
-  writeFileSync(join(dir, 'preset.yml'), `name: ${id}\n`)
-}
-
-describe('B1 — Web and TUI expose different roster seats', () => {
-  it('rc.2 Web owns agent-presets while dsh-tui 0.10.2 owns dsh-tui-agent-presets', () => {
-    expect(targetIds(flatten(upstreamPatches('@deepseek-ai/dsh-web-app')))).toEqual(['agent-presets'])
-    expect(targetIds(flatten(upstreamPatches('@deepseek-harness-tui/dsh-tui')))).toEqual(['dsh-tui-agent-presets'])
+describe('B1 — the preset rows this bundle declares', () => {
+  it('declares one valid @deepseek-ai/dsh-agent-preset row per built-in preset', () => {
+    expect(presetRows.map((row) => row.id).sort()).toEqual(['preset-banbo', 'preset-planner'])
+    for (const row of presetRows) {
+      const config = row.config ?? {}
+      // The declaration row's id addresses Loader edits; `config.id` is the
+      // preset identity sessions save. They are conventionally related but not
+      // required to match, so the patch pins both.
+      expect(row.id).toBe(`${PRESET_ROW_PREFIX}${String(config.id)}`)
+      expect(config.id).toEqual(expect.any(String))
+      expect(config.name).toEqual(expect.any(String))
+      expect(config.description).toEqual(expect.any(String))
+      expect(config.order).toEqual(expect.any(Number))
+      expect(Array.isArray(config.plugins)).toBe(true)
+    }
+    // The ids must be distinct: the roster is keyed by `config.id`.
+    expect(new Set(presetRows.map((row) => (row.config ?? {}).id)).size).toBe(presetRows.length)
   })
 
-  it('the bundle targets both seats with one identical complete roster config', () => {
-    const targets = parsePatches().filter((row) => row.name === '@deepseek-ai/dsh-agent-presets')
-    expect(targets.map((row) => row.id).sort()).toEqual(['agent-presets', 'dsh-tui-agent-presets'])
-    expect(targets[0].config).toEqual(targets[1].config)
-    expect(targets[0].config).toMatchObject({
-      default: 'standard',
-      includeShippedRoot: true,
-      includeUserRoot: true,
-      roots: [
-        { trust: 'system' },
-        { trust: 'system' },
-      ],
-    })
-  })
-
-  it('the official composer replaces each target and only the absent sibling warns', async () => {
-    const overlays = parsePatches()
-    for (const [name, expected, absent] of [
-      ['@deepseek-ai/dsh-web-app', 'agent-presets', 'dsh-tui-agent-presets'],
-      ['@deepseek-harness-tui/dsh-tui', 'dsh-tui-agent-presets', 'agent-presets'],
-    ] as const) {
-      const upstream = upstreamPatches(name)
-      const original = flatten(upstream).find((row) => row.id === expected)
-      const result = await composeOfficial([upstream, overlays])
-      const target = flatten(result.rows).find((row) => row.id === expected)
-      expect(target?.config).toEqual(overlays.find((row) => row.id === expected)?.config)
-      expect((target as RosterPatch & { disabled?: unknown })?.disabled)
-        .toEqual((original as RosterPatch & { disabled?: unknown })?.disabled)
-      const rosterWarnings = result.warnings.filter((warning) => warning.includes('agent-presets'))
-      expect(rosterWarnings).toEqual([`patch: entry ${JSON.stringify(absent)} not found`])
-
-      const restored = await composeOfficial([upstream])
-      expect(flatten(restored.rows).find((row) => row.id === expected)).toEqual(original)
+  it('mounts both banbo runtimes inside each declared preset, keyed to that preset', () => {
+    for (const row of presetRows) {
+      const id = (row.config ?? {}).id as string
+      const plugins = (row.config ?? {}).plugins as Array<Record<string, unknown>>
+      const runtime = plugins.filter((child) => typeof child.name === 'string' && child.name.startsWith('@banbolee/dsh-agents/'))
+      expect(runtime.map((child) => child.name).sort()).toEqual([
+        '@banbolee/dsh-agents/delegation',
+        '@banbolee/dsh-agents/main-runtime',
+      ])
+      for (const child of runtime) expect((child.config as Record<string, unknown>).agentId).toBe(id)
+      for (const child of plugins) expect(typeof child.name, `${id} has a row without a package name`).toBe('string')
     }
   })
-})
 
-describe('B2 — profile-root path expressions', () => {
-  it('resolve package and generated roots from public profile bindings', () => {
-    const [packageRootConfig, generatedRootConfig] = parsePatches()
-      .find((row) => row.id === 'agent-presets')!.config!.roots!
-    const profile = join(tempRoot(), 'profiles with spaces', 'web')
-    const baseUrl = pathToFileURL(`${profile}/`).href
-    const dshHome = dirname(dirname(profile))
-    const dshHomePath = (...segments: string[]) => join(dshHome, ...segments)
-    const evaluate = (expression: string) => Function('baseUrl', 'dshHomePath', `return (${expression})`)(baseUrl, dshHomePath)
-    expect(evaluate(packageRootConfig.path.__jsExpr)).toBe(join(profile, 'node_modules', '@banbolee', 'dsh-agents', 'presets') + '/')
-    expect(evaluate(generatedRootConfig.path.__jsExpr)).toBe(join(dshHome, 'banbo-agents', '.generated', 'current', 'presets'))
+  it('the real 0.1.7 preset schema and entry-list validator accept every row', async () => {
+    const contract = await realPresetContract()
+    for (const row of presetRows) {
+      const config = row.config ?? {}
+      // The plugin's own Config schema is the authority on the declaration.
+      expect(contract.validate(config)).toMatchObject({ id: config.id })
+      // …and the registry's validator owns the child list, including groups.
+      expect(contract.entryListProblem(config.plugins)).toBeUndefined()
+    }
+    // Negative control, so a validator that silently accepts anything cannot
+    // make the two assertions above vacuous.
+    expect(contract.entryListProblem([{ id: 'nameless' }])).toMatch(/names no plugin/)
+    expect(() => contract.validate({ id: 'no-plugins' })).toThrow()
   })
 })
 
-describe('B3 — official roster discovery is ordered and unmemoized', () => {
-  it('materializes shipped/package/generated/user roots and follows current on the same instance', async () => {
-    const dshHome = tempRoot()
-    vi.stubEnv('DSH_HOME', dshHome)
-    const profile = join(dshHome, 'profiles', 'web')
-    const packagePresets = join(profile, 'node_modules', '@banbolee', 'dsh-agents', 'presets')
-    const generations = join(dshHome, 'banbo-agents', '.generated', 'generations')
-    const firstGeneration = join(generations, 'first')
-    const secondGeneration = join(generations, 'second')
-    writePreset(packagePresets, 'package-probe')
-    writePreset(join(firstGeneration, 'presets'), 'first-probe')
-    writePreset(join(secondGeneration, 'presets'), 'second-probe')
-    mkdirSync(join(dshHome, 'banbo-agents', '.generated'), { recursive: true })
-    symlinkSync(firstGeneration, join(dshHome, 'banbo-agents', '.generated', 'current'))
+/* ------------------------------------------------------------------- B2 --- */
 
-    const configuredRoots = parsePatches().find((row) => row.id === 'agent-presets')!.config!.roots!
-    const baseUrl = pathToFileURL(`${profile}/`).href
-    const dshHomePath = (...segments: string[]) => join(dshHome, ...segments)
-    const evaluate = (expression: string) => Function('baseUrl', 'dshHomePath', `return (${expression})`)(baseUrl, dshHomePath)
-    const ctx = new Context()
-    ctx.baseUrl = baseUrl
-    new SessionProjectionRegistry(ctx)
-    const roster = new AgentPresets(ctx, {
-      default: 'standard',
-      includeShippedRoot: true,
-      includeUserRoot: true,
-      roots: configuredRoots.map((root) => ({ path: evaluate(root.path.__jsExpr), trust: root.trust })),
-    })
+describe('B2 — composing with the official web bundle', () => {
+  it('adds our rows without touching the official registry row or preset ids', async () => {
+    const official = bundlePatches(OFFICIAL_BUNDLE)
+    const result = await composeOfficial([official, parsePatches(patchText)])
+    const composed = flatten(result.rows)
+    const byId = new Map(composed.filter((row) => row.id !== undefined).map((row) => [row.id as string, row]))
 
-    expect(roster.roots).toEqual([
-      { path: SHIPPED_PRESET_ROOT, trust: 'system' },
-      { path: packagePresets + '/', trust: 'system' },
-      { path: join(dshHome, 'banbo-agents', '.generated', 'current', 'presets'), trust: 'system' },
-      { path: join(dshHome, '.agent-presets'), trust: 'user' },
+    // The registry row belongs to the official layer, and our patch leaves its
+    // config exactly as it found it: `default: standard`.
+    const registry = byId.get('agent-preset-registry')
+    expect(registry?.name).toBe(PRESET_REGISTRY)
+    expect(registry?.config).toMatchObject({ default: 'standard' })
+
+    // The official presets and ours coexist, each id appearing once.
+    for (const id of ['preset-standard', 'preset-ptc', 'preset-minimal', 'preset-cordis']) {
+      expect(byId.get(id)?.name, `${id} must survive our layer`).toBe(AGENT_PRESET)
+    }
+    for (const row of presetRows) expect(byId.get(row.id as string)?.config).toEqual(row.config)
+    expect(byId.get('banbo-agents')?.name).toBe('@banbolee/dsh-agents')
+
+    const ids = composed.map((row) => row.id).filter((id): id is string => id !== undefined)
+    expect(new Set(ids).size, 'our layer must not duplicate a composed row id').toBe(ids.length)
+    expect(result.warnings.filter((warning) => /preset-banbo|preset-planner|banbo-agents/.test(warning))).toEqual([])
+  })
+
+  it("a user's own profile patch declares a preset the same way", async () => {
+    // The documented shape (README.md, and `@deepseek-ai/dsh-agent-preset`'s own
+    // `editing-cordis-compositions` skill): one inserted row, in the user's own
+    // `$DSH_HOME/profiles/<profile>/cordis.patch.yml` or in a bundle they
+    // install. Nothing scans a directory for it.
+    const userPatch = parsePatches([
+      '- insert:',
+      '    - id: preset-review',
+      `      name: '${AGENT_PRESET}'`,
+      '      config:',
+      '        id: review',
+      '        name: Review',
+      '        description: Reviews changes with the shell only.',
+      '        order: 30',
+      '        plugins:',
+      '          - id: persona',
+      "            name: '@deepseek-ai/dsh-persona'",
+      '            config:',
+      '              prefix: You review software changes.',
+      '          - id: tool-bash',
+      "            name: '@deepseek-ai/dsh-tool-bash'",
+      '',
+    ].join('\n'))
+    const userRows = flatten(userPatch).filter((row) => row.name === AGENT_PRESET)
+    expect(userRows).toHaveLength(1)
+
+    const contract = await realPresetContract()
+    expect(contract.validate(userRows[0]!.config ?? {})).toMatchObject({ id: 'review' })
+    expect(contract.entryListProblem((userRows[0]!.config ?? {}).plugins)).toBeUndefined()
+
+    const result = await composeOfficial([
+      bundlePatches(OFFICIAL_BUNDLE),
+      parsePatches(patchText),
+      userPatch,
     ])
-    expect(roster.authorable).toBe(true)
-    expect((await roster.list()).map((preset) => preset.id)).toContain('first-probe')
+    const ids = flatten(result.rows).map((row) => row.id)
+    expect(ids).toContain('preset-review')
+    expect(new Set(ids).size).toBe(ids.length)
+    // A user preset does not disturb what this bundle declares.
+    for (const row of presetRows) expect(ids).toContain(row.id)
+  })
+})
 
-    const nextLink = join(dshHome, 'banbo-agents', '.generated', '.current-next')
-    symlinkSync(secondGeneration, nextLink)
-    renameSync(nextLink, join(dshHome, 'banbo-agents', '.generated', 'current'))
-    const after = (await roster.list()).map((preset) => preset.id)
-    expect(after).toContain('second-probe')
-    expect(after).not.toContain('first-probe')
-    expect(roster.roots[2].path).toBe(join(dshHome, 'banbo-agents', '.generated', 'current', 'presets'))
-    await ctx.fiber.dispose()
+/* ------------------------------------------------------------------- B3 --- */
+
+describe('B3 — the 0.1.5 directory-roster model is gone', () => {
+  it('declares no roster patch, no roots and no shipped-root flag', () => {
+    expect(patchText).not.toContain('agent-presets')
+    expect(patchText).not.toContain('includeShippedRoot')
+    expect(patchText).not.toContain('includeUserRoot')
+    expect(patchText).not.toContain('roots')
+    expect(ownRows.map((row) => row.name)).not.toContain(PRESET_REGISTRY)
+    expect(existsSync(join(pluginRoot, 'presets')), 'a preset is a row, not a directory').toBe(false)
   })
 
-  it('keeps first-root-wins and sees presets written after the first list', async () => {
-    const packagePresets = tempRoot()
-    const generatedPresets = tempRoot()
-    const userPresets = tempRoot()
-    writePreset(packagePresets, 'package-probe')
-    writePreset(generatedPresets, 'collision')
-    writePreset(userPresets, 'collision')
-
-    const roots = [
-      { path: SHIPPED_PRESET_ROOT, trust: 'system' as const },
-      { path: packagePresets, trust: 'system' as const },
-      { path: generatedPresets, trust: 'system' as const },
-      { path: userPresets, trust: 'user' as const },
-    ]
-    const harnessBase = pathToFileURL(join(packageRoot('@deepseek-ai/dsh-agent-presets'), 'package.json')).href
-    const first = await discoverPresets(roots, harnessBase)
-    expect(first.find((preset) => preset.id === 'standard')?.trust).toBe('system')
-    expect(realpathSync(first.find((preset) => preset.id === 'collision')!.path)).toBe(realpathSync(join(generatedPresets, 'collision', 'agent.cordis.yml')))
-    expect(first.some((preset) => preset.id === 'late')).toBe(false)
-
-    writePreset(generatedPresets, 'late')
-    const second = await discoverPresets(roots, harnessBase)
-    expect(realpathSync(second.find((preset) => preset.id === 'late')!.path)).toBe(realpathSync(join(generatedPresets, 'late', 'agent.cordis.yml')))
-    expect(roots.map((root) => root.trust)).toEqual(['system', 'system', 'system', 'user'])
+  it('leaves no source-level use of the deleted roster API', () => {
+    const host = readFileSync(join(pluginRoot, 'index.js'), 'utf8')
+    // The 0.1.5 API read `ctx.agentPresets.roots`; 0.1.7's registry has no
+    // `roots` member at all. `composedPreset` is the one member this bundle
+    // still uses, and it is unchanged.
+    expect(host).not.toMatch(/agentPresets\.roots/)
+    expect(host).not.toMatch(/verifyRosterRoots|findPresetIdConflicts|shippedPresetIds/)
+    expect(host).not.toMatch(/settings\.register\(/)
   })
 })

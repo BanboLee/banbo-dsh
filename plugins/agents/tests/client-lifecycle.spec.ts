@@ -18,7 +18,7 @@ function fixture(options: { remoteFailure?: boolean, mountReject?: boolean } = {
   const effects: Array<() => void | Promise<void>> = []
   const slotDisposer = vi.fn()
   const mountDisposer = vi.fn(async () => { order.push('unmount') })
-  const scope = {
+  const form = {
     getSnapshot: () => ({
       status: 'ready' as const, value: { includeDefaults: true, agents: {} },
       base: { includeDefaults: true, agents: {} }, user: undefined,
@@ -55,10 +55,10 @@ function fixture(options: { remoteFailure?: boolean, mountReject?: boolean } = {
         return mountDisposer
       }),
     },
-    settingsScope: {
-      bind: vi.fn(() => {
-        order.push('bind')
-        return scope
+    configForms: {
+      get: vi.fn(() => {
+        order.push('get-form')
+        return form
       }),
     },
     slots: {
@@ -82,7 +82,7 @@ function fixture(options: { remoteFailure?: boolean, mountReject?: boolean } = {
   return {
     ctx,
     order,
-    scope,
+    form,
     slotDisposer,
     mountDisposer,
     async dispose() {
@@ -134,7 +134,7 @@ function withDocument() {
 
 describe('agents Web client plugin', () => {
   it('declares only services available before its own Remote contribution mounts', () => {
-    expect(inject).toEqual(['slots', 'locale', 'remote', 'settingsScope'])
+    expect(inject).toEqual(['slots', 'locale', 'remote', 'configForms'])
     expect(inject).not.toContain('remote.banboAgentsCatalog')
   })
 
@@ -167,22 +167,25 @@ describe('agents Web client plugin', () => {
     }
   })
 
-  it('mounts its generated descriptor before calling/listing/registering the card', async () => {
+  it('mounts its generated descriptor before reading/registering the card', async () => {
     const value = fixture()
     await apply(value.ctx as never)
 
-    expect(value.order).toEqual(['mount', 'list', 'bind', 'inject-slot', 'register'])
+    expect(value.order).toEqual(['mount', 'list', 'get-form', 'inject-slot', 'register'])
     expect(value.ctx.remote.$mount).toHaveBeenCalledTimes(1)
-    expect(value.ctx.settingsScope.bind).toHaveBeenCalledWith(expect.objectContaining({
-      namespace: 'banbo-agents',
-      decode: expect.any(Function),
-    }))
+    // 0.1.7 keys a card's form by the Host profile entry id, which is this
+    // plugin's own row id — the same namespace its Host half validates.
+    expect(value.ctx.configForms.get).toHaveBeenCalledWith('banbo-agents')
+    // The Plugins page's own seat for one bundle's configuration: a KEYED slot
+    // addressed by the bundle's package name. 0.1.5's `settings.plugin.item`
+    // list seat is gone in 0.1.7.
     expect(value.ctx.slots.register).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'settings.plugin.item',
-      key: 'banbo-agents',
+      name: 'plugins.bundle.config',
+      key: '@banbolee/dsh-agents',
       locale: 'banbo.agents',
       inject: expect.any(Function),
     }), expect.any(Function))
+    expect(value.ctx.slots.inject).toHaveBeenCalledWith('plugins.bundle.config', expect.any(Function))
   })
 
   it('disposes the slot/controller and mounted Remote in reverse ownership order', async () => {
@@ -194,10 +197,10 @@ describe('agents Web client plugin', () => {
     expect(value.order.at(-1)).toBe('unmount')
   })
 
-  it('publishes no settings scope or slot when descriptor mount fails', async () => {
+  it('publishes no settings form or slot when descriptor mount fails', async () => {
     const value = fixture({ mountReject: true })
     await expect(apply(value.ctx as never)).rejects.toThrow(/mount failed/)
-    expect(value.ctx.settingsScope.bind).not.toHaveBeenCalled()
+    expect(value.ctx.configForms.get).not.toHaveBeenCalled()
     expect(value.ctx.slots.register).not.toHaveBeenCalled()
   })
 
@@ -205,7 +208,7 @@ describe('agents Web client plugin', () => {
     const value = fixture({ remoteFailure: true })
     await expect(apply(value.ctx as never)).rejects.toThrow(/catalog failed/)
     expect(value.mountDisposer).toHaveBeenCalledTimes(1)
-    expect(value.ctx.settingsScope.bind).not.toHaveBeenCalled()
+    expect(value.ctx.configForms.get).not.toHaveBeenCalled()
     expect(value.ctx.slots.register).not.toHaveBeenCalled()
   })
 })

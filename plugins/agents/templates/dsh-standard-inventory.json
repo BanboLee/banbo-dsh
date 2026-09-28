@@ -1,6 +1,8 @@
 {
-  "dshVersion": "0.1.5-rc.2",
-  "standardDigest": "sha256:62abd434d9ef9ec3b84fd155c1a968db925ed3a447ef032aca342051e4327126",
+  "dshVersion": "0.1.7-rc.2",
+  "standardDigest": "sha256:3b088f03f12c2bebb93a63634a07dfd48a4f04b5ecaaec7b7a85437b25209c88",
+  "templateProbe": "probe",
+  "templateDigest": "sha256:059180ddea932452c32147621b21305f949b7e281f64087bd23a008d11a77009",
   "rows": [
     {
       "id": "persona",
@@ -157,8 +159,8 @@
       }
     },
     {
-      "id": "workflow-worker-thread",
-      "name": "@deepseek-ai/dsh-workflow-worker-thread",
+      "id": "workflow-ptc",
+      "name": "@deepseek-ai/dsh-workflow-ptc",
       "config": {
         "provider": "spawn"
       }
@@ -170,6 +172,7 @@
     {
       "id": "tool-ralph",
       "name": "@deepseek-ai/dsh-tool-ralph",
+      "disabled": true,
       "config": {
         "subagentProvider": "spawn",
         "maxRounds": 64
@@ -197,6 +200,11 @@
     {
       "id": "present",
       "name": "@deepseek-ai/dsh-tool-present"
+    },
+    {
+      "id": "tool-plugin-manager",
+      "name": "@deepseek-ai/dsh-plugin-manager/tools",
+      "disabled": true
     }
   ],
   "tools": [

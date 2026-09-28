@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SettingsPluginItemOwnerProps } from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
+// Type-only: declares the `plugins.bundle.config` seat this card occupies — the
+// Plugins page's own slot for one bundle's configuration (keyed by package
+// name, rendered on the bundle's page). The 0.1.5 `settings.plugin.item` seat
+// is gone in 0.1.7.
+import type {} from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
 
 import type { AgentModelView } from '@banbolee/dsh-agents/catalog-remote'
 import type { AgentsSettingsController, AgentsSettingsSnapshot } from './controller.js'
 import { styles } from './styles.js'
-
-void (undefined as SettingsPluginItemOwnerProps | undefined)
 
 export const LOCALE_NAMESPACE = 'banbo.agents'
 
@@ -69,7 +71,7 @@ export interface AgentsSettingsCardFace {
   discard(): void
 }
 
-export type AgentsSettingsCardProps = PropsRuntime<'settings.plugin.item'>
+export type AgentsSettingsCardProps = PropsRuntime<'plugins.bundle.config'>
   & PropsLocale<typeof LOCALE_NAMESPACE>
   & InjectFace<AgentsSettingsCardFace>
 
@@ -124,6 +126,10 @@ function ModelEditor(props: {
 
 /** Plugin Configuration card for the startup catalog plus official live settings. */
 export function AgentSettingsCard(props: AgentsSettingsCardProps) {
+  // Bundle configuration is rendered with `view: 'page'` only (the Plugins page
+  // has no summary form for a bundle); another surface's one-liner is not this
+  // card's contract, so it stays absent rather than half-rendered.
+  if (props.view !== 'page') return null
   const state = props.useAgentsSettings((snapshot: AgentsSettingsSnapshot) => snapshot)
   if (!state.available) return null
   const disabled = !state.writable || state.saving || state.conflicted

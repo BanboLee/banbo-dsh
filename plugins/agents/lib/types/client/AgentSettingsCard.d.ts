@@ -19,7 +19,7 @@ export interface AgentsSettingsCardFace {
     save(): void;
     discard(): void;
 }
-export type AgentsSettingsCardProps = PropsRuntime<'settings.plugin.item'> & PropsLocale<typeof LOCALE_NAMESPACE> & InjectFace<AgentsSettingsCardFace>;
+export type AgentsSettingsCardProps = PropsRuntime<'plugins.bundle.config'> & PropsLocale<typeof LOCALE_NAMESPACE> & InjectFace<AgentsSettingsCardFace>;
 /** Plugin Configuration card for the startup catalog plus official live settings. */
 export declare function AgentSettingsCard(props: AgentsSettingsCardProps): import("react").JSX.Element | null;
 //# sourceMappingURL=AgentSettingsCard.d.ts.map

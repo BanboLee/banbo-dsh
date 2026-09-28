@@ -3,22 +3,24 @@
  *
  * Three responsibilities, all testable offline:
  *
- *   - **Template rendering** — the shipped `presets/<id>/agent.cordis.yml` files
- *     are the template with the agent id substituted, and nothing else. A
- *     hand-edited shipped preset is a defect this suite catches.
- *   - **Standard inventory** — a digest of the official `standard` composition
- *     the template was derived from. It exists so a harness upgrade cannot let
- *     our full-copy template rot silently (§8.3).
- *   - **Generation compilation** — user main agents become preset directories
- *     inside an immutable generation, activated by swapping one `current`
- *     pointer (§8.6). No locks, no directory exchange, no partially written
- *     generation ever becoming live.
+ *   - **Template rendering** — the two preset rows this bundle ships in
+ *     `cordis.patch.yml` are the template with the agent id substituted, and
+ *     nothing else. A hand-edited preset row is a defect this suite catches.
+ *   - **Standard inventory** — a digest of the official `standard` preset row
+ *     (0.1.7 ships it in `@deepseek-ai/dsh-web-app`'s
+ *     `presets/standard.patch.yml`) the template was derived from, plus the
+ *     template's own recorded digest. It exists so a harness upgrade cannot let
+ *     our copy rot silently (§8.3).
+ *   - **Generation compilation** — the effective catalog is published as an
+ *     immutable ABI generation, activated by swapping one `current` pointer
+ *     (§8.6). Presets are NOT compiled here any more: 0.1.7 declares them as
+ *     rows, so a user preset is a row in the user's own profile patch.
  */
 
 import { createRequire } from 'node:module'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, relative, resolve } from 'node:path'
+import { delimiter, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -31,12 +33,79 @@ import {
   readCurrentGeneration,
   renderComposition,
   standardCompositionPath,
+  standardPresetPlugins,
 } from '../preset-compiler.js'
 import { FORBIDDEN_DELEGATION_TOOLS } from '../schema.js'
 
 const require = createRequire(import.meta.url)
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const templateText = readFileSync(join(pluginRoot, 'templates', 'agent.cordis.template.yml'), 'utf8')
+const patchText = readFileSync(join(pluginRoot, 'cordis.patch.yml'), 'utf8')
+const inventoryPath = join(pluginRoot, 'templates', 'dsh-standard-inventory.json')
+
+/** What one complete 0.1.7 generation contains: the ABI manifest and its marker. */
+const GENERATION_CONTENTS = ['abi.json', COMPLETE_MARKER]
+
+/** The agent ids one generation published, in ABI order. */
+function abiAgentIds(generationDir: string): string[] {
+  const abi = JSON.parse(readFileSync(join(generationDir, 'abi.json'), 'utf8')) as {
+    agents: Array<{ id: string }>
+  }
+  return abi.agents.map((agent) => agent.id)
+}
+
+/** Parse any YAML here with the `!!js` gates left as inert strings. */
+function parseYaml(text: string): Array<Record<string, unknown>> {
+  const { parseDocument } = require('yaml') as typeof import('yaml')
+  const document = parseDocument(text, { schema: 'core', merge: false })
+  if (document.errors.length > 0) throw document.errors[0]
+  return document.toJS() as Array<Record<string, unknown>>
+}
+
+/** The preset rows this bundle declares, in patch order. */
+function presetRows(): Array<Record<string, unknown>> {
+  return parseYaml(patchText)
+    .flatMap((patch) => (Array.isArray(patch.insert) ? patch.insert as Array<Record<string, unknown>> : []))
+    .filter((row) => row.name === '@deepseek-ai/dsh-agent-preset')
+}
+
+/** The `id`-keyed view of one inventory's rows. */
+const byId = (rows: readonly InventoryRow[]): Map<string, InventoryRow> =>
+  new Map(rows.filter((row) => row.id !== undefined).map((row) => [row.id as string, row]))
+
+/**
+ * The installed official `standard` preset's child rows, or undefined.
+ *
+ * Two anchors, like the module resolution the Loader itself performs: this
+ * package's own `require` (a profile that installed the web bundle), then the
+ * global `dsh` installation, which carries `@deepseek-ai/dsh-web-app` as a
+ * dependency. The drift gate is meaningful only against a real official file,
+ * so an unresolvable one skips rather than comparing against nothing.
+ */
+function officialStandardRows(): Array<Record<string, unknown>> | undefined {
+  const path = standardCompositionPath()
+  if (path !== undefined) return standardPresetPlugins(readFileSync(path, 'utf8'))
+  const file = globalDshFile('@deepseek-ai/dsh-web-app', join('presets', 'standard.patch.yml'))
+  return file === undefined ? undefined : standardPresetPlugins(readFileSync(file, 'utf8'))
+}
+
+/** Resolve one file inside a package installed beside the global `dsh`. */
+function globalDshFile(packageName: string, relativePath: string): string | undefined {
+  const dsh = (process.env.PATH ?? '')
+    .split(delimiter)
+    .map((directory) => join(directory, 'dsh'))
+    .find((candidate) => existsSync(candidate))
+  if (dsh === undefined) return undefined
+  const dshRoot = dirname(dirname(realpathSync(dsh)))
+  for (const candidate of [
+    join(dshRoot, 'node_modules', packageName),
+    join(dirname(dirname(dshRoot)), packageName),
+  ]) {
+    const file = join(candidate, relativePath)
+    if (existsSync(file)) return file
+  }
+  return undefined
+}
 
 /** One parsed composition row, as `computeStandardInventory` reports it. */
 interface InventoryRow {
@@ -127,20 +196,50 @@ describe('renderComposition', () => {
   })
 })
 
-describe('the shipped built-in presets are the template, not hand-written copies', () => {
+describe('the shipped preset rows are the template, not hand-written copies', () => {
+  it('declares one @deepseek-ai/dsh-agent-preset row per built-in preset', () => {
+    expect(presetRows().map((row) => row.id).sort()).toEqual(['preset-banbo', 'preset-planner'])
+    for (const row of presetRows()) {
+      const config = row.config as Record<string, unknown>
+      expect(row.name).toBe('@deepseek-ai/dsh-agent-preset')
+      expect(row.id).toBe(`preset-${config.id}`)
+    }
+  })
+
   for (const id of ['banbo', 'planner']) {
-    it(`presets/${id}/agent.cordis.yml equals the rendered template`, () => {
-      const shipped = readFileSync(join(pluginRoot, 'presets', id, 'agent.cordis.yml'), 'utf8')
-      expect(shipped).toBe(renderComposition(templateText, id))
+    it(`preset-${id}'s plugins equal the rendered template`, () => {
+      const row = presetRows().find((candidate) => (candidate.config as Record<string, unknown>).id === id)
+      expect(row, `preset-${id} must be declared`).toBeDefined()
+      const config = row!.config as Record<string, unknown>
+      expect(config.plugins).toEqual(parseYaml(renderComposition(templateText, id)))
+      // Both runtime rows carry THIS preset's agent id, and neither survives the
+      // other preset's rendering by accident.
+      const rendered = config.plugins as Array<Record<string, unknown>>
+      const runtime = rendered.filter((child) => typeof child.name === 'string' && child.name.startsWith('@banbolee/dsh-agents/'))
+      for (const child of runtime) expect((child.config as Record<string, unknown>).agentId).toBe(id)
+      expect(JSON.stringify(config.plugins)).not.toContain('{{agentId}}')
     })
   }
 
   it('ships display metadata beside every composition', () => {
-    for (const id of ['banbo', 'planner']) {
-      const metadata = readFileSync(join(pluginRoot, 'presets', id, 'preset.yml'), 'utf8')
-      expect(metadata).toMatch(/^name: /m)
-      expect(metadata).toMatch(/^description: /m)
+    for (const row of presetRows()) {
+      const config = row.config as Record<string, unknown>
+      expect(config.name, `${String(row.id)} needs a display name`).toEqual(expect.any(String))
+      expect(config.description, `${String(row.id)} needs a description`).toEqual(expect.any(String))
+      expect(config.order, `${String(row.id)} needs a roster order`).toEqual(expect.any(Number))
     }
+  })
+
+  it('leaves the preset registry row to the profile bundle that owns it', () => {
+    // 0.1.7 keeps the roster in `@deepseek-ai/dsh-agent-preset-registry`, which
+    // dsh-web-app inserts with `default: standard`. This bundle only DECLARES
+    // presets; patching or inserting the same row again would either collide
+    // with that entry or silently replace another bundle's roster config.
+    const ids = parseYaml(patchText).flatMap((patch) => (Array.isArray(patch.insert) ? patch.insert as Array<Record<string, unknown>> : []))
+    expect(ids.map((row) => row.name)).not.toContain('@deepseek-ai/dsh-agent-preset-registry')
+    expect(patchText).not.toContain('agent-presets')
+    expect(patchText).not.toContain('includeShippedRoot')
+    expect(patchText).not.toContain('roots:')
   })
 })
 
@@ -282,128 +381,145 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
     ])
   })
 
-  it('the shipped inventory matches official rows and the managed template tool surface', () => {
-    const officialPath = standardCompositionPath()
-    expect(officialPath, 'the official standard composition must be resolvable').toBeDefined()
-    const official = computeStandardInventory(readFileSync(officialPath!, 'utf8'))
+  it('the recorded template digest matches the shipped template', () => {
+    // Always-on half of the drift gate: the template is in this repository, so
+    // its recorded digest is comparable on every platform, global dsh or not.
+    // A mismatch means the copy changed and the inventory must be re-reviewed.
+    const shipped = JSON.parse(readFileSync(inventoryPath, 'utf8'))
     const managed = computeStandardInventory(renderComposition(templateText, 'probe'))
-    const shipped = JSON.parse(readFileSync(join(pluginRoot, 'templates', 'dsh-standard-inventory.json'), 'utf8'))
-    // A mismatch means the harness changed `standard` or our full-copy template's
-    // fixed tool surface drifted. Update the inventory only after review.
-    expect(official.digest).toBe(shipped.standardDigest)
-    expect(official.rows).toEqual(shipped.rows)
+    expect(managed.digest).toBe(shipped.templateDigest)
     expect(managed.tools).toEqual(shipped.tools)
+    expect(shipped.dshVersion).toMatch(/^0\.1\.7-rc\.\d+$/)
   })
 
-  it('the managed template removes only general delegation creation tools from the standard ABI', () => {
-    const officialPath = standardCompositionPath()
-    expect(officialPath, 'the official standard composition must be resolvable').toBeDefined()
-    const official = computeStandardInventory(readFileSync(officialPath!, 'utf8')).tools
-    const managed = computeStandardInventory(renderComposition(templateText, 'probe')).tools
-    const removed = official.filter((name) => !managed.includes(name))
-    expect(removed).toEqual([
-      'list_subagent_models', ...FORBIDDEN_DELEGATION_TOOLS,
-    ].sort())
-  })
-
-  it('every shared row keeps the official config shape, isolate and disabled gate', () => {
-    // THE R1 GATE. The template is a full COPY of the official `standard`
-    // composition, so a row this bundle does not deliberately touch must keep
-    // the official config shape exactly. Comparing only derived TOOL NAMES (the
-    // digest gate above) cannot see a dropped REQUIRED config field: removing
-    // `prefix` from the `persona` row left the whole suite green while every
-    // real profile failed with
-    //   `preset "banbo" failed to mount: $.prefix missing required value`.
-    const officialPath = standardCompositionPath()
-    expect(officialPath, 'the official standard composition must be resolvable').toBeDefined()
-    const official = computeStandardInventory(readFileSync(officialPath!, 'utf8'))
+  // The official `standard` composition lives in the `preset-standard` row of
+  // `@deepseek-ai/dsh-web-app` in 0.1.7. It is not a dependency of this bundle,
+  // so the comparison runs wherever that bundle is installed — CI installs the
+  // `dsh` CLI (which carries it) before the unit lane.
+  const officialRows = officialStandardRows()
+  describe.skipIf(officialRows === undefined)('against the installed official standard preset row', () => {
+    const official = computeStandardInventory(officialRows!)
     const managed = computeStandardInventory(renderComposition(templateText, 'probe'))
 
-    const byId = (rows: readonly InventoryRow[]) =>
-      new Map(rows.filter((row) => row.id !== undefined).map((row) => [row.id as string, row]))
-    const officialById = byId(official.rows)
-    const managedById = byId(managed.rows)
+    it('the shipped inventory matches the official rows and digest', () => {
+      const shipped = JSON.parse(readFileSync(inventoryPath, 'utf8'))
+      expect(official.digest).toBe(shipped.standardDigest)
+      expect(official.rows).toEqual(shipped.rows)
+    })
 
-    // Rows this bundle deliberately drops from the copy. They cannot appear in
-    // the shared set, so they are listed only to document the intent.
-    const deliberatelyRemoved = new Set([
-      'delegation',
-      'tool-subagent',
-      'tool-subagent-fork',
-      'tool-subagent-codex',
-      'tool-subagent-claude-code',
-      'workflow-worker-thread',
-      'tool-workflow',
-      'tool-ralph',
-    ])
-    for (const id of deliberatelyRemoved) {
-      expect(managedById.has(id), `${id} is deliberately removed and must stay removed`).toBe(false)
-    }
+    it('removes only general delegation creation tools from the standard ABI', () => {
+      const removed = official.tools.filter((name) => !managed.tools.includes(name))
+      expect(removed).toEqual([
+        'list_subagent_models',
+        ...FORBIDDEN_DELEGATION_TOOLS.filter((name) => official.tools.includes(name)),
+      ].sort())
+    })
 
-    const shared = [...officialById.keys()].filter((id) => managedById.has(id))
-    // The copy is 23 shared rows today (31 official minus the 8 deliberate
-    // removals). A vacuity guard, not a snapshot: if the template ever stops
-    // being a full copy this gate must fail loudly rather than compare nothing.
-    expect(shared.length, 'the template must still be a full copy of standard').toBeGreaterThan(20)
-    expect(managedById.size - shared.length, 'only the 3 added rows may be ours alone').toBe(3)
+    it('every shared row keeps the official config shape, isolate and disabled gate', () => {
+      // THE R1 GATE. The template is a copy of the official `standard`
+      // composition, so a row this bundle does not deliberately touch must keep
+      // the official config shape exactly. Comparing only derived TOOL NAMES (the
+      // digest gate above) cannot see a dropped REQUIRED config field: removing
+      // `prefix` from the `persona` row left the whole suite green while every
+      // real profile failed with
+      //   `preset "banbo" failed to mount: $.prefix missing required value`.
+      const officialById = byId(official.rows)
+      const managedById = byId(managed.rows)
 
-    for (const id of shared) {
-      const expected = officialById.get(id)!
-      const actual = managedById.get(id)!
-      expect(configKeyPaths(actual.config), `row ${id}: config shape drifted from official`).toEqual(
-        configKeyPaths(expected.config),
-      )
-      expect(actual.isolate, `row ${id}: isolate drifted from official`).toEqual(expected.isolate)
-      expect(actual.disabled, `row ${id}: disabled gate drifted from official`).toEqual(expected.disabled)
-    }
+      // Rows this bundle deliberately drops from the copy. They cannot appear in
+      // the shared set, so they are listed only to document the intent.
+      const deliberatelyRemoved = new Set([
+        'delegation',
+        'tool-subagent',
+        'tool-subagent-fork',
+        'tool-subagent-codex',
+        'tool-subagent-claude-code',
+        'workflow-worker-thread',
+        'tool-workflow',
+        'tool-ralph',
+      ])
+      for (const id of deliberatelyRemoved) {
+        expect(managedById.has(id), `${id} is deliberately removed and must stay removed`).toBe(false)
+      }
 
-    // The rows this bundle ADDS are its own business, but they must exist.
-    for (const id of ['delegation-control', 'banbo-main-runtime', 'banbo-delegation']) {
-      expect(managedById.has(id), `${id} is added by this bundle and must exist`).toBe(true)
-    }
+      const shared = [...officialById.keys()].filter((id) => managedById.has(id))
+      // The copy still shares most of the official rows today; a row the
+      // official composition ADDED is the only kind of official-only entry this
+      // gate tolerates. The vacuity guard, not a snapshot: if the template ever
+      // stops being a copy this gate must fail loudly rather than compare
+      // nothing.
+      expect(shared.length, 'the template must still be a copy of standard').toBeGreaterThan(15)
+      expect(managedById.size - shared.length, 'only the 3 added rows may be ours alone').toBe(3)
+
+      for (const id of shared) {
+        const expected = officialById.get(id)!
+        const actual = managedById.get(id)!
+        expect(configKeyPaths(actual.config), `row ${id}: config shape drifted from official`).toEqual(
+          configKeyPaths(expected.config),
+        )
+        expect(actual.isolate, `row ${id}: isolate drifted from official`).toEqual(expected.isolate)
+        expect(actual.disabled, `row ${id}: disabled gate drifted from official`).toEqual(expected.disabled)
+      }
+
+      // The rows this bundle ADDS are its own business, but they must exist.
+      for (const id of ['delegation-control', 'banbo-main-runtime', 'banbo-delegation']) {
+        expect(managedById.has(id), `${id} is added by this bundle and must exist`).toBe(true)
+      }
+    })
   })
 })
 
 /* ----------------------------------------------------------- compilation --- */
 
-describe('compilePresets — immutable generation with a current pointer', () => {
+describe('compilePresets — immutable ABI generation with a current pointer', () => {
   const options = (root: string, definitions: unknown[], extra: Record<string, unknown> = {}) => ({
     rootDir: root,
-    templateText,
     definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-    builtinPresetIds: new Set(['banbo', 'planner']),
-    dshVersion: '0.1.5-rc.2',
+    dshVersion: '0.1.7-rc.2',
     selfVersion: '0.0.0',
     ...extra,
   })
 
-  it('writes one preset directory per user main agent', () => {
+  it('publishes the ABI manifest and no preset directory any more', () => {
     const root = scratchDir()
     const result = compilePresets(options(root, [mainAgent('my-lead'), mainAgent('other')]) as never)
-    const dir = join(result.generationDir, 'presets')
-    expect(readdirSync(dir).sort()).toEqual(['my-lead', 'other'])
-    expect(existsSync(join(dir, 'my-lead', 'agent.cordis.yml'))).toBe(true)
-    expect(existsSync(join(dir, 'my-lead', 'preset.yml'))).toBe(true)
+    // 0.1.5 wrote `presets/<id>/{agent.cordis.yml,preset.yml}` here. 0.1.7
+    // declares a preset as a ROW (config.plugins), so the generation is the
+    // published ABI alone and nothing in it can shadow a preset declaration.
+    expect(readdirSync(result.generationDir).sort()).toEqual(GENERATION_CONTENTS)
+    expect(abiAgentIds(result.generationDir)).toEqual(['my-lead', 'other'])
   })
 
-  it('skips agents whose preset already ships in the package', () => {
+  it('records the preset id each main agent claims, and none for a child-only agent', () => {
     const root = scratchDir()
-    const result = compilePresets(options(root, [mainAgent('banbo'), mainAgent('my-lead')]) as never)
-    expect(readdirSync(join(result.generationDir, 'presets'))).toEqual(['my-lead'])
+    const result = compilePresets(options(root, [
+      mainAgent('my-lead'),
+      { id: 'helper', displayName: 'h', description: 'd', allowedChildren: [], child: {} },
+    ]) as never)
+    const abi = JSON.parse(readFileSync(join(result.generationDir, 'abi.json'), 'utf8')) as {
+      agents: Array<{ id: string, presetId?: string, hasMain: boolean }>
+    }
+    expect(abi.agents.map((agent) => [agent.id, agent.presetId, agent.hasMain])).toEqual([
+      ['helper', undefined, false],
+      ['my-lead', 'my-lead', true],
+    ])
   })
 
-  it('skips child-only agents entirely', () => {
+  it('refuses two main agents claiming one preset id', () => {
     const root = scratchDir()
-    const result = compilePresets(options(root, [mainAgent('my-lead'), { id: 'helper', displayName: 'h', description: 'd', allowedChildren: [], child: {} }]) as never)
-    expect(readdirSync(join(result.generationDir, 'presets'))).toEqual(['my-lead'])
-  })
-
-  it('writes the agent id into the composition', () => {
-    const root = scratchDir()
-    const result = compilePresets(options(root, [mainAgent('my-lead')]) as never)
-    const text = readFileSync(join(result.generationDir, 'presets', 'my-lead', 'agent.cordis.yml'), 'utf8')
-    expect(text).toContain('agentId: my-lead')
-    expect(text).not.toContain('{{agentId}}')
+    let failure: (Error & { code?: string }) | undefined
+    try {
+      compilePresets(options(root, [
+        mainAgent('first', { main: { presetId: 'shared' } }),
+        mainAgent('second', { main: { presetId: 'shared' } }),
+      ]) as never)
+    } catch (error) {
+      failure = error as Error & { code?: string }
+    }
+    // One preset identity addresses one agent; the 0.1.7 row model cannot see
+    // this by scanning directories any more, so the claim check is the gate.
+    expect(failure?.code).toBe('duplicate-preset-id')
+    expect(failure?.message).toMatch(/both claim preset id "shared"/)
   })
 
   it('points `current` at the new generation', () => {
@@ -413,7 +529,8 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     const current = join(root, '.generated', 'current')
     expect(existsSync(current)).toBe(true)
     expect(resolve(dirname(current), readlinkSync(current))).toBe(resolve(result.generationDir))
-    expect(readdirSync(join(current, 'presets'))).toEqual(['my-lead'])
+    expect(readdirSync(current).sort()).toEqual(GENERATION_CONTENTS)
+    expect(abiAgentIds(current)).toEqual(['my-lead'])
   })
 
   it('marks the generation complete and records the ABI manifest inside it', () => {
@@ -425,7 +542,10 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     expect(abi.agents[0].presetId).toBe('my-lead')
     expect(abi.agents[0].hasMain).toBe(true)
     expect(abi.agents[0].toolName).toBe('agent_my_lead')
-    expect(abi.dshVersion).toBe('0.1.5-rc.2')
+    expect(abi.dshVersion).toBe('0.1.7-rc.2')
+    // The marker names no preset count any more: presets are not compiled here.
+    expect(JSON.parse(readFileSync(join(result.generationDir, COMPLETE_MARKER), 'utf8')))
+      .not.toHaveProperty('presets')
   })
 
   it('reuses an existing generation for identical input without rewriting it', () => {
@@ -446,7 +566,7 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     const first = compilePresets(options(root, [mainAgent('my-lead')]) as never)
     const generationsDir = join(root, '.generated', 'generations')
     const partial = join(generationsDir, `${PARTIAL_PREFIX}${first.generation}.99999.deadbeef`)
-    mkdirSync(join(partial, 'presets', 'ghost'), { recursive: true })
+    mkdirSync(join(partial, 'residue', 'ghost'), { recursive: true })
     writeFileSync(join(partial, 'abi.json'), '{}')
 
     const second = compilePresets(options(root, [mainAgent('my-lead')]) as never)
@@ -454,7 +574,7 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     expect(existsSync(partial), 'the crashed staging directory must be cleaned').toBe(false)
     expect(second.reused).toBe(true)
     expect(existsSync(join(root, '.generated', 'current', COMPLETE_MARKER))).toBe(true)
-    expect(readdirSync(join(root, '.generated', 'current', 'presets'))).toEqual(['my-lead'])
+    expect(readdirSync(join(root, '.generated', 'current')).sort()).toEqual(GENERATION_CONTENTS)
   })
 
   it('adopts a complete same-hash generation instead of deleting and rebuilding it', () => {
@@ -482,7 +602,7 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     const second = compilePresets(options(root, [mainAgent('my-lead')]) as never)
     expect(second.reused).toBe(false)
     expect(existsSync(join(second.generationDir, COMPLETE_MARKER))).toBe(true)
-    expect(readdirSync(join(second.generationDir, 'presets'))).toEqual(['my-lead'])
+    expect(abiAgentIds(second.generationDir)).toEqual(['my-lead'])
   })
 
   it('produces a different generation when the catalog changes', () => {    const root = scratchDir()
@@ -490,15 +610,15 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     const second = compilePresets(options(root, [mainAgent('my-lead'), mainAgent('added')]) as never)
     expect(second.generation).not.toBe(first.generation)
     // The new generation is a complete mirror, not an incremental patch.
-    expect(readdirSync(join(second.generationDir, 'presets')).sort()).toEqual(['added', 'my-lead'])
+    expect(abiAgentIds(second.generationDir)).toEqual(['added', 'my-lead'])
   })
 
   it('a deleted main agent disappears from the next generation (§6.3)', () => {
     const root = scratchDir()
     compilePresets(options(root, [mainAgent('my-lead'), mainAgent('doomed')]) as never)
     const after = compilePresets(options(root, [mainAgent('my-lead')]) as never)
-    expect(readdirSync(join(after.generationDir, 'presets'))).toEqual(['my-lead'])
-    expect(readdirSync(join(root, '.generated', 'current', 'presets'))).toEqual(['my-lead'])
+    expect(abiAgentIds(after.generationDir)).toEqual(['my-lead'])
+    expect(abiAgentIds(join(root, '.generated', 'current'))).toEqual(['my-lead'])
   })
 
   it('never activates a generation that lacks its completion marker', () => {
@@ -506,12 +626,12 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     const first = compilePresets(options(root, [mainAgent('my-lead')]) as never)
     // Simulate a crash between writing the payload and marking completion.
     const orphan = join(root, '.generated', 'generations', 'sha256-orphan')
-    mkdirSync(join(orphan, 'presets', 'ghost'), { recursive: true })
+    mkdirSync(join(orphan, 'residue', 'ghost'), { recursive: true })
     writeFileSync(join(orphan, 'abi.json'), '{}')
     const second = compilePresets(options(root, [mainAgent('my-lead')]) as never)
     // The pointer still resolves to a complete generation, not the orphan.
     expect(existsSync(join(root, '.generated', 'current', COMPLETE_MARKER))).toBe(true)
-    expect(readdirSync(join(root, '.generated', 'current', 'presets'))).toEqual(['my-lead'])
+    expect(abiAgentIds(join(root, '.generated', 'current'))).toEqual(['my-lead'])
     expect(second.generationDir).toBe(first.generationDir)
   })
 
@@ -527,7 +647,8 @@ describe('compilePresets — immutable generation with a current pointer', () =>
   it('an empty catalog still produces a valid, activatable generation', () => {
     const root = scratchDir()
     const result = compilePresets(options(root, []) as never)
-    expect(readdirSync(join(result.generationDir, 'presets'))).toEqual([])
+    expect(readdirSync(result.generationDir).sort()).toEqual(GENERATION_CONTENTS)
+    expect(abiAgentIds(result.generationDir)).toEqual([])
     expect(existsSync(join(root, '.generated', 'current', COMPLETE_MARKER))).toBe(true)
   })
 
@@ -557,8 +678,8 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     const compiled = compilePresets(options(root, [mainAgent('my-lead')]) as never)
     const pointer = join(root, '.generated', 'current')
     expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
-    // The roster reads through the link, so it must resolve to real content.
-    expect(readdirSync(join(pointer, 'presets'))).toEqual(['my-lead'])
+    // The Host reads through the link, so it must resolve to real content.
+    expect(abiAgentIds(pointer)).toEqual(['my-lead'])
     expect(readlinkSync(pointer)).toBe(relative(join(root, '.generated'), compiled.generationDir))
 
     // Replacing the pointer is still the one atomic rename: the target stays a
@@ -569,20 +690,20 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     expect(replaced.generation).not.toBe(compiled.generation)
     expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
     expect(readlinkSync(pointer)).toBe(relative(join(root, '.generated'), replaced.generationDir))
-    expect(readdirSync(join(pointer, 'presets')).sort()).toEqual(['added', 'my-lead'])
+    expect(abiAgentIds(pointer)).toEqual(['added', 'my-lead'])
     expect(existsSync(join(compiled.generationDir, COMPLETE_MARKER))).toBe(true)
     expect(parkedPointers(root)).toEqual([])
   })
 
   // Runs only on the Windows CI runner: macOS/Linux cannot exercise the junction
   // branch, so a skip here is honest rather than a false green.
-  it.skipIf(process.platform !== 'win32')('activates through a link the roster can read on Windows (§8.7 step 2)', () => {
+  it.skipIf(process.platform !== 'win32')('activates through a link the Host can read on Windows (§8.7 step 2)', () => {
     const root = scratchDir()
     const compiled = compilePresets(options(root, [mainAgent('my-lead')]) as never)
     const pointer = join(root, '.generated', 'current')
     // Windows reports a junction as a symlink reparse point.
     expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
-    expect(readdirSync(join(pointer, 'presets'))).toEqual(['my-lead'])
+    expect(abiAgentIds(pointer)).toEqual(['my-lead'])
     expect(compiled.reused).toBe(false)
     // A second compile of the same content must reuse it through the link.
     expect(compilePresets(options(root, [mainAgent('my-lead')]) as never).reused).toBe(true)
@@ -590,11 +711,11 @@ describe('compilePresets — immutable generation with a current pointer', () =>
     // The REPLACE path — the case this job failed on. A junction cannot be
     // renamed over, so installing a NEW pointer has to park the live one,
     // install the staged one, and drop the parked link; the pointer must end up
-    // naming the new generation and the roster must read it.
+    // naming the new generation and the Host must read it.
     const replaced = compilePresets(options(root, [mainAgent('my-lead'), mainAgent('added')]) as never)
     expect(replaced.generation).not.toBe(compiled.generation)
     expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
-    expect(readdirSync(join(pointer, 'presets')).sort()).toEqual(['added', 'my-lead'])
+    expect(abiAgentIds(pointer)).toEqual(['added', 'my-lead'])
     expect(readCurrentGeneration(root)).toBe(resolve(replaced.generationDir))
     // The generation the pointer replaced survives for rollback, and the swap
     // left nothing parked behind.
@@ -618,7 +739,7 @@ describe('compilePresets — immutable generation with a current pointer', () =>
 
     expect(readCurrentGeneration(root)).toBe(resolve(first.generationDir))
     expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
-    expect(readdirSync(join(pointer, 'presets'))).toEqual(['my-lead'])
+    expect(abiAgentIds(pointer)).toEqual(['my-lead'])
     expect(parkedPointers(root)).toEqual([])
   })
 
@@ -668,9 +789,8 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
     const compileCatalog = (definitions: unknown[]) =>
       compile({
         rootDir: root,
-        templateText,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.1.5-rc.2',
+        dshVersion: '0.1.7-rc.2',
         selfVersion: '0.0.0',
       } as never)
 
@@ -683,7 +803,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
     // POSIX path keeps the single atomic swap and does not use the fallback.
     expect(renames.filter(([source]) => source === pointer)).toEqual([])
     expect(parkedPointers(root)).toEqual([])
-    expect(readdirSync(join(pointer, 'presets')).sort()).toEqual(['added', 'my-lead'])
+    expect(abiAgentIds(pointer)).toEqual(['added', 'my-lead'])
   })
 
   it('installs a new pointer where renaming one over a link is refused (the Windows path)', async () => {
@@ -720,21 +840,20 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
     const compileCatalog = (definitions: unknown[]) =>
       compile({
         rootDir: root,
-        templateText,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.1.5-rc.2',
+        dshVersion: '0.1.7-rc.2',
         selfVersion: '0.0.0',
       } as never)
 
     // The first activation creates the pointer, which the refusal does not block.
     const first = compileCatalog([mainAgent('my-lead')])
-    expect(readdirSync(join(pointer, 'presets'))).toEqual(['my-lead'])
+    expect(abiAgentIds(pointer)).toEqual(['my-lead'])
 
     // The second must replace it: park, install, drop the parked link.
     const second = compileCatalog([mainAgent('my-lead'), mainAgent('added')])
     expect(second.generation).not.toBe(first.generation)
     expect(lstatSync(pointer).isSymbolicLink()).toBe(true)
-    expect(readdirSync(join(pointer, 'presets')).sort()).toEqual(['added', 'my-lead'])
+    expect(abiAgentIds(pointer)).toEqual(['added', 'my-lead'])
     expect(readCurrentGeneration(root)).toBe(resolve(second.generationDir))
     // The replaced generation survives for rollback and nothing stays parked.
     expect(existsSync(join(first.generationDir, COMPLETE_MARKER))).toBe(true)

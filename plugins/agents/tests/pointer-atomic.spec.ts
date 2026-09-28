@@ -28,11 +28,22 @@ afterEach(() => {
   while (scratch.length > 0) rmSync(scratch.pop()!, { recursive: true, force: true })
 })
 
+/**
+ * One catalog whose CONTENT differs per probe id, so each call compiles to a
+ * different generation hash. The preset composition no longer participates in
+ * that hash (0.1.7 declares presets as rows), so the difference has to be a
+ * catalog difference.
+ */
 const options = (root: string, id: string) => ({
   rootDir: root,
-  templateText: `{{agentId}}-${id}`,
-  definitions: [],
-  dshVersion: '0.1.5-rc.2',
+  definitions: new Map([[id, {
+    id,
+    displayName: id,
+    description: `${id} probe`,
+    allowedChildren: [],
+    main: { presetId: id, persona: 'prompts/probe.md', tools: [], maxDepth: 0 },
+  }]]),
+  dshVersion: '0.1.7-rc.2',
   selfVersion: '0.0.0',
 })
 

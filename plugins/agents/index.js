@@ -3,8 +3,8 @@
  * (docs/agents-plugin-plan.md §8.4, §9.1, §9.2).
  *
  * The Host does one thing before anything else may run: read the built-in and
- * user catalog, merge and validate it, compile the immutable preset generation
- * and point `current` at it. Everything a preset-scope runtime later needs —
+ * user catalog, merge and validate it, publish the immutable ABI generation and
+ * point `current` at it. Everything a preset-scope runtime later needs —
  * definitions, personas, the published ABI — is read once here and published
  * as the `banboAgents` service, because a per-preset standing scope must not do
  * file I/O inside a synchronous `agent/created` listener (§9.3).
@@ -14,21 +14,26 @@
  * Host reports ready, with the previously active generation still complete and
  * still pointed at (§8.6 crash semantics, §9.2).
  *
+ * The presets themselves are NOT here. 0.1.7 declares one
+ * `@deepseek-ai/dsh-agent-preset` row per preset in this bundle's
+ * `cordis.patch.yml`; nothing scans a directory for them any more, and a user
+ * declares their own preset the same way in their profile patch (README.md).
+ *
  * @module @banbolee/dsh-agents
  */
 
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { loadCatalog, readAbiManifest } from './catalog.js'
 import { BanboAgentsCatalog } from './lib/catalog-remote.js'
-import { compilePresets, presetRootDir, readCurrentGeneration, restoreGenerationPointer } from './preset-compiler.js'
+import { compilePresets, readCurrentGeneration, restoreGenerationPointer } from './preset-compiler.js'
 import { CatalogError } from './schema.js'
 import {
-  AgentSettingsSchema,
-  SETTINGS_BASE,
+  ConfigSchema as Config,
   SETTINGS_NAMESPACE,
+  configSettingsSource,
   createSettingsView,
   validateAgentSettings,
 } from './settings-policy.js'
@@ -39,9 +44,13 @@ export const STATE_DIR_NAME = 'banbo-agents'
 /** Bundle row id this plugin is mounted under (`cordis.patch.yml`). */
 export const name = 'banbo-agents'
 
+/** The preset ids this bundle declares rows for (`cordis.patch.yml`). */
+export const SHIPPED_PRESET_IDS = Object.freeze(['banbo', 'planner'])
+
 /**
- * The roster is patched by this bundle, so it must exist before the two roots
- * can be checked; `dshHomePath` is provided by the harness host at boot.
+ * The catalog is patched by this bundle, so it must exist before the roster of
+ * declared presets can address it; `dshHomePath` is provided by the harness
+ * host at boot.
  */
 export const inject = ['dshHomePath', 'agentPresets', 'settings']
 
@@ -49,31 +58,15 @@ export const inject = ['dshHomePath', 'agentPresets', 'settings']
 const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))
 
 const CATALOG_DIR = 'catalog'
-const PRESETS_DIR = 'presets'
-const PRESET_METADATA_FILE = 'preset.yml'
-const TEMPLATE_PATH = join('templates', 'agent.cordis.template.yml')
 const HARNESS_PREFIX = '@deepseek-ai/dsh-'
 
 /**
- * Plugin configuration: the state root is overridable for tests and for a
- * deployment that keeps its data outside the harness home, and `enabled: false`
- * removes the bundle from the running Host without uninstalling it.
+ * Plugin configuration. The schema lives in `settings-policy.js` because it is
+ * also the settings form the Web page edits: 0.1.7 derives both from this row's
+ * `Config`, so the deployment fields (`rootDir`, `enabled`) and the editable
+ * ones (`includeDefaults`, `agents`) cannot drift apart.
  */
-export const Config = {
-  '~standard': {
-    version: /** @type {1} */ (1),
-    vendor: '@banbolee/dsh-agents',
-    validate(value) {
-      const input = value ?? {}
-      return {
-        value: {
-          rootDir: input.rootDir ?? undefined,
-          enabled: input.enabled ?? true,
-        },
-      }
-    },
-  },
-}
+export { Config }
 
 /** Read this package's manifest, the source of its declared version and ranges. */
 function readPackageManifest(packageRoot) {
@@ -105,28 +98,6 @@ export function dependencyFamilyVersion(manifest = readPackageManifest(PACKAGE_R
     )
   }
   return [...ranges][0]
-}
-
-/**
- * Preset ids that already ship inside this package (§8.2).
- *
- * A built-in main agent is read through the merged definition by its own
- * runtime; only a user agent whose `presetId` is absent here needs a generated
- * preset directory.
- *
- * @param packageRoot - the package root; defaults to this package's.
- * @returns the shipped preset ids, empty when the directory is unreadable.
- */
-export function shippedPresetIds(packageRoot = PACKAGE_ROOT) {
-  try {
-    return new Set(
-      readdirSync(join(packageRoot, PRESETS_DIR), { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => entry.name),
-    )
-  } catch {
-    return new Set()
-  }
 }
 
 /**
@@ -163,12 +134,11 @@ function readPreviousAbi(rootDir) {
  * @property {string} generation
  * @property {string} generationDir
  * @property {boolean} reused
- * @property {string} presetRootDir the root the roster mounts
  * @property {object} abi the manifest now published
  */
 
 /**
- * Load, merge, validate and compile — the whole of Host startup (§9.2).
+ * Load, merge, validate and publish — the whole of Host startup (§9.2).
  *
  * @param options - `rootDir`, optional `packageRoot` and `previous`.
  * @returns the {@link HostCatalogState}.
@@ -192,9 +162,7 @@ export function initialiseCatalog(options) {
 
   const compiled = compilePresets({
     rootDir,
-    templateText: readFileSync(join(packageRoot, TEMPLATE_PATH), 'utf8'),
     definitions: catalog.definitions,
-    builtinPresetIds: shippedPresetIds(packageRoot),
     dshVersion: dependencyFamilyVersion(manifest),
     selfVersion: manifest.version,
     previous,
@@ -204,94 +172,8 @@ export function initialiseCatalog(options) {
 }
 
 /**
- * Duplicate preset ids across the roster's roots (§8.5).
- *
- * The official roster resolves a duplicate by taking the earlier root. That is
- * exactly the silent shadowing a user cannot debug, so any duplicate is a
- * configuration error here and both source paths are reported.
- *
- * @param roots - the roster's resolved roots.
- * @returns one entry per duplicated id, `paths` in root order.
- */
-export function findPresetIdConflicts(roots) {
-  const seen = new Map()
-  const conflicts = []
-  for (const root of roots ?? []) {
-    const dir = root?.path
-    if (typeof dir !== 'string' || dir === '') continue
-    let entries
-    try {
-      entries = readdirSync(dir, { withFileTypes: true })
-    } catch {
-      // A configured root that does not exist yet is not a conflict.
-      continue
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const path = join(dir, entry.name)
-      if (!existsSync(join(path, PRESET_METADATA_FILE))) continue
-      const previous = seen.get(entry.name)
-      if (previous === undefined) seen.set(entry.name, path)
-      else conflicts.push({ presetId: entry.name, paths: [previous, path] })
-    }
-  }
-  return conflicts
-}
-
-/**
- * Compare root paths the way the roster stores them: resolved, no trailing
- * separator, and — when the path exists — canonicalised through symlinks.
- *
- * The canonicalisation is load-bearing for a linked ("source") install. The
- * roster stores its configured root verbatim, so it holds
- * `<profile>/node_modules/@banbolee/dsh-agents/presets`, while Node resolves the
- * same package through that symlink and `import.meta.url` therefore yields the
- * checkout path. Comparing the two lexically rejects a perfectly correct install
- * and blames another bundle for it.
- */
-function normaliseDir(value) {
-  if (typeof value !== 'string' || value === '') return undefined
-  const absolute = resolve(value)
-  const stripped = absolute.endsWith(sep) ? absolute.slice(0, -1) : absolute
-  try {
-    return realpathSync(stripped)
-  } catch {
-    // A root that does not exist keeps its lexical form, so the caller still
-    // reports it as missing — which is the accurate answer.
-    return stripped
-  }
-}
-
-/**
- * Refuse to run when the roster does not mount both of this bundle's roots
- * (§8.4).
- *
- * Cordis patches replace a config object wholesale, so another bundle that
- * patches the same `agent-presets` row silently removes our roots. Failing
- * loudly here names the missing path; silently ignoring another bundle's roots
- * would leave a roster that mounts none of our presets.
- *
- * @param roots - the roster's resolved roots.
- * @param expected - the absolute root directories this bundle mounts.
- * @throws {Error} naming every missing root.
- */
-export function verifyRosterRoots(roots, expected) {
-  const present = new Set()
-  for (const root of roots ?? []) {
-    const path = normaliseDir(root?.path)
-    if (path !== undefined) present.add(path)
-  }
-  const missing = expected.filter((path) => !present.has(normaliseDir(path)))
-  if (missing.length === 0) return
-  throw new Error(
-    `@banbolee/dsh-agents: the \`agent-presets\` roster is missing ${missing.length === 1 ? 'the root' : 'the roots'} this bundle mounts: ` +
-      `${missing.join(', ')}. Another bundle is patching the same roster row; merge the roots by hand instead of removing one of the bundles.`,
-  )
-}
-
-/**
- * Mount the Host half: prepare the generation, prove the roster mounts it, and
- * publish the catalog for the per-preset runtimes.
+ * Mount the Host half: publish the generation, expose the live settings section
+ * and publish the catalog for the per-preset runtimes.
  *
  * `apply` is asynchronous on purpose. Cordis awaits a plugin's apply before the
  * fiber reports ready, so every file read and every validation error lands
@@ -304,35 +186,11 @@ export default async function apply(ctx, config) {
   if (config?.enabled === false) return
   const rootDir = config?.rootDir ?? ctx.dshHomePath(STATE_DIR_NAME)
 
-  // Prove the roster composition BEFORE compiling anything. Both checks below
-  // used to run after `initialiseCatalog`, which meant a duplicate preset id
-  // failed startup with a NEW generation already activated — the one failure
-  // class where "nothing is activated on failure" did not hold (§9.2). The
-  // expected generated root is a pure function of `rootDir`, so it is known
-  // before the compile.
-  const expectedPresetRoot = presetRootDir(rootDir)
-  const rosterRoots = ctx.agentPresets.roots
-  verifyRosterRoots(rosterRoots, [join(PACKAGE_ROOT, PRESETS_DIR), expectedPresetRoot])
-
-  const conflicts = findPresetIdConflicts(rosterRoots)
-  if (conflicts.length > 0) {
-    const detail = conflicts
-      .map((conflict) => `${conflict.presetId}: ${conflict.paths.join(' and ')}`)
-      .join('; ')
-    throw new Error(`@banbolee/dsh-agents: duplicate preset id(s) across the roster roots — ${detail}`)
-  }
-
   // The generation live BEFORE this boot, so a post-activation failure can put
   // it back instead of leaving a catalog that never ran pointed at.
   const previousGenerationDir = readCurrentGeneration(rootDir)
 
   const state = initialiseCatalog({ rootDir, packageRoot: PACKAGE_ROOT })
-  /* v8 ignore next -- presetRootDir is a pure function of rootDir; this guards a future refactor. */
-  if (state.presetRootDir !== expectedPresetRoot) {
-    throw new Error(
-      `@banbolee/dsh-agents: internal invariant violated — compiled preset root ${state.presetRootDir} does not match the verified root ${expectedPresetRoot}`,
-    )
-  }
 
   // `compilePresets` activates as part of compiling, so every step below this
   // point runs with the NEW generation already live. Anything that can still
@@ -350,11 +208,13 @@ export default async function apply(ctx, config) {
       reused: state.reused,
     })
 
-    const settingsScope = ctx.settings.register(SETTINGS_NAMESPACE, AgentSettingsSchema, {
-      base: SETTINGS_BASE,
-      validate: (value) => validateAgentSettings(value, state),
-    })
-    const settings = createSettingsView(settingsScope, state)
+    // 0.1.7 settings are the ROW's own Config: the editable half is the two
+    // volatile fields (see settings-policy.js), and the Loader commits a
+    // settings write into these references without remounting the plugin. The
+    // catalog-aware validator runs here, once, so a profile patch naming an
+    // unpublished agent fails startup instead of silently ignoring the entry.
+    const settings = createSettingsView(configSettingsSource(config), state)
+    validateAgentSettings(settings.get(), state)
 
     const warnIgnoredSettings = (value) => {
       for (const agentId of Object.keys(value.agents ?? {})) {
@@ -365,7 +225,9 @@ export default async function apply(ctx, config) {
       }
     }
     warnIgnoredSettings(settings.get())
-    settingsScope.watch?.((next) => warnIgnoredSettings(next))
+    ctx.on('settings/document-updated', (ns) => {
+      if (ns === SETTINGS_NAMESPACE) warnIgnoredSettings(settings.get())
+    })
 
     // Preloaded data only: a preset-scope runtime reads this instead of touching
     // the filesystem inside a synchronous `agent/created` listener (§9.3).
@@ -374,7 +236,6 @@ export default async function apply(ctx, config) {
       packageRoot: state.packageRoot,
       generation: state.generation,
       generationDir: state.generationDir,
-      presetRootDir: state.presetRootDir,
       definitions: state.definitions,
       builtinIds: state.builtinIds,
       personas: state.personas,

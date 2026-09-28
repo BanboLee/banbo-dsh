@@ -71,7 +71,8 @@ describe('agents client artifact', () => {
       apply: expect.any(Function),
       // `remote` only: the catalog namespace is created by this plugin's own
       // `$mount`, so injecting `remote.banboAgentsCatalog` would deadlock.
-      inject: ['slots', 'locale', 'remote', 'settingsScope'],
+      // `configForms` replaces 0.1.5's `settingsScope` service.
+      inject: ['slots', 'locale', 'remote', 'configForms'],
     })
     expect(new Set(required)).toEqual(new Set(['react', 'react/jsx-runtime']))
     expect(required).not.toContain('@banbolee/dsh-agents/remote')

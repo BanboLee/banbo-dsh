@@ -77,18 +77,25 @@ describe.skipIf(!ENABLED)('gate F — real isolated install and uninstall', () =
     // 3. Install from the tarball.
     run('dsh', ['plugin', '--profile', profile, 'add', '-w', tarball], dshHome)
 
-    // 4. The bundle patch put our row on the roster.
+    // 4. The bundle patch put our rows on the profile: the Host row, and the two
+    //    `@deepseek-ai/dsh-agent-preset` rows that declare the presets (0.1.7's
+    //    declarative model — nothing scans a directory for them any more).
     const installed = run('dsh', ['--profile', profile, '--dump-config'], dshHome)
     expect(installed).toContain('banbo-agents')
     expect(installed).toContain(PACKAGE_NAME)
+    expect(installed).toContain('preset-banbo')
+    expect(installed).toContain('preset-planner')
+    expect(installed).toContain('@deepseek-ai/dsh-agent-preset')
 
     // 5. Uninstall.
     run('dsh', ['plugin', '--profile', profile, 'remove', PACKAGE_NAME], dshHome)
 
-    // 6. The row is gone and the official roster is back to its default.
+    // 6. The rows are gone and the official roster is back to its default.
     const removed = run('dsh', ['--profile', profile, '--dump-config'], dshHome)
     expect(removed).not.toContain(PACKAGE_NAME)
     expect(removed).not.toContain('id: banbo-agents')
+    expect(removed).not.toContain('preset-banbo')
+    expect(removed).not.toContain('preset-planner')
 
     // 7. Uninstall is not a data-deletion: the user's own files stay exactly.
     expect(readFileSync(userDefinition, 'utf8')).toBe('id: probe\n')

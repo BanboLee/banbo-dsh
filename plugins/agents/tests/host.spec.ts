@@ -3,18 +3,23 @@
  * (docs/agents-plugin-plan.md §8.4, §9.1, §9.2).
  *
  * The Host has one job before anything else may run: read the built-in and user
- * catalog, merge and validate it, and publish an immutable generation the
- * roster can mount. Two properties are non-negotiable and are what this suite
- * pins down:
+ * catalog, merge and validate it, and publish an immutable ABI generation. Two
+ * properties are non-negotiable and are what this suite pins down:
  *
- *   - **nothing is published half-done** — a bad user file must fail the whole
- *     startup with the old generation still active and complete;
- *   - **the generated root is a mirror, not an accumulator** — deleting a
- *     definition removes its preset from the next generation while its ABI
- *     record survives as a retired shell (§6.3, §11.2).
+ *   - **nothing is published half-done** — a bad user file (or a settings entry
+ *     naming an agent that was never published) must fail the whole startup with
+ *     the old generation still active and complete;
+ *   - **the generation is a mirror, not an accumulator** — deleting a
+ *     definition retires its ABI record while the next generation carries only
+ *     what is live (§6.3, §11.2).
+ *
+ * The presets themselves are rows in `cordis.patch.yml` (see
+ * `preset-compiler.spec.ts` and `gates/gate-b-roster.spec.ts`); nothing here
+ * scans a directory for them any more.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,19 +29,56 @@ import { Context } from '@deepseek-ai/cordis'
 
 import hostPlugin, {
   Config,
+  SHIPPED_PRESET_IDS,
   dependencyFamilyVersion,
-  findPresetIdConflicts,
   initialiseCatalog,
   inject,
   name as pluginName,
-  shippedPresetIds,
-  verifyRosterRoots,
 } from '../index.js'
 import { readCurrentGeneration } from '../preset-compiler.js'
 import { IDENTITY_TEXT } from '../main-runtime.js'
 
+const require = createRequire(import.meta.url)
 const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const patchText = readFileSync(join(pluginRoot, 'cordis.patch.yml'), 'utf8')
 
+/** What one complete 0.1.7 generation contains: the ABI manifest and its marker. */
+const GENERATION_CONTENTS = ['abi.json', 'complete']
+
+/** The agent ids one generation directory published, in ABI order. */
+function abiAgentIds(generationDir: string): string[] {
+  const abi = JSON.parse(readFileSync(join(generationDir, 'abi.json'), 'utf8')) as {
+    agents: Array<{ id: string }>
+  }
+  return abi.agents.map((agent) => agent.id)
+}
+
+/** The preset ids the bundle patch declares, in patch order. */
+function declaredPresetRows(): Array<Record<string, unknown>> {
+  const { parseDocument } = require('yaml') as typeof import('yaml')
+  const document = parseDocument(patchText, { schema: 'core', merge: false })
+  if (document.errors.length > 0) throw document.errors[0]
+  return (document.toJS() as Array<Record<string, unknown>>)
+    .flatMap((patch) => (Array.isArray(patch.insert) ? patch.insert as Array<Record<string, unknown>> : []))
+    .filter((row) => row.name === '@deepseek-ai/dsh-agent-preset')
+}
+
+/** The preset ids the bundle patch declares, in patch order. */
+function declaredPresetIds(): string[] {
+  return declaredPresetRows().map((row) => (row.config as Record<string, unknown>).id as string)
+}
+
+/** The child rows of one declared preset, parsed with `!!js` gates inert. */
+function declaredPresetPlugins(id: string): Array<Record<string, unknown>> {
+  const row = declaredPresetRows().find((candidate) => (candidate.config as Record<string, unknown>).id === id)
+  if (row === undefined) throw new Error(`preset ${id} is not declared`)
+  return (row.config as Record<string, unknown>).plugins as Array<Record<string, unknown>>
+}
+
+/**
+ * Test roots live under the system temp directory; `afterEach` removes every
+ * one, so a failing test cannot leave a generation behind.
+ */
 const scratch: string[] = []
 function scratchDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'banbo-host-'))
@@ -106,19 +148,23 @@ describe('dependencyFamilyVersion — the locked harness range (§11.2)', () => 
 
   it('refuses a manifest whose harness dependencies disagree', () => {
     expect(() => dependencyFamilyVersion({
-      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.1.5-rc.2', '@deepseek-ai/dsh-agent': '^0.1.6' },
+      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.1.7-rc.2', '@deepseek-ai/dsh-agent': '^0.1.8' },
     })).toThrow(/family|uniform|one range/i)
   })
 
   it('is content, not a host path — the same manifest gives the same answer', () => {
-    const manifest = { peerDependencies: { '@deepseek-ai/dsh-tools': '^0.1.5-rc.2' } }
+    const manifest = { peerDependencies: { '@deepseek-ai/dsh-tools': '^0.1.7-rc.2' } }
     expect(dependencyFamilyVersion(manifest)).toBe(dependencyFamilyVersion(manifest))
   })
 })
 
-describe('shippedPresetIds', () => {
-  it('lists the preset directories the package ships', () => {
-    expect([...shippedPresetIds()].sort()).toEqual(['banbo', 'planner'])
+describe('SHIPPED_PRESET_IDS — the presets this bundle declares', () => {
+  it('names exactly the preset rows cordis.patch.yml declares', () => {
+    expect(Object.isFrozen(SHIPPED_PRESET_IDS)).toBe(true)
+    expect([...SHIPPED_PRESET_IDS].sort()).toEqual(['banbo', 'planner'])
+    // The constant is what the Host publishes for provenance; the patch is what
+    // the Loader actually mounts. They must agree.
+    expect([...SHIPPED_PRESET_IDS].sort()).toEqual(declaredPresetIds().sort())
   })
 })
 
@@ -130,52 +176,55 @@ describe('initialiseCatalog — Host startup (§9.2)', () => {
     const state = init(root)
     expect([...state.definitions.keys()]).toEqual(['banbo', 'executor', 'explorer', 'implement', 'planner', 'research', 'review'])
     expect(state.reused).toBe(false)
-    // The built-in main agents ship in the package, so nothing is generated.
-    expect(readdirSync(join(state.generationDir, 'presets'))).toEqual([])
+    // A generation is the published ABI alone: presets are declared as rows, so
+    // nothing is compiled into `presets/` any more.
+    expect(readdirSync(state.generationDir).sort()).toEqual(GENERATION_CONTENTS)
     expect(existsSync(join(root, '.generated', 'current', 'complete'))).toBe(true)
-    expect(state.presetRootDir).toBe(join(root, '.generated', 'current', 'presets'))
   })
 
-  it('compiles a user main agent into a mountable preset', () => {
+  it('records a user main agent in the published ABI with the preset id it claims', () => {
     const root = scratchDir()
     writeUserTeam(root)
     const state = init(root)
-    const generated = join(root, '.generated', 'current', 'presets')
-    expect(readdirSync(generated)).toEqual(['my-lead'])
-    const composition = readFileSync(join(generated, 'my-lead', 'agent.cordis.yml'), 'utf8')
-    expect(composition).toContain('agentId: my-lead')
-    expect(readFileSync(join(generated, 'my-lead', 'preset.yml'), 'utf8')).toMatch(/^name: /m)
-    // `helper` is child-only, so it contributes no preset of its own.
-    expect(state.abi.agents.map((record: { id: string }) => record.id)).toEqual([
+    const lead = state.abi.agents.find((record: { id: string }) => record.id === 'my-lead')!
+    expect(lead).toMatchObject({ presetId: 'my-lead', hasMain: true, toolName: 'agent_my_lead' })
+    // `helper` is child-only, so it owns no preset.
+    expect(state.abi.agents.find((record: { id: string }) => record.id === 'helper')).not.toHaveProperty('presetId')
+    expect(abiAgentIds(join(root, '.generated', 'current'))).toEqual([
       'banbo', 'executor', 'explorer', 'helper', 'implement', 'my-lead', 'planner', 'research', 'review',
     ])
   })
 
-  it('keeps the harness placeholders in the generated composition', () => {
-    const root = scratchDir()
-    writeUserTeam(root)
-    init(root)
-    const composition = readFileSync(join(root, '.generated', 'current', 'presets', 'my-lead', 'agent.cordis.yml'), 'utf8')
-    // `{{cwd}}` belongs to the harness and must survive rendering verbatim in a
-    // real config VALUE. Asserting it against the whole file is not enough: the
-    // previous version of this test was satisfied by a template COMMENT that
-    // merely mentioned `{{model}}`, so it passed while the value was absent.
-    expect(composition).toContain('suffix: Your working directory is {{cwd}}.')
+  it('keeps the harness placeholders in the declared preset composition', () => {
+    // The composition a preset mounts is now the `config.plugins` list of the
+    // `preset-<id>` rows, which is generated from the template. `{{cwd}}`
+    // belongs to the harness and must survive verbatim in a real config VALUE:
+    // asserting it against the template is not enough, because the previous
+    // version of this test was satisfied by a template COMMENT that merely
+    // mentioned `{{model}}`, so it passed while the value was absent.
+    const persona = declaredPresetPlugins('banbo').find((row) => row.id === 'persona')!
+    expect((persona.config as Record<string, unknown>).suffix).toBe('Your working directory is {{cwd}}.')
     // `{{agentId}}` is ours and must be substituted away.
-    expect(composition).not.toContain('{{agentId}}')
+    expect(patchText).not.toContain('{{agentId}}')
     // `{{model}}` is deliberately NOT carried by the composition any more: the
     // identity line that uses it is registered at runtime under a section name
     // the child composition cannot shadow. Assert it where it actually lives.
     expect(IDENTITY_TEXT).toContain('{{model}}')
-    expect(composition).not.toContain('{{model}}')
+    expect(patchText).not.toContain('{{model}}')
+    for (const id of ['banbo', 'planner']) {
+      const runtime = declaredPresetPlugins(id).filter((row) => typeof row.name === 'string' && row.name.startsWith('@banbolee/dsh-agents/'))
+      expect(runtime).toHaveLength(2)
+      for (const row of runtime) expect((row.config as Record<string, unknown>).agentId).toBe(id)
+    }
   })
 
-  it('does not regenerate a preset that already ships in the package', () => {
+  it('publishes one ABI record when a user definition shadows a shipped id', () => {
     const root = scratchDir()
-    // Shadow the built-in `banbo` definition: the package preset still wins.
+    // Shadow the built-in `banbo` definition. The preset row is untouched: a
+    // preset is a declaration, not something this plugin derives from a file.
     write(root, 'agents/banbo.yaml', 'id: banbo\ndisplayName: Banbo\ndescription: shadow\nallowedChildren: []\nmain:\n  presetId: banbo\n  persona: prompts/banbo-main.md\n  tools: [read]\n  maxDepth: 0\n')
     const state = init(root)
-    expect(readdirSync(join(state.generationDir, 'presets'))).toEqual([])
+    expect(readdirSync(state.generationDir).sort()).toEqual(GENERATION_CONTENTS)
     const record = state.abi.agents.find((entry: { id: string }) => entry.id === 'banbo')
     expect(record).toMatchObject({ presetId: 'banbo', hasMain: true, toolName: 'agent_banbo' })
   })
@@ -196,7 +245,8 @@ describe('initialiseCatalog — Host startup (§9.2)', () => {
     // Nothing was activated and nothing new was left behind.
     expect(generations(root)).toEqual([first.generation])
     expect(existsSync(join(root, '.generated', 'current', 'complete'))).toBe(true)
-    expect(readdirSync(join(root, '.generated', 'current', 'presets'))).toEqual(['my-lead'])
+    expect(readdirSync(join(root, '.generated', 'current')).sort()).toEqual(GENERATION_CONTENTS)
+    expect(readFileSync(join(first.generationDir, 'abi.json'), 'utf8')).not.toContain('broken')
   })
 
   it('fails when a referenced persona is missing', () => {
@@ -251,7 +301,9 @@ describe('initialiseCatalog — Host startup (§9.2)', () => {
     rmSync(join(root, 'agents', 'my-lead.yaml'))
     write(root, 'agents/helper.yaml', 'id: helper\ndisplayName: Helper\ndescription: probe helper\nallowedChildren: []\nchild:\n  model:\n    default: true\n  persona: prompts/helper-child.md\n  guidance: use me for probe work\n  tools: [read]\n  continuation: one-shot\n')
     const after = init(root)
-    expect(readdirSync(join(root, '.generated', 'current', 'presets'))).toEqual([])
+    // The generation is a mirror of the live catalog, and the deleted agent's
+    // ABI record survives as a retired shell (never as a mountable preset).
+    expect(readdirSync(join(root, '.generated', 'current')).sort()).toEqual(GENERATION_CONTENTS)
     const record = after.abi.agents.find((entry: { id: string }) => entry.id === 'my-lead')!
     expect(record.retired).toBe(true)
     expect(record.retiredReason).toBe('definition-file-missing')
@@ -271,75 +323,12 @@ describe('initialiseCatalog — Host startup (§9.2)', () => {
     rmSync(join(root, 'agents', 'my-lead.yaml'))
     const retired = init(root)
     expect(retired.abi.agents.find((entry: { id: string }) => entry.id === 'my-lead')?.retired).toBe(true)
-    expect(readdirSync(join(root, '.generated', 'current', 'presets'))).toEqual([])
+    expect(readdirSync(join(root, '.generated', 'current')).sort()).toEqual(GENERATION_CONTENTS)
 
     writeUserTeam(root)
     const revived = init(root)
     expect(revived.abi.agents.find((entry: { id: string }) => entry.id === 'my-lead')?.retired).toBeFalsy()
-    expect(readdirSync(join(root, '.generated', 'current', 'presets'))).toContain('my-lead')
-  })
-})
-
-/* ------------------------------------------------------- roster integrity --- */
-
-describe('findPresetIdConflicts — §8.5 duplicate ids', () => {
-  it('reports both sources instead of letting the earlier root win', () => {
-    const first = scratchDir()
-    const second = scratchDir()
-    for (const root of [first, second]) {
-      mkdirSync(join(root, 'clash'), { recursive: true })
-      writeFileSync(join(root, 'clash', 'preset.yml'), 'name: Clash\n')
-    }
-    const conflicts = findPresetIdConflicts([{ path: first }, { path: second }])
-    expect(conflicts).toHaveLength(1)
-    expect(conflicts[0].presetId).toBe('clash')
-    expect(conflicts[0].paths).toEqual([join(first, 'clash'), join(second, 'clash')])
-  })
-
-  it('ignores directories that are not presets and roots that do not exist', () => {
-    const root = scratchDir()
-    mkdirSync(join(root, 'not-a-preset'), { recursive: true })
-    expect(findPresetIdConflicts([{ path: root }, { path: join(root, 'absent') }])).toEqual([])
-  })
-})
-
-describe('verifyRosterRoots — §8.4 fail-loud root check', () => {
-  it('accepts a root spelled with a trailing separator', () => {
-    const root = scratchDir()
-    expect(() => verifyRosterRoots([{ path: `${root}/` }], [root])).not.toThrow()
-  })
-
-  it('names every root the roster is missing', () => {
-    const root = scratchDir()
-    expect(() => verifyRosterRoots([{ path: '/somewhere/else' }], [root, `${root}/generated`]))
-      .toThrow(/generated/)
-  })
-
-  it('accepts a root reached through a symlink (linked / source install)', () => {
-    // `dsh plugin add -w ./plugins/agents` installs a `link:`, so the roster
-    // stores the symlinked path while `import.meta.url` inside the package
-    // reports the checkout path. Comparing those two lexically rejected a
-    // correct install and blamed another bundle for it.
-    const real = scratchDir()
-    mkdirSync(join(real, 'presets'), { recursive: true })
-    const holder = scratchDir()
-    const linked = join(holder, 'node_modules', '@banbolee', 'dsh-agents')
-    mkdirSync(dirname(linked), { recursive: true })
-    symlinkSync(real, linked, 'dir')
-
-    expect(() => verifyRosterRoots([{ path: join(linked, 'presets') }], [join(real, 'presets')])).not.toThrow()
-    // The reverse direction must work too: real on the roster, link expected.
-    expect(() => verifyRosterRoots([{ path: join(real, 'presets') }], [join(linked, 'presets')])).not.toThrow()
-  })
-
-  it('still reports a genuinely absent root as missing', () => {
-    const root = scratchDir()
-    const holder = scratchDir()
-    const dangling = join(holder, 'node_modules', 'gone')
-    mkdirSync(dirname(dangling), { recursive: true })
-    symlinkSync(join(holder, 'does-not-exist'), dangling, 'dir')
-
-    expect(() => verifyRosterRoots([{ path: dangling }], [join(root, 'presets')])).toThrow(/missing/i)
+    expect(revived.abi.agents.find((entry: { id: string }) => entry.id === 'my-lead')).toMatchObject({ presetId: 'my-lead' })
   })
 })
 
@@ -347,29 +336,22 @@ describe('verifyRosterRoots — §8.4 fail-loud root check', () => {
 
 describe('the Host plugin row', () => {
   it('rolls the pointer back when a post-activation startup step fails (§9.2)', async () => {
-    // `compilePresets` activates while compiling, so a settings-registration
-    // failure used to leave the NEW generation live for a catalog that never
-    // ran. The previous generation must stay pointed at instead.
+    // `compilePresets` activates while compiling, so a failure AFTER it — the
+    // catalog-aware settings validation is the one that still can — would leave
+    // the NEW generation live for a catalog that never ran. The previous
+    // generation must stay pointed at instead.
     const root = scratchDir()
     writeUserTeam(root)
     const first = init(root)
 
     const ctx = new Context()
     ctx.provide('dshHomePath', () => root)
-    ctx.provide('agentPresets', {
-      roots: [
-        { path: pluginRoot + '/presets' },
-        { path: join(root, '.generated', 'current', 'presets') },
-      ],
-    })
-    ctx.provide('settings', {
-      register: () => { throw new Error('settings namespace refused') },
-    })
 
     // Add a second agent so the candidate catalog differs from the live one.
     write(root, 'agents/second.yaml', 'id: second\ndisplayName: Second\ndescription: probe\nallowedChildren: []\nmain:\n  presetId: second\n  persona: prompts/my-lead-main.md\n  tools: [read]\n  maxDepth: 0\n')
 
-    await expect(hostPlugin(ctx as never, {})).rejects.toThrow(/settings namespace refused/)
+    await expect(hostPlugin(ctx as never, { agents: { ghost: { enabled: true } } }))
+      .rejects.toThrow(/unknown agent "ghost"/)
 
     expect(readCurrentGeneration(root)).toBe(first.generationDir)
     expect(readFileSync(join(first.generationDir, 'abi.json'), 'utf8')).not.toContain('second')
@@ -381,17 +363,9 @@ describe('the Host plugin row', () => {
 
     const ctx = new Context()
     ctx.provide('dshHomePath', () => root)
-    ctx.provide('agentPresets', {
-      roots: [
-        { path: pluginRoot + '/presets' },
-        { path: join(root, '.generated', 'current', 'presets') },
-      ],
-    })
-    ctx.provide('settings', {
-      register: () => { throw new Error('settings namespace refused') },
-    })
 
-    await expect(hostPlugin(ctx as never, {})).rejects.toThrow(/settings namespace refused/)
+    await expect(hostPlugin(ctx as never, { agents: { ghost: { enabled: true } } }))
+      .rejects.toThrow(/unknown agent "ghost"/)
     // Nothing was ever accepted, so nothing may be pointed at.
     expect(readCurrentGeneration(root)).toBeUndefined()
   })
@@ -402,7 +376,16 @@ describe('the Host plugin row', () => {
     expect(inject).toContain('dshHomePath')
     expect(inject).toContain('settings')
     expect(typeof hostPlugin).toBe('function')
-    expect(Config['~standard'].validate({}).value).toEqual({ rootDir: undefined, enabled: true })
+    // The row Config IS the settings form in 0.1.7: the two editable fields are
+    // volatile (so a write commits without a remount) and the deployment fields
+    // are ordinary. The Loader wraps the volatile ones in references, which is
+    // why the parsed value is read back through `get()`.
+    const parsed = Config({ enabled: false, rootDir: '/probe' }) as Record<string, any>
+    expect(parsed.enabled).toBe(false)
+    expect(parsed.rootDir).toBe('/probe')
+    expect(parsed.includeDefaults.get()).toBe(true)
+    expect(parsed.agents.get()).toEqual({})
+    expect(() => Config({ agents: 'nope' } as never)).toThrow(/agents/)
   })
 
   it('publishes built-in provenance for includeDefaults policy', () => {
@@ -412,57 +395,44 @@ describe('the Host plugin row', () => {
     ])
   })
 
-  it('registers the official settings namespace and publishes a live SettingsView', async () => {
+  it('publishes a live settings view over this row\'s Config references', async () => {
     const root = scratchDir()
-    const settingsValue = { includeDefaults: true, agents: {} }
-    let current = settingsValue
-    const scope = { get: vi.fn(() => current) }
-    const register = vi.fn((_ns, _schema, options) => {
-      // Registration owner validation must be catalog-bound before publication.
-      options.validate(options.base)
-      return scope
-    })
+    let current = { includeDefaults: true, agents: {} as Record<string, unknown> }
+    const includeDefaults = { get: () => current.includeDefaults }
+    const agents = { get: () => current.agents }
     const ctx = new Context()
     ctx.provide('dshHomePath', () => root)
-    ctx.provide('agentPresets', {
-      roots: [
-        { path: pluginRoot + '/presets' },
-        { path: join(root, '.generated', 'current', 'presets') },
-      ],
-    })
-    ctx.provide('settings', { register })
     const provide = vi.spyOn(ctx, 'provide')
 
-    await hostPlugin(ctx as never, {})
+    await hostPlugin(ctx as never, { includeDefaults, agents })
     const provided = ctx.get('banboAgents') as any
 
-    expect(register).toHaveBeenCalledWith('banbo-agents', expect.anything(), expect.objectContaining({
-      base: { includeDefaults: true, agents: {} },
-      validate: expect.any(Function),
-    }))
     expect(provide).toHaveBeenCalledWith('banboAgents', expect.objectContaining({ settings: expect.anything() }))
     expect(ctx.get('banboAgentsCatalog')).toBeDefined()
+    expect(provided.settings.get()).toEqual({ includeDefaults: true, agents: {} })
     expect(provided.settings.policy('banbo').effectiveEnabled).toBe(true)
+
+    // A settings write commits into the SAME reference (that is what `.volatile()`
+    // buys), so the next policy read sees it with no restart and no cache.
     current = { includeDefaults: false, agents: {} }
     expect(provided.settings.policy('banbo').effectiveEnabled).toBe(false)
-    // One startup read scans for stale retained entries; each policy call then
-    // reads the live scope again instead of consulting a cache.
-    expect(scope.get).toHaveBeenCalledTimes(3)
+  })
+
+  it('refuses a settings entry naming an agent that was never published', async () => {
+    const root = scratchDir()
+    const ctx = new Context()
+    ctx.provide('dshHomePath', () => root)
+
+    await expect(hostPlugin(ctx as never, {
+      includeDefaults: true,
+      agents: { ghost: { enabled: false } },
+    })).rejects.toThrow(/unknown agent "ghost"/)
   })
 
   it('emits one privacy-safe catalog/generation record at startup (§13.1.1)', async () => {
     const root = scratchDir()
     const ctx = new Context()
     ctx.provide('dshHomePath', () => root)
-    ctx.provide('agentPresets', {
-      roots: [
-        { path: pluginRoot + '/presets' },
-        { path: join(root, '.generated', 'current', 'presets') },
-      ],
-    })
-    ctx.provide('settings', {
-      register: () => ({ get: () => ({ includeDefaults: true, agents: {} }), watch: () => () => {} }),
-    })
     const info = vi.spyOn(ctx.logger, 'info')
 
     await hostPlugin(ctx as never, {})

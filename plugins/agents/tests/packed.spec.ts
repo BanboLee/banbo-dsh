@@ -68,8 +68,13 @@ function pack(): { filename: string, files: string[] } {
     cwd: pluginRoot,
     encoding: 'utf8',
   })
-  const parsed = JSON.parse(stdout) as Array<{ filename: string, files: Array<{ path: string }> }>
-  const first = parsed[0]
+  // npm <= 11 prints one array entry per packed package; npm 12 prints an
+  // object keyed by package name. Both describe the same tarball.
+  const parsed = JSON.parse(stdout) as
+    | Array<{ filename: string, files: Array<{ path: string }> }>
+    | Record<string, { filename: string, files: Array<{ path: string }> }>
+  const entries = Array.isArray(parsed) ? parsed : Object.values(parsed)
+  const first = entries[0]
   if (first === undefined) throw new Error('npm pack produced no result')
   packResult = { filename: join(scratch, first.filename), files: first.files.map((file) => `package/${file.path}`) }
   return packResult
@@ -153,7 +158,7 @@ describe('packed package imports as pure ESM', () => {
     expect(existsSync(join(pluginRoot, 'lib', 'client.js')), 'run `node scripts/build.mjs` first').toBe(true)
     const host = await importFromTarball('index.js')
     expect(host).toEqual(expect.arrayContaining([
-      'default', 'name', 'inject', 'Config', 'initialiseCatalog', 'verifyRosterRoots',
+      'default', 'name', 'inject', 'Config', 'SHIPPED_PRESET_IDS', 'initialiseCatalog', 'dependencyFamilyVersion',
     ]))
 
     const typert = await importFromTarball('lib/typert.host.js')

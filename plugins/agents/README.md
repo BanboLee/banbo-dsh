@@ -2,7 +2,7 @@
 
 **English** | [中文](./README.zh.md)
 
-Define your own agent team in YAML and delegate explicitly inside DSH through **named tools** (`agent_<id>`). This bundle takes over the Web `agent-presets` seat or the dsh-tui `dsh-tui-agent-presets` seat, mounts the shipped presets together with the compiled user main agents onto the roster, and adds a settings card under Plugin Configuration.
+Define your own agent team in YAML and delegate explicitly inside DSH through **named tools** (`agent_<id>`). The bundle ships its presets as `@deepseek-ai/dsh-agent-preset` rows on the profile's `@deepseek-ai/dsh-agent-preset-registry`, and adds a configuration page under **Plugin Configuration** in the Web client.
 
 The full design and decision record lives in [`docs/agents-plugin-plan.md`](../../docs/agents-plugin-plan.md).
 
@@ -10,11 +10,11 @@ The full design and decision record lives in [`docs/agents-plugin-plan.md`](../.
 
 Stages 1–4 of plan §16 are complete, and the Gate A–E platform probes are green:
 
-- **Host assembly**: reads the built-in catalog (`catalog/*.yaml`, 7 agents) and the user catalog (`$DSH_HOME/banbo-agents/agents/*.yaml`), merges under constraints, and validates the whole graph; compiles user main agents into an **immutable generation** activated by an atomic `current` pointer; writes the ABI manifest that protects published `toolName` / `presetId` / main-child shape / `child.continuation`.
+- **Host assembly**: reads the built-in catalog (`catalog/*.yaml`, 7 agents) and the user catalog (`$DSH_HOME/banbo-agents/agents/*.yaml`), merges under constraints, and validates the whole graph; publishes an **immutable ABI generation** activated by an atomic `current` pointer; writes the ABI manifest that protects published `toolName` / `presetId` / main-child shape / `child.continuation`.
 - **Personas**: user `prompts/` wins, shipped `prompts/` is the fallback; strict UTF-8, dual size caps, single trailing-newline normalization.
 - **Delegation runtime**: `agent_<id>`, `delegate_batch`, the authorisation graph and absolute-depth checks, root-Session concurrency budget, one-shot/continuable lifecycle, HolderRegistry, and structured privacy-safe logging.
 - **CatalogRemote**: a read-only, startup-static catalog view (no persona, paths, composition, or settings) with Host/client descriptors produced by the official Typert generator.
-- **Web settings card**: the official `settings.plugin.item` seat (key `banbo-agents`) reads the catalog through the strict Typert Remote and reads/writes enabled/model through the official `settingsScope`.
+- **Web settings card**: occupies the Plugins page's own `plugins.bundle.config` seat, keyed by this bundle's package name, reads the catalog through the strict Typert Remote and reads/writes enabled/model through the official shared configuration form — `ctx.configForms.get('banbo-agents')`, which is this bundle's own Loader row `Config`.
 
 ## Install
 
@@ -30,11 +30,36 @@ dsh plugin --profile <profile> add -w ./plugins/agents
 
 Restart the profile afterwards: catalog and generation complete before the Host reports ready, so a broken configuration fails startup and names the file.
 
-### Roster ownership compatibility
+### Presets and how to add your own
 
-One package supports the different roster row ids of DSH Web `0.1.5-rc.2` and dsh-tui `0.10.2`. Because Cordis warns and skips a patch target that does not exist, every start shows **one expected warning**: Web reports the missing `dsh-tui-agent-presets`, TUI reports the missing `agent-presets`, and the row that does match still activates.
+This bundle declares its two presets, `banbo` and `planner`, as two `@deepseek-ai/dsh-agent-preset` rows in [`cordis.patch.yml`](./cordis.patch.yml). A preset is a declaration, not a directory: `config.id` is the preset identity a session saves, and `config.plugins` is the composition it mounts. The roster itself belongs to the profile's `agent-preset-registry` row (config `{ default, selectedDefault }`), which DSH Web `0.1.7-rc.2` inserts with `default: standard`; this bundle deliberately neither declares nor patches that row, so another bundle patching it cannot take these presets away.
 
-This bundle owns a roster seat: it is incompatible with another bundle covering the same Web/TUI roster seat unless you merge the full `roots` by hand. The Host checks the package and generated roots and fails loud rather than silently accepting an override.
+To add your own preset, write the same row shape into your own profile patch — `$DSH_HOME/profiles/<profile>/cordis.patch.yml` — or install a bundle that carries it:
+
+```yaml
+- insert:
+    - id: preset-review
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: review
+        name: Review
+        description: Reviews changes with the shell only.
+        order: 30
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You review software changes.
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+```
+
+A composition that runs one of this bundle's main agents must also carry the two runtime rows — `@banbolee/dsh-agents/main-runtime` and `@banbolee/dsh-agents/delegation` — each with `config.agentId` set to that agent. Copy the `plugins:` list of `preset-banbo` from [`cordis.patch.yml`](./cordis.patch.yml) and change the two `agentId` values; nothing generates that composition for you any more.
+
+Two consequences worth knowing:
+
+- a user main agent whose YAML declares `main.presetId: my-lead` needs a preset row whose `config.id` is `my-lead`; without it the agent is still in the catalog (and in the ABI), but its runtime refuses to activate and fails loud with `preset mapping mismatch`;
+- a profile that composes no `agent-preset-registry` row leaves these preset rows pending and this bundle waiting for the `agentPresets` service — the Web profile `0.1.7-rc.2` composes it.
 
 ## The team
 
@@ -87,7 +112,7 @@ Overrides obey the same UTF-8, 64 KiB per-file and total-size limits. Configurat
 
 ## Settings
 
-On the Web side, **Plugin Configuration → `banbo-agents`** provides a settings card over the official `banbo-agents` settings namespace.
+On the Web side, open **Settings → Plugins** and select the `@banbolee/dsh-agents` bundle: its detail page renders this card in the Plugin Configuration section (the page's own `plugins.bundle.config` seat, keyed by the package name). The form's namespace is this bundle's Loader row id, `banbo-agents`; a write lands in the profile patch's user layer for that row and is committed into the running plugin without a remount.
 
 Editable:
 
@@ -123,11 +148,13 @@ agents:
 $DSH_HOME/banbo-agents/
 ├── agents/*.yaml              your agent definitions (the only directory you edit)
 ├── prompts/*.md               your personas; a same-named file overrides the shipped one
-├── .generated/                Host-generated preset output; never edit by hand
-│   ├── generations/<hash>/    one immutable generation: presets/ + abi.json + complete
+├── .generated/                Host-generated ABI output; never edit by hand
+│   ├── generations/<hash>/    one immutable generation: abi.json + complete
 │   └── current -> generations/<hash>   the atomically replaced pointer
 └── .children/<childId>.json   identity sidecar of one continuable child
 ```
+
+Presets are **not** in here: a preset is a row in the plugin's own [`cordis.patch.yml`](./cordis.patch.yml) or in your profile patch, never a directory this bundle scans.
 
 Only this bundle writes to and cleans `.generated/`, and it only removes directories carrying its own `complete` marker; anything else you put there is neither followed nor deleted. If pointer replacement fails, the **previous pointer stays exactly as it was**, compilation fails loudly, and no half-activated generation exists.
 
@@ -145,7 +172,7 @@ One immutable JSON file per continuable child lives at `.children/<childId>.json
 dsh plugin --profile <profile> remove @banbolee/dsh-agents
 ```
 
-A normal uninstall **keeps** everything under `$DSH_HOME/banbo-agents/` (YAML, personas, generated presets, the ABI manifest, identity sidecars). Reinstalling restores the catalog, the retired shells, and the identity of old continuable children. Uninstalling only means the bundle no longer mounts at runtime and the official roster returns to its default.
+A normal uninstall **keeps** everything under `$DSH_HOME/banbo-agents/` (YAML, personas, the ABI manifest, identity sidecars). Reinstalling restores the catalog, the retired shells, and the identity of old continuable children. Uninstalling only means the bundle no longer mounts at runtime, its preset rows go with it, and the official roster returns to its default.
 
 ## Destructive removal (irreversible)
 
@@ -155,7 +182,7 @@ Only a manual delete truly clears state:
 rm -rf "$DSH_HOME/banbo-agents"
 ```
 
-This removes YAML, personas, generated presets, the ABI manifest, and retired-shell records together. **Consequence of deleting the ABI manifest**: the `agent_<id>` names frozen into old continuable children's `toolFilter` disappear, and cold resume can no longer proceed.
+This removes YAML, personas, the ABI manifest, and retired-shell records together. **Consequence of deleting the ABI manifest**: the `agent_<id>` names frozen into old continuable children's `toolFilter` disappear, and cold resume can no longer proceed.
 
 ## Three explicit non-promises
 
@@ -167,7 +194,7 @@ Prefer `enabled: false` over deleting a definition file: deactivation can be und
 
 ### Putting the YAML back revives the agent, on a new composition
 
-Deleting a definition file **retires** that id: its generated preset directory goes away too, and old main sessions hit the official `agent-preset/not-found`. **Restoring a file with the same name and restarting revives the id** — the generated preset is rebuilt, the old session's preset resolves again, and it continues under current-policy resume semantics.
+Deleting a definition file **retires** that id: nothing declares its preset any more, and an old main session hits the official `agent-preset/not-found`. **Restoring a file with the same name, re-declaring its preset row if you removed it, and restarting revives the id** — the old session's preset resolves again, and it continues under current-policy resume semantics.
 
 Know the boundary:
 
@@ -193,9 +220,9 @@ The build:
 Troubleshooting:
 
 - **The settings card is missing**: confirm the build ran and `lib/client.js` exists in the profile, then refresh. The client registers the locale and slot only after the Remote mount and `list()` succeed; any failure rolls the whole startup back.
+- **The preset picker does not list Banbo**: confirm the profile composes an `agent-preset-registry` row and that our `preset-banbo` / `preset-planner` rows are present (`dsh --dump-config`). Without the registry the preset rows stay pending and this bundle never activates.
 - **A persona/YAML change had no effect**: configuration applies on the **next profile start**; when the change targets an existing continuable child's frozen descriptor, create a new child.
 - **Startup fails and names a file**: that is the intended fail-loud. Fix the YAML at the reported field; the previous generation and the `current` pointer stay untouched.
-- **A missing-sibling warning appears**: see "Roster ownership compatibility" above; one per side is expected.
 
 ## Development
 

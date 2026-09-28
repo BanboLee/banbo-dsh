@@ -1,17 +1,17 @@
 # banbo-agents composition template.
 #
-# AGENT-PLANE composition, mounted once per process by the roster under a
-# standing scope; every session naming the preset joins by scope parentage.
+# AGENT-PLANE composition, mounted once per preset row; every session naming the
+# preset joins by scope parentage.
 #
-# This file is the SINGLE SOURCE for three artifacts:
-#   - `presets/<id>/agent.cordis.yml` for each built-in main agent (checked
-#     byte-for-byte against this template with the `<agentId>` placeholder
-#     substituted — never a hand-edited copy);
-#   - the `agent.cordis.yml` the preset compiler writes for a user main agent.
-# Editing a shipped preset directly is therefore a defect: change the template.
+# This file is the SINGLE SOURCE for the two presets this bundle ships: the
+# `plugins:` list of `preset-banbo` / `preset-planner` in `cordis.patch.yml` is
+# this template with the `<agentId>` placeholder substituted, and
+# `tests/preset-compiler.spec.ts` compares the two parsed structures so a
+# hand-edited row is a defect. Editing a preset row directly is therefore wrong:
+# change the template and regenerate.
 #
 # Relationship to the official `standard` preset (docs/agents-plugin-plan.md
-# §8.3): this is a full copy, deliberately, because the harness has no
+# §8.3): this is a copy of it, deliberately, because the harness has no
 # "inherit a preset and patch it" syntax. Two differences:
 #
 #   1. The official general-purpose delegation entry points are REMOVED —
@@ -25,11 +25,14 @@
 #      and per-agent tool surface) and `delegation` (the named tools, the depth
 #      budget, the width budget, and the holder registry).
 #
-# Contract check: `tests/preset-compiler.spec.ts` re-derives the digest of the
-# installed official `standard` composition and compares it with
-# `templates/dsh-standard-inventory.json`. A harness upgrade that changes
-# `standard` therefore fails CI until someone reviews the difference and
-# updates the inventory — the copy cannot rot silently.
+# The copy is reviewed against the official composition on every harness
+# upgrade: `tests/preset-compiler.spec.ts` re-derives the official `standard`
+# composition from the `preset-standard` row of the installed
+# `@deepseek-ai/dsh-web-app` bundle (0.1.7's home for it) and compares the
+# digest, every shared row's config shape, isolate realms and disabled gates,
+# and the recorded `templates/dsh-standard-inventory.json`. A harness upgrade
+# that changes `standard` therefore fails the suite until someone reviews the
+# difference and updates the inventory — the copy cannot rot silently.
 
 # ── identity ────────────────────────────────────────────────────────────────
 

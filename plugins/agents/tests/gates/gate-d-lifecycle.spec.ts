@@ -6,6 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry } from '@deepseek-ai/dsh-agent'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { LocalJobRegistry } from '@deepseek-ai/dsh-jobs-local'
+import type { JobOutcome } from '@deepseek-ai/dsh-jobs'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import {
   NO_START_CAPABILITIES,
@@ -163,23 +164,33 @@ async function jobsFixture() {
 describe('D2 — LocalJobRegistry cancellation and ownership', () => {
   it('accepts producer-owned abort settlement and announces the committed terminal record once', async () => {
     const ctx = await jobsFixture()
-    const done = deferred<{ status: 'killed' }>()
-    const notices: string[] = []
-    ctx.jobs.onJobDone((snapshot) => { notices.push(`${snapshot.id}:${snapshot.status}`) })
+    const done = deferred<JobOutcome>()
+    // 0.1.7 deleted `onJobDone`; the same fact rides the registry's event
+    // stream, and `awaited` replaces the old `reported` flag: a settlement that
+    // released a live `wait` was already handed to that caller, so only the
+    // unawaited ones need a completion notice.
+    const settled: string[] = []
+    ctx.jobs.events.subscribe({ owners: 'all' }, (event) => {
+      if (event.type === 'settled') settled.push(`${event.job.id}:${event.job.status}:${event.cause}:${String(event.awaited)}`)
+    })
     const id = ctx.jobs.start({
       kind: 'subagent', label: 'self-abort probe',
       run: () => ({ cancel: vi.fn(), done: done.promise }),
     })
 
+    const waiting = ctx.jobs.wait(id, 100)
     done.resolve({ status: 'killed' })
-    const snapshot = await ctx.jobs.wait(id, 100)
-    expect(snapshot).toMatchObject({ id, status: 'killed', reported: true })
-    expect(notices).toEqual([`${id}:killed`])
+    const view = await waiting
+    expect(view).toMatchObject({ id, status: 'killed' })
+    expect(view).not.toHaveProperty('reported')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // Exactly one terminal announcement, carrying the committed projection.
+    expect(settled).toEqual([`${id}:killed:producer:true`])
   })
 
   it('forwards kill reason and changes running through stopping to terminal', async () => {
     const ctx = await jobsFixture()
-    const done = deferred<{ status: 'killed' }>()
+    const done = deferred<JobOutcome>()
     const reasons: Array<string | undefined> = []
     const id = ctx.jobs.start({
       kind: 'subagent', label: 'kill probe',
@@ -203,11 +214,13 @@ describe('D2 — LocalJobRegistry cancellation and ownership', () => {
     const agent = { id: 'owner', session: { id: 'owner' }, ctx: undefined as unknown }
     const scope = createScope(ctx, agent)
     agent.ctx = scope.ctx
-    ctx.agents.register(agent as never)
-    const done = deferred<{ status: 'killed' }>()
+    // 0.1.7 addresses an owner by its SessionId, and the session must have a
+    // LIVE agent: `register` is the awaitable announcement that makes it live.
+    await ctx.agents.register(agent as never)
+    const done = deferred<JobOutcome>()
     const reasons: Array<string | undefined> = []
     const id = ctx.jobs.start({
-      kind: 'subagent', label: 'owner cleanup', owner: agent as never,
+      kind: 'subagent', label: 'owner cleanup', owner: 'owner' as never,
       run: () => ({
         cancel(reason) {
           reasons.push(reason)
@@ -216,11 +229,11 @@ describe('D2 — LocalJobRegistry cancellation and ownership', () => {
         done: done.promise,
       }),
     })
-    expect(ctx.jobs.get(id, agent as never).status).toBe('running')
+    expect(ctx.jobs.get(id, 'owner' as never).status).toBe('running')
 
     await scope.dispose()
     expect(reasons).toEqual(['owner disposed'])
-    expect(ctx.jobs.list(agent as never)).toEqual([])
+    expect(ctx.jobs.list('owner' as never)).toEqual([])
   })
 })
 

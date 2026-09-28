@@ -1,20 +1,27 @@
 /**
- * The preset compiler — docs/agents-plugin-plan.md §8.2–§8.7.
+ * The generation compiler — docs/agents-plugin-plan.md §8.2–§8.7.
  *
- * A user agent is a YAML definition; the harness only mounts compositions that
- * live inside a preset directory. The compiler is the bridge between the two,
- * and it owns exactly three things:
+ * A generation is the IMMUTABLE, content-addressed record of one effective
+ * catalog: the published ABI every later boot and every retired agent reads,
+ * activated by atomically replacing one `current` pointer (§8.6). Nothing is
+ * ever edited in place, so a running process keeps reading the generation it
+ * started with.
+ *
+ * Presets are NOT compiled here any more. 0.1.5 compiled one
+ * `presets/<id>/agent.cordis.yml` directory per user main agent; 0.1.7 declares
+ * a preset as a `@deepseek-ai/dsh-agent-preset` ROW instead, so a user preset is
+ * a row in the user's own profile patch (README.md) and this bundle ships its
+ * two built-ins in `cordis.patch.yml`. What remains here:
  *
  *   - **the composition template** — one in-package file, with a single
- *     `<agentId>` placeholder. Every shipped preset and every generated preset
- *     is that template rendered, so a shipped preset can never drift from it;
+ *     `<agentId>` placeholder, from which the shipped preset rows are generated
+ *     (a test keeps the two in step);
  *   - **the standard inventory** — a digest of the official `standard`
  *     composition the template was copied from, so a harness upgrade cannot let
- *     the copy rot silently (§8.3);
- *   - **generations** — user presets are written into an immutable
- *     `generations/<hash>/` directory that is only ever activated by atomically
- *     replacing one `current` pointer (§8.6). Nothing is ever edited in place,
- *     so a running process keeps reading the generation it started with.
+ *     the copy rot silently (§8.3). 0.1.7 ships that composition as the
+ *     `preset-standard` row of `@deepseek-ai/dsh-web-app`'s
+ *     `presets/standard.patch.yml`;
+ *   - **generations** — the ABI manifest an activation publishes.
  *
  * Crash safety rests on three rules, and on nothing else — there is no lock:
  *
@@ -84,8 +91,14 @@ export const PARTIAL_PREFIX = '.partial-'
 /** The shipped preset the composition template was derived from. */
 export const STANDARD_PRESET_ID = 'standard'
 
-/** The package the official `standard` composition is read from. */
-export const PRESET_PACKAGE_ID = '@deepseek-ai/dsh-agent-presets'
+/** The row that declares the official `standard` composition in 0.1.7. */
+export const STANDARD_PRESET_ROW_ID = `preset-${STANDARD_PRESET_ID}`
+
+/** The package whose bundle patch declares the official `standard` composition. */
+export const PRESET_PACKAGE_ID = '@deepseek-ai/dsh-web-app'
+
+/** Where that package keeps the patch declaring `standard`. */
+export const STANDARD_PRESET_FILE = join('presets', `${STANDARD_PRESET_ID}.patch.yml`)
 
 /**
  * Bumped when the on-disk layout below `.generated/` changes shape, so an old
@@ -293,14 +306,16 @@ function collectRows(value, out, tools) {
  * so reformatting or re-commenting the official file does not raise a false
  * alarm while adding, removing, renaming, disabling or re-isolating a row does.
  *
- * @param compositionText - a composition file's contents.
+ * @param composition - a composition file's contents, or already-parsed rows
+ *   (the official `standard` composition lives inside a preset ROW, see
+ *   {@link standardPresetPlugins}).
  * @returns the frozen `{rows, digest, tools}` inventory.
  */
-export function computeStandardInventory(compositionText) {
+export function computeStandardInventory(composition) {
   /** @type {StandardRow[]} */
   const rows = []
   const tools = new Set()
-  collectRows(parseCompositionRows(compositionText), rows, tools)
+  collectRows(typeof composition === 'string' ? parseCompositionRows(composition) : composition, rows, tools)
   const digest = `sha256:${sha256(canonical(rows))}`
   return Object.freeze({
     rows: Object.freeze(rows),
@@ -310,10 +325,35 @@ export function computeStandardInventory(compositionText) {
 }
 
 /**
+ * The child plugin list of the official `standard` preset row.
+ *
+ * 0.1.7 has no `@deepseek-ai/dsh-agent-presets` package and no
+ * `presets/standard/agent.cordis.yml`: the composition is the `config.plugins`
+ * of the `preset-standard` row that `@deepseek-ai/dsh-web-app` inserts from its
+ * own bundle patch.
+ *
+ * @param patchText - the bundle patch file's contents.
+ * @returns the parsed child rows.
+ * @throws {Error} when the file carries no usable `standard` declaration.
+ */
+export function standardPresetPlugins(patchText) {
+  const patches = parseCompositionRows(patchText)
+  const rows = patches.flatMap((patch) => (Array.isArray(patch?.insert) ? patch.insert : []))
+  const row = rows.find((candidate) => isRecord(candidate) && candidate.id === STANDARD_PRESET_ROW_ID)
+  if (row === undefined || !isRecord(row.config) || !Array.isArray(row.config.plugins)) {
+    throw new Error(`bundle patch has no "${STANDARD_PRESET_ROW_ID}" row with a config.plugins list`)
+  }
+  if (row.config.id !== STANDARD_PRESET_ID) {
+    throw new Error(`"${STANDARD_PRESET_ROW_ID}" declares preset id ${JSON.stringify(row.config.id)}, expected "${STANDARD_PRESET_ID}"`)
+  }
+  return row.config.plugins
+}
+
+/**
  * Locate the installed official `standard` composition.
  *
- * Returns `undefined` rather than throwing when the presets package is absent:
- * the inventory is a CI-time drift gate, not a runtime dependency.
+ * Returns `undefined` rather than throwing when the bundle that carries it is
+ * absent: the inventory is a CI-time drift gate, not a runtime dependency.
  *
  * @returns the absolute path, or undefined.
  */
@@ -321,11 +361,17 @@ export function standardCompositionPath() {
   try {
     const require = createRequire(import.meta.url)
     const manifest = require.resolve(`${PRESET_PACKAGE_ID}/package.json`)
-    const path = join(dirname(manifest), 'presets', STANDARD_PRESET_ID, 'agent.cordis.yml')
+    const path = join(dirname(manifest), STANDARD_PRESET_FILE)
     return existsSync(path) ? path : undefined
   } catch {
     return undefined
   }
+}
+
+/** The standard composition's rows from the installed bundle, or undefined. */
+export function standardPresetRows() {
+  const path = standardCompositionPath()
+  return path === undefined ? undefined : standardPresetPlugins(readFileSync(path, 'utf8'))
 }
 
 /* --------------------------------------------------------- ABI manifest --- */
@@ -442,11 +488,6 @@ export function computeAbiManifest(options) {
 }
 
 /* ------------------------------------------------------------ filesystem --- */
-
-/** The directory a roster root must mount: the active generation's presets. */
-export function presetRootDir(rootDir) {
-  return join(rootDir, GENERATED_ROOT, CURRENT_POINTER, 'presets')
-}
 
 /**
  * Undo one activation: re-point `current` at the generation that was live
@@ -804,26 +845,9 @@ function pruneGenerations(generationsDir, keep, rootDir) {
 /* ------------------------------------------------------------ compilation --- */
 
 /**
- * @typedef {object} CompiledPreset
- * @property {string} id the catalog agent id
- * @property {string} presetId the generated preset directory name
- * @property {string} displayName
- * @property {string} description
- */
-
-/** The preset metadata the roster reads beside a composition. */
-function renderPresetMetadata(entry) {
-  // JSON strings are valid YAML double-quoted scalars, so this needs no YAML
-  // encoder of its own and cannot be tricked by a colon or a leading `-`.
-  return `name: ${JSON.stringify(entry.displayName)}\ndescription: ${JSON.stringify(entry.description)}\n`
-}
-
-/**
  * @typedef {object} CompilePresetsOptions
  * @property {string} rootDir the plugin's state root (`$DSH_HOME/banbo-agents`)
- * @property {string} templateText the in-package composition template
  * @property {Iterable<object>} definitions merged, validated definitions
- * @property {Set<string>} [builtinPresetIds] preset ids already shipped in the package
  * @property {string} [dshVersion] the target dependency-family version
  * @property {string} [selfVersion] this package's own version
  * @property {object | object[]} [previous] ABI manifest(s) already published
@@ -834,12 +858,11 @@ function renderPresetMetadata(entry) {
  * @property {string} generation the generation hash
  * @property {string} generationDir the absolute generation directory
  * @property {boolean} reused whether an existing complete generation was reused
- * @property {string} presetRootDir the directory a roster root must mount
  * @property {object} abi the manifest written into the generation
  */
 
 /**
- * Compile the effective catalog into an activatable generation.
+ * Publish the effective catalog as an activatable generation.
  *
  * @param options - see {@link CompilePresetsOptions}.
  * @returns see {@link CompilePresetsResult}.
@@ -850,13 +873,12 @@ export function compilePresets(options) {
   if (typeof rootDir !== 'string' || rootDir === '') {
     throw new TypeError('compilePresets requires an absolute rootDir')
   }
-  const templateText = options.templateText
-  const builtinPresetIds = options.builtinPresetIds ?? new Set()
   const dshVersion = options.dshVersion ?? 'unknown'
   const selfVersion = options.selfVersion ?? '0.0.0'
 
-  /** @type {CompiledPreset[]} */
-  const compiled = []
+  // One preset identity addresses one agent. The 0.1.7 preset ROWS name their
+  // own composition, so this can no longer be caught by a directory scan; the
+  // claim check here still makes the contradiction visible at startup.
   const claimed = new Map()
   for (const definition of collectDefinitions(options)) {
     if (definition?.main === undefined) continue
@@ -870,19 +892,6 @@ export function compilePresets(options) {
       )
     }
     claimed.set(presetId, definition.id)
-    if (builtinPresetIds.has(presetId)) continue
-    compiled.push({
-      id: definition.id,
-      presetId,
-      displayName: definition.displayName ?? definition.id,
-      description: definition.description ?? '',
-    })
-  }
-  compiled.sort(byId)
-
-  const compositions = new Map()
-  for (const entry of compiled) {
-    compositions.set(entry.presetId, renderComposition(templateText, entry.id))
   }
 
   // Hash inputs are content only — no host path, no user name — so the same
@@ -898,7 +907,6 @@ export function compilePresets(options) {
     layout: GENERATION_LAYOUT_VERSION,
     dshVersion,
     selfVersion,
-    template: sha256(templateText),
     agents,
   }))}`
   const abi = { layout: GENERATION_LAYOUT_VERSION, generation, dshVersion, selfVersion, agents }
@@ -918,7 +926,7 @@ export function compilePresets(options) {
     if (!reused) removePath(generationDir)
   }
   if (!reused) {
-    buildGeneration({ generationsDir, generation, generationDir, compiled, compositions, abi })
+    buildGeneration({ generationsDir, generation, generationDir, abi })
     if (!isCompleteGeneration(generationDir)) {
       throw new Error(`generation ${generation} was written to ${generationDir} without its ${COMPLETE_MARKER} marker`)
     }
@@ -927,7 +935,7 @@ export function compilePresets(options) {
   activateGeneration(rootDir, generationDir)
   pruneGenerations(generationsDir, [generationDir, previousGeneration], rootDir)
 
-  return { generation, generationDir, reused, presetRootDir: presetRootDir(rootDir), abi }
+  return { generation, generationDir, reused, abi }
 }
 
 /** Every definition the caller supplied, in iteration order. */
@@ -951,22 +959,16 @@ function collectDefinitions(options) {
  * by construction (§8.6).
  */
 function buildGeneration(context) {
-  const { generationsDir, generation, generationDir, compiled, compositions, abi } = context
+  const { generationsDir, generation, generationDir, abi } = context
   const partial = join(generationsDir, `${PARTIAL_PREFIX}${generation}.${process.pid}.${randomUUID()}`)
   try {
-    mkdirSync(join(partial, 'presets'), { recursive: true, mode: 0o700 })
-    for (const entry of compiled) {
-      const dir = join(partial, 'presets', entry.presetId)
-      mkdirSync(dir, { recursive: true, mode: 0o700 })
-      writeFileSync(join(dir, 'agent.cordis.yml'), compositions.get(entry.presetId), { mode: 0o600 })
-      writeFileSync(join(dir, 'preset.yml'), renderPresetMetadata(entry), { mode: 0o600 })
-    }
+    mkdirSync(partial, { recursive: true, mode: 0o700 })
     writeFileSync(join(partial, ABI_MANIFEST), `${JSON.stringify(abi, null, 2)}\n`, { mode: 0o600 })
     // Last, and only once every payload byte is on disk: the marker is what
     // makes the directory activatable at all.
     writeFileSync(
       join(partial, COMPLETE_MARKER),
-      `${JSON.stringify({ generation, dshVersion: abi.dshVersion, selfVersion: abi.selfVersion, presets: compiled.length })}\n`,
+      `${JSON.stringify({ generation, dshVersion: abi.dshVersion, selfVersion: abi.selfVersion })}\n`,
       { mode: 0o600 },
     )
     try {

@@ -2,7 +2,7 @@
 
 [English](./README.md) | **中文**
 
-用 YAML 定义你自己的 Agent 团队，并在 DSH 里以**具名工具**（`agent_<id>`）显式委派。本插件接管 Web 的 `agent-presets` 或 dsh-tui 的 `dsh-tui-agent-presets` roster seat，把包内 preset 与用户主 Agent 的编译产物一起挂进 roster，并在 Plugin Configuration 里提供一张设置卡。
+用 YAML 定义你自己的 Agent 团队，并在 DSH 里以**具名工具**（`agent_<id>`）显式委派。本插件把自带的 preset 作为 `@deepseek-ai/dsh-agent-preset` 行声明的在 profile 的 `@deepseek-ai/dsh-agent-preset-registry` 上，并在 Web 端的 Plugin Configuration 里提供一张配置页。
 
 设计与决策的完整依据见 [`docs/agents-plugin-plan.md`](../../docs/agents-plugin-plan.md)。
 
@@ -10,11 +10,11 @@
 
 方案 §16 的 Stage 1–4 已完成，Gate A–E 平台探针全绿：
 
-- **Host 装配**：读取内置 catalog（`catalog/*.yaml`，7 个 Agent）与用户 catalog（`$DSH_HOME/banbo-agents/agents/*.yaml`），受约束合并与全量校验；把用户新增的主 Agent 编译成**不可变 generation**，用原子 `current` 指针替换激活；写入 ABI manifest，保护已发布的 `toolName` / `presetId` / main-child 形态 / `child.continuation`。
+- **Host 装配**：读取内置 catalog（`catalog/*.yaml`，7 个 Agent）与用户 catalog（`$DSH_HOME/banbo-agents/agents/*.yaml`），受约束合并与全量校验；发布**不可变 ABI generation**，用原子 `current` 指针替换激活；写入 ABI manifest，保护已发布的 `toolName` / `presetId` / main-child 形态 / `child.continuation`。
 - **Persona**：用户 `prompts/` 优先、包内 `prompts/` 兜底；严格 UTF-8、双重尺寸上限、末尾单换行归一化。
 - **委派 runtime**：`agent_<id>`、`delegate_batch`、授权图与 absolute depth 校验、root Session 并发预算、one-shot/continuable 生命周期、HolderRegistry 与结构化隐私安全日志。
 - **CatalogRemote**：只读、启动期固定的 catalog 视图（无 persona、路径、composition、settings）；由官方 Typert generator 生成 Host/客户端 descriptor。
-- **Web 设置卡**：官方 `settings.plugin.item`（key `banbo-agents`），经严格 Typert Remote 读 catalog，用官方 `settingsScope` 读写 enabled/model。
+- **Web 设置卡**：占用插件页自己的 `plugins.bundle.config` 座位（按包名作 key），经严格 Typert Remote 读 catalog，用官方共享配置表单 `ctx.configForms.get('banbo-agents')` 读写 enabled/model，而这张表单就是本插件自己 Loader row 的 `Config`。
 
 ## 安装
 
@@ -30,11 +30,36 @@ dsh plugin --profile <profile> add -w ./plugins/agents
 
 安装后重启 profile：catalog 与 generation 在 Host ready 之前完成，坏配置会让启动直接失败并在报错里给出文件路径。
 
-### Roster 所有权兼容性
+### Preset 声明与自定义预设
 
-同一个包支持 DSH Web `0.1.5-rc.2` 和 dsh-tui `0.10.2` 的不同 roster row id。由于 Cordis 对不存在的 patch target 采用 warning + skip，每次启动会看到**一条预期 warning**：Web 提示缺少 `dsh-tui-agent-presets`，TUI 提示缺少 `agent-presets`；命中的另一 row 仍正常激活。
+本插件把自带的两个 preset（`banbo` 与 `planner`）声明为 [`cordis.patch.yml`](./cordis.patch.yml) 里的两条 `@deepseek-ai/dsh-agent-preset` 行。preset 是**声明**而不是目录：`config.id` 是 Session 保存的 preset 身份，`config.plugins` 是它挂载的 composition。roster 本身属于 profile 的 `agent-preset-registry` 行（config `{ default, selectedDefault }`），DSH Web `0.1.7-rc.2` 以 `default: standard` 插入它；本插件刻意既不声明也不 patch 这一行，所以别的 Bundle patch 它也无法拿走这里的 preset。
 
-本插件是 roster-owner Bundle：不兼容另一个覆盖同一 Web/TUI roster seat 的 Bundle，除非你手工合并完整 `roots`。Host 会检查 package/generated 两个 root，缺失时 fail-loud，不会静默接受覆盖。
+要加自己的 preset，把同样形状的行写进你自己的 profile patch —— `$DSH_HOME/profiles/<profile>/cordis.patch.yml` —— 或安装一个自带该行的 Bundle：
+
+```yaml
+- insert:
+    - id: preset-review
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: review
+        name: Review
+        description: Reviews changes with the shell only.
+        order: 30
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You review software changes.
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+```
+
+要跑本插件某个主 Agent 的 composition 还必须带上两条 runtime 行——`@banbolee/dsh-agents/main-runtime` 与 `@banbolee/dsh-agents/delegation`——每条都把 `config.agentId` 设成那个 Agent。照抄 [`cordis.patch.yml`](./cordis.patch.yml) 里 `preset-banbo` 的 `plugins:` 列表并改掉两个 `agentId` 即可；这个 composition 已经没有生成器替你产出了。
+
+两条要清楚的结果：
+
+- 用户主 Agent 的 YAML 里写了 `main.presetId: my-lead`，就必须有一条 `config.id` 为 `my-lead` 的 preset 行；没有它该 Agent 仍在 catalog（与 ABI）里，但它的 runtime 会拒绝激活并以 `preset mapping mismatch` fail-loud；
+- profile 若没有组装任何 `agent-preset-registry` 行，这些 preset 行会一直 pending，本插件也会一直等 `agentPresets` 服务——Web profile `0.1.7-rc.2` 是组装了它的。
 
 ## 团队一览
 
@@ -87,7 +112,7 @@ main:
 
 ## 设置
 
-Web 端在 **Plugin Configuration → `banbo-agents`** 提供一张设置卡，读写官方 `banbo-agents` settings namespace。
+Web 端在 **Settings → Plugins** 里选中 `@banbolee/dsh-agents` bundle：它的详情页会在 Plugin Configuration 区块里渲染这张卡（插件页自己的 `plugins.bundle.config` 座位，按包名作 key）。表单的命名空间就是本插件的 Loader row id `banbo-agents`；一次写入落在 profile patch 中该行的 user 层，并被提交进运行中的插件实例而不需要重挂载。
 
 可编辑项：
 
@@ -123,11 +148,13 @@ agents:
 $DSH_HOME/banbo-agents/
 ├── agents/*.yaml              你写的 Agent 定义（唯一需要手工编辑的目录）
 ├── prompts/*.md               你写的 persona；同名文件覆盖包内版本
-├── .generated/                Host 生成的 preset 产物，勿手工编辑
-│   ├── generations/<hash>/    不可变的一代：presets/ + abi.json + complete
+├── .generated/                Host 生成的 ABI 产物，勿手工编辑
+│   ├── generations/<hash>/    不可变的一代：abi.json + complete
 │   └── current -> generations/<hash>   原子替换的指针
 └── .children/<childId>.json   continuable 子 Agent 的身份 sidecar
 ```
+
+preset **不在**这里：preset 是插件自带 [`cordis.patch.yml`](./cordis.patch.yml) 或你自己 profile patch 里的一行，永远不是本插件扫描的目录。
 
 `.generated/` 只由本插件写入和清理，且只清理带自己 `complete` 标记的目录；你放进去的其它内容不会被跟随、也不会被删除。指针替换失败时**旧指针原样保留**，编译直接失败并报错，不会出现半激活的一代。
 
@@ -145,7 +172,7 @@ $DSH_HOME/banbo-agents/
 dsh plugin --profile <profile> remove @banbolee/dsh-agents
 ```
 
-普通卸载**保留** `$DSH_HOME/banbo-agents/` 全部内容（YAML、persona、generated presets、ABI manifest、身份 sidecar）。重装后 catalog、退役空壳和旧 continuable 子 Agent 的身份都能恢复。卸载只意味着本插件不再挂载到运行时，官方 roster 回到默认状态。
+普通卸载**保留** `$DSH_HOME/banbo-agents/` 全部内容（YAML、persona、ABI manifest、身份 sidecar）。重装后 catalog、退役空壳和旧 continuable 子 Agent 的身份都能恢复。卸载只意味着本插件不再挂载到运行时，它的 preset 行随之消失，官方 roster 回到默认状态。
 
 ## 破坏性清除（不可逆）
 
@@ -155,7 +182,7 @@ dsh plugin --profile <profile> remove @banbolee/dsh-agents
 rm -rf "$DSH_HOME/banbo-agents"
 ```
 
-这会同时删除 YAML、persona、generated presets、ABI manifest 与退役空壳记录。**删除 ABI manifest 的后果**：旧 continuable 子 Agent 冻结的 `toolFilter` 里那些 `agent_<id>` 名字会消失，冷恢复将无法进行。
+这会同时删除 YAML、persona、ABI manifest 与退役空壳记录。**删除 ABI manifest 的后果**：旧 continuable 子 Agent 冻结的 `toolFilter` 里那些 `agent_<id>` 名字会消失，冷恢复将无法进行。
 
 ## 三条明确的非承诺
 
@@ -167,7 +194,7 @@ rm -rf "$DSH_HOME/banbo-agents"
 
 ### 删除后放回同名 YAML 会复活，但用的是新 composition
 
-删掉定义文件后，那个 id 会**退役**：generated preset 目录一并移除，旧主 Session 走官方 `agent-preset/not-found`。**把同名文件放回去并重启，这个 id 会复活**——generated preset 重新生成，旧 Session 的 preset 解析重新成功，于是按 current-policy resume 语义继续运行。
+删掉定义文件后，那个 id 会**退役**：已经没有东西再声明它的 preset，旧主 Session 走官方 `agent-preset/not-found`。**把同名文件放回去、并在删过 preset 行时重新声明那一行，再重启，这个 id 会复活**——旧 Session 的 preset 解析重新成功，于是按 current-policy resume 语义继续运行。
 
 这条边界要清楚：
 
@@ -193,9 +220,9 @@ pnpm --filter @banbolee/dsh-agents build   # node scripts/build.mjs
 排障：
 
 - **设置卡不出现**：确认构建已跑过且 profile 里存在 `lib/client.js`；再次刷新页面。客户端只在 Remote mount 与 `list()` 成功后才注册 locale 与 slot，任一步失败都会整体回滚。
+- **preset picker 里没有 Banbo**：确认 profile 组装了 `agent-preset-registry` 行，且我们的 `preset-banbo` / `preset-planner` 行都在（`dsh --dump-config`）。没有 registry 时这些 preset 行会一直 pending，本插件也不会激活。
 - **改了 persona/YAML 没生效**：配置在**下次 profile 启动**时生效；改动的是已有 continuable child 的冻结 descriptor 时，需要新建 child。
 - **启动直接失败并给出文件路径**：这是期望的 fail-loud。按报错里的文件与字段修正 YAML；旧 generation 与 `current` 指针保持原样。
-- **看到 missing-sibling warning**：见上文「Roster 所有权兼容性」，每端一条属预期。
 
 ## 开发
 

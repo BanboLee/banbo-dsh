@@ -1,29 +1,43 @@
 /**
  * Official-settings integration policy — docs/agents-plugin-plan.md §7.
  *
- * Persistence, revisions and last-good behavior stay in `dsh-settings`. This
- * module owns only the namespace schema, catalog-aware validation and the live
- * effective policy read by MainRuntime/DelegationRuntime.
+ * 0.1.7 derives a settings form from the Loader ROW's own `Config` schema:
+ * `SettingsForms` (the `ctx.settings` service) has no `register()` any more, and
+ * `describe()` projects every active entry whose schema declares `.volatile()`
+ * fields. This module therefore owns the row schema ({@link ConfigSchema}), the
+ * catalog-aware validation, and the live effective policy read by
+ * MainRuntime/DelegationRuntime.
+ *
+ * The volatile fields are the editable half: a settings write lands in the
+ * profile patch's user layer for this row and the Loader commits the new value
+ * into the running `Volatile` references without remounting the plugin, which
+ * is what makes an edit visible to the next delegation instead of the next
+ * boot. `rootDir`/`enabled` are ordinary configuration: they belong to the
+ * deployment and are deliberately not editable from the Web page.
  */
 
 import z from '@deepseek-ai/schemastery'
 
-/** Stable official settings namespace. */
+/** Stable official settings namespace — this plugin's Loader row id. */
 export const SETTINGS_NAMESPACE = 'banbo-agents'
 
-/** Composition base registered with the official settings provider. */
+/** Composition base of the editable half. */
 export const SETTINGS_BASE = Object.freeze({ includeDefaults: true, agents: Object.freeze({}) })
 
 /**
+ * This bundle's row Config: the deployment fields plus the two editable ones.
+ *
  * Deliberately loose model shape: schemastery checks JSON/object boundaries;
  * {@link validateAgentSettings} checks the catalog-dependent union.
  */
-export const AgentSettingsSchema = z.object({
-  includeDefaults: z.boolean().default(true),
+export const ConfigSchema = z.object({
+  rootDir: z.string(),
+  enabled: z.boolean().default(true),
+  includeDefaults: z.boolean().default(true).volatile(),
   agents: z.dict(z.object({
     enabled: z.boolean(),
     model: z.any(),
-  })).default({}),
+  })).default({}).volatile(),
 })
 
 /** Catalog-aware settings failure. */
@@ -177,8 +191,32 @@ export function effectiveAgentPolicy(settings, catalog, agentId) {
 }
 
 /**
- * Thin read-only wrapper over the official SettingsScope. It intentionally owns
- * no cache: external file reloads and revision writes affect the next action.
+ * The live settings section, read from this plugin's own resolved Config.
+ *
+ * `.volatile()` fields arrive as immutable references that the Loader commits
+ * new values into on every reload, so `get()` is the current value: the next
+ * delegation sees an edit without a restart and without a re-read of the
+ * profile document. Plain objects are accepted too, which is what tests and a
+ * composition that set the fields literally hand over.
+ *
+ * @param config - this row's resolved Config.
+ * @returns a source with the `get()` shape {@link createSettingsView} reads.
+ */
+export function configSettingsSource(config) {
+  const value = (field, fallback) => {
+    const raw = config?.[field]
+    if (typeof raw?.get === 'function') return raw.get() ?? fallback
+    return raw ?? fallback
+  }
+  return Object.freeze({
+    get: () => ({ includeDefaults: value('includeDefaults', SETTINGS_BASE.includeDefaults), agents: value('agents', {}) }),
+  })
+}
+
+/**
+ * Thin read-only wrapper over the live settings section. It intentionally owns
+ * no cache: a volatile commit and an external file reload both affect the next
+ * action.
  */
 export function createSettingsView(scope, catalog) {
   return Object.freeze({

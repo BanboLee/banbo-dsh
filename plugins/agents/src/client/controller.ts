@@ -1,5 +1,5 @@
 import type { SettingsPathOpView } from '@deepseek-ai/dsh-api-remotes/client'
-import type { SettingsScope } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 
 import type { AgentCatalogRow, AgentCatalogView, AgentModelView } from '@banbolee/dsh-agents/catalog-remote'
 
@@ -13,7 +13,14 @@ export interface AgentSettingsSection {
   readonly agents: Readonly<Record<string, AgentSettingsOverride>>
 }
 
-export type AgentSettingsScope = SettingsScope<AgentSettingsSection>
+/**
+ * The slice of 0.1.7's shared configuration form this card consumes.
+ *
+ * `ConfigForm` is the shape `ctx.configForms.get(entryId)` returns; the card
+ * needs the reader half (`getSnapshot`/`subscribe`) and the one atomic write
+ * (`mutate`), and nothing else, so a test double stays three members wide.
+ */
+export type AgentSettingsScope = Pick<ConfigForm<AgentSettingsSection>, 'getSnapshot' | 'subscribe' | 'mutate'>
 type SettingsPathOp = SettingsPathOpView
 
 export interface AgentSettingsRow extends AgentCatalogRow {

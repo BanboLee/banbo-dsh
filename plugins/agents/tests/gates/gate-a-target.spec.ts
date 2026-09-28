@@ -69,12 +69,12 @@ afterEach(() => {
 /* ------------------------------------------------------------------ A1 --- */
 
 describe('A1 — dependency family is uniform', () => {
-  it('the workspace lockfile resolves no 0.1.5-rc.1 package alongside 0.1.5-rc.2', () => {
+  it('the workspace lockfile resolves no 0.1.7-rc.1 package alongside 0.1.7-rc.2', () => {
     const lock = readFileSync(join(repoRoot, 'pnpm-lock.yaml'), 'utf8')
-    const rc1 = lock.match(/0\.1\.5-rc\.1/g) ?? []
-    const rc2 = lock.match(/0\.1\.5-rc\.2/g) ?? []
+    const rc1 = lock.match(/0\.1\.7-rc\.1/g) ?? []
+    const rc2 = lock.match(/0\.1\.7-rc\.2/g) ?? []
     // Mixing prereleases inside one family is the exact failure this probe
-    // exists to catch: `^0.1.5-rc.1` cannot express "stay on rc.1", so a
+    // exists to catch: `^0.1.7-rc.1` cannot express "stay on rc.1", so a
     // caret range silently drifts to the newest rc.x.
     expect(rc1).toHaveLength(0)
     expect(rc2.length).toBeGreaterThan(0)
@@ -94,7 +94,7 @@ describe('A1 — dependency family is uniform', () => {
 
     expect(family.length).toBeGreaterThan(0)
     for (const [name, range] of family) {
-      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.1\.5-rc\.2$/)
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.1\.7-rc\.2$/)
     }
   })
 })
@@ -391,27 +391,32 @@ describe('A7 — agent/created is a vetoable publication boundary', () => {
     return { id, session: { id, header: { id } } }
   }
 
-  it('publishes on a clean creation dispatch and announces the created agent', async () => {
+  it('announces on a clean creation dispatch and reports the start source', async () => {
     const { ctx, host } = await registryHost()
     try {
-      const seen: string[] = []
-      host.ctx.on('agent/created', (payload) => { seen.push(payload.agent.id) })
-      host.ctx.agents.register(fakeAgent('clean-child') as never)
-      expect(seen).toEqual(['clean-child'])
+      const seen: Array<{ id: string, source: string }> = []
+      host.ctx.on('agent/created', (payload) => { seen.push({ id: payload.agent.id, source: payload.source }) })
+      // 0.1.7 `register()` returns the awaitable Cordis effect and announces
+      // inside it, so the creation dispatch is only settled once awaited.
+      await host.ctx.agents.register(fakeAgent('clean-child') as never)
+      expect(seen).toEqual([{ id: 'clean-child', source: 'startup' }])
       expect(host.ctx.agents.get('clean-child' as never)).toBeDefined()
     } finally {
       await ctx.fiber.dispose()
     }
   })
 
-  it('refuses publication when a synchronous creation listener throws', async () => {
+  it('refuses the announcement when a creation listener fails', async () => {
     const { ctx, host } = await registryHost()
     try {
       // The platform fact the standing-scope design depends on: `agent/created`
-      // is composition-only, so a synchronous throw from one of our listeners
-      // must abort the create rather than leave a half-composed agent live.
+      // is a serial creation dispatch, so a failing listener from this bundle
+      // aborts the announcement rather than leaving a half-composed agent live.
       host.ctx.on('agent/created', () => { throw new Error('gate-a7 veto') })
-      expect(() => host.ctx.agents.register(fakeAgent('veto-child') as never)).toThrow(/gate-a7 veto/)
+      // `register()` returns an awaitable effect disposer, which is a function:
+      // wrap it so the rejection is observed as a promise rejection.
+      await expect(Promise.resolve(host.ctx.agents.register(fakeAgent('veto-child') as never)))
+        .rejects.toThrow(/gate-a7 veto/)
       expect(host.ctx.agents.get('veto-child' as never)).toBeUndefined()
     } finally {
       await ctx.fiber.dispose()
@@ -421,25 +426,30 @@ describe('A7 — agent/created is a vetoable publication boundary', () => {
 
 /* ------------------------------------------------------------------ A8 --- */
 
-describe('A8 — agent/created precedes agent/session-start', () => {
-  it('emits created before session-start for one production agent', async () => {
+describe('A8 (0.1.7) — agent/created is the start announcement', () => {
+  it('announces the start source and a signal before the caller can use the agent', async () => {
     const ctx = new Context()
     try {
       await mountAgentLoopTestDependencies(ctx)
       const harness = await mountAgentLoopTestHarness(ctx)
       const order: string[] = []
-      ctx.on('agent/created', () => { order.push('created') })
-      ctx.on('agent/session-start', () => { order.push('session-start') })
+      const seen: Array<{ id: string, source: string, signal: boolean }> = []
+      // 0.1.7 DELETED `agent/session-start`; its semantics moved into
+      // `agent/created`, whose payload now carries the start `source` and the
+      // abort `signal`. The activation gate in §9.3 is still a synchronous
+      // `agent/created` listener, so what must hold is that it runs — and
+      // completes — before the caller can use the agent.
+      ctx.on('agent/created', (payload) => {
+        seen.push({ id: payload.agent.id, source: payload.source, signal: payload.signal !== undefined })
+        order.push('created')
+      })
 
       await harness.create('a8-child' as never, { provider: 'gate-a8', model: 'gate-a8' })
+      order.push('create-resolved')
 
-      // The activation gate in §9.3 is a synchronous `agent/created` listener,
-      // so the platform must publish BEFORE the startup-driving extension point
-      // (`agent/session-start`) runs; otherwise the gate could not install the
-      // persona/restriction before the first turn.
-      expect(order).toContain('created')
-      expect(order).toContain('session-start')
-      expect(order.indexOf('created')).toBeLessThan(order.indexOf('session-start'))
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({ id: 'a8-child', source: 'startup' })
+      expect(order).toEqual(['created', 'create-resolved'])
     } finally {
       await ctx.fiber.dispose()
     }

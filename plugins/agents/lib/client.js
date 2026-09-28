@@ -5510,6 +5510,34 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		function superRefine(fn, params) {
 			return /* @__PURE__ */ _superRefine(fn, params);
 		}
+		//#endregion
+		//#region lib/typert.remote-client.js
+		let _banbolee_dsh_agents_banboAgentsCatalog_list_result$schema$value;
+		const _banbolee_dsh_agents_banboAgentsCatalog_list_result$schema = () => _banbolee_dsh_agents_banboAgentsCatalog_list_result$schema$value ??= object({
+			"agents": array(object({
+				"id": string().readonly(),
+				"displayName": string().readonly(),
+				"description": string().readonly(),
+				"forms": array(union([literal("main"), literal("child")])).readonly(),
+				"source": union([
+					literal("built-in"),
+					literal("user-file"),
+					literal("retired")
+				]).readonly(),
+				"retiredReason": union([_undefined(), string()]).readonly().optional(),
+				"defaultEnabled": boolean().readonly(),
+				"modelEditable": boolean().readonly(),
+				"defaultModel": union([_undefined(), object({
+					"provider": string().readonly(),
+					"model": string().readonly(),
+					"reasoningEffort": union([_undefined(), string()]).readonly().optional()
+				})]).readonly().optional(),
+				"allowedChildren": array(string()).readonly(),
+				"toolCapabilities": array(string()).readonly(),
+				"mainBudgetSummary": union([_undefined(), record(string(), number()).readonly()]).readonly().optional()
+			})).readonly(),
+			"generation": string().readonly()
+		});
 		const TYPERT_REMOTE = {
 			package: "@banbolee/dsh-agents",
 			descriptors: [{
@@ -5522,31 +5550,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				result: {
 					mode: "strict",
 					typeSymbol: "@banbolee/dsh-agents/catalog-remote#AgentCatalogView",
-					schema: object({
-						"agents": array(object({
-							"id": string().readonly(),
-							"displayName": string().readonly(),
-							"description": string().readonly(),
-							"forms": array(union([literal("main"), literal("child")])).readonly(),
-							"source": union([
-								literal("built-in"),
-								literal("user-file"),
-								literal("retired")
-							]).readonly(),
-							"retiredReason": union([_undefined(), string()]).readonly().optional(),
-							"defaultEnabled": boolean().readonly(),
-							"modelEditable": boolean().readonly(),
-							"defaultModel": union([_undefined(), object({
-								"provider": string().readonly(),
-								"model": string().readonly(),
-								"reasoningEffort": union([_undefined(), string()]).readonly().optional()
-							})]).readonly().optional(),
-							"allowedChildren": array(string()).readonly(),
-							"toolCapabilities": array(string()).readonly(),
-							"mainBudgetSummary": union([_undefined(), record(string(), number()).readonly()]).readonly().optional()
-						})).readonly(),
-						"generation": string().readonly()
-					})
+					create: _banbolee_dsh_agents_banboAgentsCatalog_list_result$schema
 				},
 				sourceLocation: {
 					"file": "packages/agents/src/catalog-remote.ts",
@@ -5728,6 +5732,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		}
 		/** Plugin Configuration card for the startup catalog plus official live settings. */
 		function AgentSettingsCard(props) {
+			if (props.view !== "page") return null;
 			const state = props.useAgentsSettings((snapshot) => snapshot);
 			if (!state.available) return null;
 			const disabled = !state.writable || state.saving || state.conflicted;
@@ -6092,10 +6097,45 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"slots",
 			"locale",
 			"remote",
-			"settingsScope"
+			"configForms"
 		];
 		/** Cordis service key the Gateway publishes one Remote namespace under. */
 		const CATALOG_NAMESPACE_KEY = "remote.banboAgentsCatalog";
+		/** The Host Loader row whose Config this card edits (settings-policy.js). */
+		const SETTINGS_NAMESPACE = "banbo-agents";
+		/** This bundle's package name: the key `plugins.bundle.config` is addressed by. */
+		const PACKAGE_ID = "@banbolee/dsh-agents";
+		/**
+		* Narrow one shared form to the Host-owned section contract.
+		*
+		* The form carries whatever the profile patch holds and validates it against
+		* the row's serialized schema only; `decodeAgentSettings` is the stricter,
+		* catalog-independent shape this bundle's Host half accepts. A section that
+		* fails it is treated as not-yet-accepted (no value held) rather than rendered
+		* from half-decoded data.
+		*/
+		function hostSectionForm(form) {
+			return {
+				getSnapshot: () => {
+					const snapshot = form.getSnapshot();
+					if (snapshot.value === void 0) return {
+						...snapshot,
+						value: void 0
+					};
+					const value = decodeAgentSettings(snapshot.value);
+					return value === void 0 ? {
+						...snapshot,
+						status: "loading",
+						value: void 0
+					} : {
+						...snapshot,
+						value
+					};
+				},
+				subscribe: (listener) => form.subscribe(listener),
+				mutate: (ops, expectedRevision) => form.mutate(ops, expectedRevision)
+			};
+		}
 		function controllerFace(controller) {
 			return {
 				hooks: { agentsSettings: controller },
@@ -6128,17 +6168,14 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 				if (catalog === void 0) throw new Error(`banbo-agents: the Gateway did not publish ${CATALOG_NAMESPACE_KEY} after mounting this plugin's Remote; the settings card needs the Host catalog to render`);
 				const response = await catalog.list();
 				if (!response.ok) throw new Error(`banbo-agents: catalog list failed: ${response.error?.message} (${response.error?.code})`);
-				const controller = new AgentsSettingsController(ctx.settingsScope.bind({
-					namespace: "banbo-agents",
-					decode: decodeAgentSettings
-				}), response.value);
+				const controller = new AgentsSettingsController(hostSectionForm(ctx.configForms.get(SETTINGS_NAMESPACE)), response.value);
 				rollback.push(() => controller.dispose());
 				const removeLocale = ctx.locale.register(LOCALE_NAMESPACE, dictionaries);
 				rollback.push(removeLocale);
-				const removeSlot = ctx.slots.inject("settings.plugin.item", function* () {
+				const removeSlot = ctx.slots.inject("plugins.bundle.config", function* () {
 					yield ctx.slots.register({
-						name: "settings.plugin.item",
-						key: "banbo-agents",
+						name: "plugins.bundle.config",
+						key: PACKAGE_ID,
 						locale: LOCALE_NAMESPACE,
 						inject: () => controllerFace(controller)
 					}, AgentSettingsCard);
