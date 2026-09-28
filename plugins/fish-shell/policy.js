@@ -63,18 +63,43 @@ export const inject = ['tools', 'systemPrompt']
 
 const PLUGIN_TAG = '@banbolee/dsh-fish-shell'
 
+/**
+ * One agent as this policy reads it: the harness `Agent` viewed through the two
+ * members every registration below keys on — its session id (for warnings) and
+ * its agent-scoped context (where the restriction/prompt/tool registrations
+ * land). The full runtime `Agent` face is structurally assignable to this view.
+ * @typedef {{ id?: string, ctx: import('@deepseek-ai/cordis').Context }} PolicyAgent
+ */
+
+/**
+ * One agent's installed policy: which bash form was detected, the preset parent
+ * key it was installed under (the switch/re-entry fast path compares it), and
+ * the disposers that must move with `/preset`.
+ * @typedef {object} PolicyState
+ * @property {'persistent' | 'one-shot'} kind - the bash form this policy swapped out.
+ * @property {import('@deepseek-ai/dsh-scope').ScopeKey | undefined} parentKey - the preset parent scope key this state was installed under (`scopeParentOf(agent)`).
+ * @property {(() => Promise<void> | undefined) | undefined} persistentFish - the persistent fish tool's disposer, when this state installed one.
+ * @property {() => void} restriction - the `deny: ['bash']` restriction disposer.
+ * @property {() => void} prompt - the `tool:bash` prompt-shadow disposer.
+ */
+
 /** Agents currently being reconciled (guards the synchronous tools/change
- * re-entry that restriction/prompt registration and disposal trigger). */
+ * re-entry that restriction/prompt registration and disposal trigger).
+ * @type {WeakSet<PolicyAgent>} */
 const installing = new WeakSet()
-/** Agents already warned about an invisible fish tool (warn once per agent). */
+/** Agents already warned about an invisible fish tool (warn once per agent).
+ * @type {WeakSet<PolicyAgent>} */
 const warned = new WeakSet()
 /** Agents uninstalled via `agent/disposed`: a tools/change fired by the
- * uninstall's own disposals must not re-install a dying agent. */
+ * uninstall's own disposals must not re-install a dying agent.
+ * @type {WeakSet<PolicyAgent>} */
 const removed = new WeakSet()
-/** Per-agent policy state, including disposers that must move with /preset. */
+/** Per-agent policy state, including disposers that must move with /preset.
+ * @type {WeakMap<PolicyAgent, PolicyState>} */
 const states = new WeakMap()
 /** Live agents with policy installed; traversable so plugin teardown can
- * strip every registration (a WeakMap would be unreachable on teardown). */
+ * strip every registration (a WeakMap would be unreachable on teardown).
+ * @type {Set<PolicyAgent>} */
 const liveAgents = new Set()
 /** Global reconcile re-entrancy guard: a tools/change arriving while a
  * reconcile round is in flight marks `reconcilePending` instead of starting a
@@ -83,17 +108,32 @@ const liveAgents = new Set()
 let reconciling = false
 let reconcilePending = false
 
+/**
+ * Narrow one unchecked value to a non-null, non-array object: the shape this
+ * policy reads duck-typed tool definitions and disposer results through.
+ * @param {unknown} value - the value to inspect.
+ * @returns {value is Record<string, unknown>} whether it is a plain object record.
+ */
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/**
+ * Dispose one registration quietly: `undefined` means nothing was installed,
+ * a synchronous throw and a rejected async disposer are both warned instead of
+ * breaking the policy round that runs the disposal.
+ * @param {(() => unknown) | undefined} disposer - the registration's disposer, when there is one.
+ * @param {string} label - the registration's name in the warning.
+ * @param {PolicyAgent} agent - the agent the registration belongs to.
+ */
 function disposeQuietly(disposer, label, agent) {
   if (disposer === undefined) return
   try {
     const result = disposer()
     // Async disposers (persistent fish cleanup) are awaited out-of-band so a
-    // failing teardown is recorded instead of unhandled.
-    if (result !== undefined && typeof result.then === 'function') {
+    // failing teardown is recorded instead of unhandled; a plain `void`
+    // disposer returns a non-thenable and needs no wait.
+    if (isPlainObject(result) && typeof result.then === 'function') {
       void Promise.resolve(result).catch((error) => {
         console.warn(`${PLUGIN_TAG}: could not dispose ${label} for agent ${agent.id ?? '(unnamed)'}:`, String(error))
       })
@@ -103,12 +143,23 @@ function disposeQuietly(disposer, label, agent) {
   }
 }
 
+/**
+ * Drop every registration one policy state owns.
+ * @param {PolicyAgent} agent - the agent the state belongs to.
+ * @param {PolicyState} state - the installed state to tear down.
+ */
 function disposeState(agent, state) {
   disposeQuietly(state.prompt, 'tool:bash prompt shadow', agent)
   disposeQuietly(state.restriction, 'bash restriction', agent)
   disposeQuietly(state.persistentFish, 'persistent fish tool', agent)
 }
 
+/**
+ * Drop the registrations a preset switch must lift before it probes the target
+ * preset's surface (the prompt shadow and the bash restriction only).
+ * @param {PolicyAgent} agent - the agent whose transient policy is removed.
+ * @param {PolicyState | undefined} state - the previous state, when there is one.
+ */
 function removeTransientPolicy(agent, state) {
   disposeQuietly(state?.prompt, 'tool:bash prompt shadow', agent)
   disposeQuietly(state?.restriction, 'bash restriction', agent)
@@ -120,8 +171,8 @@ function removeTransientPolicy(agent, state) {
  * output schema is a plain string. The one-shot bash tool (command +
  * description + workdir + timeoutMs + run_in_background +
  * sandbox_permissions…) and every other tool shape fall through.
- * @param definition - the tool definition an agent resolves for `bash`.
- * @returns true when the agent's bash is the persistent PTY form.
+ * @param {import('@deepseek-ai/dsh-tools').ToolDefinition} definition - the tool definition an agent resolves for `bash`.
+ * @returns {boolean} true when the agent's bash is the persistent PTY form.
  */
 export function isPersistentBashForm(definition) {
   if (!isPlainObject(definition)) return false
@@ -139,7 +190,10 @@ export function isPersistentBashForm(definition) {
   return isPlainObject(properties) && Object.keys(properties).length === 1 && Object.hasOwn(properties, 'command')
 }
 
-/** Remove every policy-owned registration for an agent. */
+/**
+ * Remove every policy-owned registration for an agent.
+ * @param {PolicyAgent} agent - the agent whose policy is uninstalled.
+ */
 export function uninstallFishPolicy(agent) {
   liveAgents.delete(agent)
   removed.add(agent)
@@ -160,7 +214,7 @@ export function uninstallFishPolicy(agent) {
  * disposers THIS call created.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - the policy plugin's context.
- * @param {{ id?: string, ctx: import('@deepseek-ai/cordis').Context }} agent - the live agent (its `ctx` is the agent's scoped context).
+ * @param {PolicyAgent} agent - the live agent (its `ctx` is the agent's scoped context).
  */
 export function installFishPolicy(ctx, agent) {
   if (installing.has(agent)) return
@@ -257,11 +311,15 @@ export function installFishPolicy(ctx, agent) {
   }
 }
 
-/** Apply the policy to every live agent (no-op when the agents service is
+/**
+ * Apply the policy to every live agent (no-op when the agents service is
  * absent). Re-entrant calls (a registration/disposal mid-round fires
  * `tools/change` synchronously) are absorbed into at most ONE coalesced
  * catch-up round, so an external change dispatches a small constant number
- * of times regardless of how many agents are live. */
+ * of times regardless of how many agents are live.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the policy plugin's context (the `agents` service is resolved from it).
+ * @param {boolean} [catchUp] - whether this round is the coalesced catch-up (never re-triggers one).
+ */
 function reconcile(ctx, catchUp = false) {
   if (reconciling) {
     reconcilePending = true

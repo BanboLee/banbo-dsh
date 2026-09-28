@@ -56,8 +56,70 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { TerminalSessionId } from '@deepseek-ai/dsh-terminal'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { FishTerminalBackend, ensureSandboxModeFence, resolveConfig as resolveTerminalConfig } from './terminal-fish.js'
+
+/**
+ * The live owner of one persistent shell: the harness's runtime `Agent`
+ * (identity, the agent-scoped context, and the session whose header carries the
+ * cwd). Test doubles construct a minimal object and assert it once.
+ * @typedef {import('@deepseek-ai/dsh-agent').Agent} PersistentOwner
+ */
+
+/**
+ * The unique start/end marker pair one wrapped command's output is delimited by
+ * (`markers()`).
+ * @typedef {{ start: string, end: string }} CommandMarkers
+ */
+
+/**
+ * One retained scrollback page — `@deepseek-ai/dsh-terminal`'s
+ * `TerminalReadResult`, which is what `session.read(...)` resolves.
+ * @typedef {import('@deepseek-ai/dsh-terminal').TerminalReadResult} ScrollbackPage
+ */
+
+/**
+ * The PTY session surface this module drives: the backend session with its
+ * startup `motd` writable (`FishTerminalBackend.spawn` resolves with the
+ * concrete `LocalPtySession`, whose `motd` is mutable).
+ * @typedef {import('./terminal-fish.js').PersistentPtySession} PersistentPtySession
+ */
+
+/**
+ * The per-owner shell cache {@link persistentShells} returns.
+ * @typedef {object} PersistentShellRegistry
+ * @property {(owner: PersistentOwner, signal: AbortSignal) => Promise<PersistentPtySession>} get - resolve (creating lazily) the owner's live session.
+ * @property {(owner: PersistentOwner, reason: string) => Promise<void>} reset - close and forget the owner's session.
+ * @property {() => Promise<void>} dispose - tear every live session down (the plugin's own cleanup effect).
+ */
+
+/**
+ * The persistent tool's resolved configuration: every default materialized.
+ * @typedef {object} ResolvedPersistentConfig
+ * @property {string} backendType - PTY backend registry type.
+ * @property {number} timeoutMs - per-command deadline.
+ * @property {number} maxOutputChars - rendered-output cap.
+ * @property {string} description - model-facing tool description.
+ * @property {string | undefined} shellPath - fish executable override, when configured.
+ * @property {string[] | undefined} shellArgs - fish argument override, when configured.
+ */
+
+/**
+ * One unpublished spawn reservation: its owner, the cancellation controller the
+ * owner-cleanup path aborts, the settlement it awaits, and the release that
+ * drops the record once the creation settled.
+ * @typedef {object} SpawnReservation
+ * @property {PersistentOwner} owner - the owner the reservation belongs to.
+ * @property {AbortController} controller - aborts the in-flight creation.
+ * @property {Promise<void>} settled - resolves when the creation published or failed.
+ * @property {() => void} release - drops the record from the owner's tracking set (idempotent).
+ */
+
+/**
+ * The exited branch of a session status snapshot.
+ * @typedef {Extract<import('@deepseek-ai/dsh-terminal').TerminalSessionStatus, { kind: 'exited' }>} ExitedSessionStatus
+ */
 
 const TRUNCATED_MESSAGE = '<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>'
 const LOST_PREFIX_MESSAGE = '<response clipped><NOTE>The beginning of this command output was dropped by the terminal scrollback limit. The following text is the earliest retained output.</NOTE>\n'
@@ -79,9 +141,15 @@ const DEFAULT_DESCRIPTION = 'Run commands in a persistent fish shell. State, inc
  * self-contained).
  */
 export class TimeoutReason extends Error {
+  /** @type {string} */
   code
+  /** @type {number} */
   timeoutMs
   name = 'TimeoutReason'
+  /**
+   * @param {string} code - the timeout code stamped onto this reason.
+   * @param {number} timeoutMs - the elapsed deadline in milliseconds.
+   */
   constructor(code, timeoutMs) {
     super(`${code} after ${timeoutMs}ms`)
     this.code = code
@@ -92,10 +160,10 @@ export class TimeoutReason extends Error {
 /**
  * Fuse upstream cancellation with an identifiable timeout, without pulling
  * in `@deepseek-ai/dsh-timeout`. `timeoutMs <= 0` arms no timer.
- * @param upstream - caller cancellation, if any.
- * @param timeoutMs - deadline in milliseconds; `<= 0` means "no timeout".
- * @param code - timeout code stamped onto the {@link TimeoutReason}.
- * @returns the fused signal plus a disposer that clears the armed timer.
+ * @param {AbortSignal | undefined} upstream - caller cancellation, if any.
+ * @param {number} timeoutMs - deadline in milliseconds; `<= 0` means "no timeout".
+ * @param {string} code - timeout code stamped onto the {@link TimeoutReason}.
+ * @returns {{ signal: AbortSignal, dispose: () => void }} the fused signal plus a disposer that clears the armed timer.
  */
 export function deadline(upstream, timeoutMs, code) {
   if (timeoutMs <= 0) {
@@ -120,9 +188,9 @@ export function deadline(upstream, timeoutMs, code) {
 
 /**
  * Recover a timeout reason from a reason-bearing carrier.
- * @param x - an AbortSignal or any `{ reason }` carrier.
- * @param code - only a {@link TimeoutReason} with this exact code matches.
- * @returns the matching reason, else `undefined`.
+ * @param {{ reason?: unknown } | undefined} x - an AbortSignal or any `{ reason }` carrier.
+ * @param {string} [code] - only a {@link TimeoutReason} with this exact code matches.
+ * @returns {TimeoutReason | undefined} the matching reason, else `undefined`.
  */
 export function timeoutOf(x, code) {
   const reason = x?.reason
@@ -130,6 +198,13 @@ export function timeoutOf(x, code) {
   return code === undefined || reason.code === code ? reason : undefined
 }
 
+/**
+ * Bound one rendered chunk, appending the truncation note when it was cut.
+ * @param {string} content - the rendered text so far.
+ * @param {number} maxOutputChars - the configured character cap.
+ * @param {boolean} [incomplete] - whether the underlying capture was already incomplete.
+ * @returns {string} the bounded text.
+ */
 export function maybeTruncate(content, maxOutputChars, incomplete = false) {
   if (content.length <= maxOutputChars && !incomplete) return content
   return content.length <= maxOutputChars ? content + TRUNCATED_MESSAGE : content.slice(0, maxOutputChars) + TRUNCATED_MESSAGE
@@ -147,8 +222,8 @@ export function markers() {
  * Quote a value as one fish single-quoted token. fish single-quoted strings
  * only escape `\\` and `\'`, so backslashes are doubled first, then quotes —
  * the decode is exact for arbitrary input (verified against fish 4.0.0).
- * @param value - the raw string to embed.
- * @returns a fish single-quoted literal.
+ * @param {string} value - the raw string to embed.
+ * @returns {string} a fish single-quoted literal.
  */
 export function quoteForFish(value) {
   return `'${value.replaceAll('\\', '\\\\').replaceAll("'", "\\'")}'`
@@ -158,23 +233,28 @@ export function quoteForFish(value) {
  * Wrap a command so its output and exit status are delimited by unique
  * markers. fish 4's `eval` evaluates one command string (no `--`), and
  * `$status` must be captured before anything else runs.
- * @param command - the raw fish command text.
- * @param marker - the unique start/end marker pair.
- * @returns the wrapped command line submitted to the persistent shell.
+ * @param {string} command - the raw fish command text.
+ * @param {CommandMarkers} marker - the unique start/end marker pair.
+ * @returns {string} the wrapped command line submitted to the persistent shell.
  */
 export function wrapCommand(command, marker) {
   return `printf '%s\\n' ${quoteForFish(marker.start)}; eval ${quoteForFish(command)}; set __dsh_status $status; printf '%s%s\\n' ${quoteForFish(marker.end)} "$__dsh_status"`
 }
 
+/**
+ * Drop the trailing newline run a PTY echoes after a command.
+ * @param {string} text - the captured text.
+ * @returns {string} the text without its trailing newlines.
+ */
 export function trimTrailingNewline(text) {
   return text.replace(/(?:\r?\n)+$/, '')
 }
 
 /**
  * Extract the marker-delimited command output from a scrollback snapshot.
- * @param snapshot - the retained scrollback.
- * @param marker - the unique start/end marker pair.
- * @returns the captured text, exit code, and whether the start was lost.
+ * @param {{ text: string }} snapshot - the retained scrollback text.
+ * @param {CommandMarkers} marker - the unique start/end marker pair.
+ * @returns {{ text: string, incomplete: boolean, exitCode: number } | undefined} the captured text, exit code, and whether the start was lost; `undefined` while the end status is not in the snapshot yet.
  */
 export function commandOutput(snapshot, marker) {
   const text = snapshot.text
@@ -191,8 +271,14 @@ export function commandOutput(snapshot, marker) {
 }
 
 /**
- * Render the not-yet-complete output after a start marker, falling back to
- * the incremental send delta when the scrollback lost the start.
+ * Render the output captured so far for a command that has not finished,
+ * falling back to the incremental send delta when the scrollback lost the
+ * start marker.
+ * @param {{ text: string }} snapshot - the retained scrollback text.
+ * @param {CommandMarkers} marker - the unique start/end marker pair.
+ * @param {string} fallback - the incremental delta accumulated so far.
+ * @param {boolean} [fallbackTruncated] - whether the fallback lost bytes.
+ * @returns {{ text: string, incomplete: boolean }} the partial text and whether the start was lost.
  */
 export function partialOutput(snapshot, marker, fallback, fallbackTruncated = false) {
   const startMarker = snapshot.text.lastIndexOf(marker.start)
@@ -211,15 +297,31 @@ export function partialOutput(snapshot, marker, fallback, fallbackTruncated = fa
   }
 }
 
+/**
+ * Wait one polling interval between readiness/scrollback probes.
+ * @returns {Promise<void>} resolves after the interval.
+ */
 export async function pause() {
   await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
 }
 
+/**
+ * The next backward page offset when older lines remain.
+ * @param {ScrollbackPage} page - one retained page.
+ * @param {number} offset - the newest-relative offset the page started at.
+ * @returns {number | undefined} the next offset, or `undefined` when the scrollback is exhausted.
+ */
 export function nextScrollbackOffset(page, offset) {
   if (page.text.length === 0 || page.lineEnd <= offset) return undefined
   return page.lineEnd
 }
 
+/**
+ * Page back through the session's scrollback until the retained window is read.
+ * @param {PersistentPtySession} session - the owner's live PTY session.
+ * @param {ScrollbackPage} [latest] - the already-read newest page (read here when omitted).
+ * @returns {{ text: string, truncated: boolean }} the retained text and whether the window was cut.
+ */
 export function retainedScrollback(session, latest = session.read({
   offset: 0,
   count: SCROLLBACK_PAGE_LINES,
@@ -245,16 +347,35 @@ export function retainedScrollback(session, latest = session.read({
   }
 }
 
+/**
+ * Render one captured command output with its truncation and exit markers.
+ * @param {{ text: string, incomplete: boolean, exitCode?: number }} output - the captured chunk.
+ * @param {number} maxOutputChars - the configured character cap.
+ * @returns {string} the model-facing text.
+ */
 export function renderCaptured(output, maxOutputChars) {
   const rendered = maybeTruncate(output.text, maxOutputChars, output.incomplete)
   return appendStatusMarker(output.incomplete && output.text.length > 0 ? LOST_PREFIX_MESSAGE + rendered : rendered, output.exitCode !== undefined ? `[Command finished with exit code ${output.exitCode}]` : undefined)
 }
 
+/**
+ * Append one status line to already-rendered content.
+ * @param {string} content - the rendered text.
+ * @param {string | undefined} marker - the status line, when there is one.
+ * @returns {string} the content with the marker appended.
+ */
 export function appendStatusMarker(content, marker) {
   if (marker === undefined) return content
   return content.length === 0 ? marker : `${content}\n${marker}`
 }
 
+/**
+ * Append the shell-exit status line for a session that went away.
+ * @param {string} content - the rendered text.
+ * @param {number | null} exitCode - the shell's exit code, when it exited.
+ * @param {NodeJS.Signals | null} signal - the terminating signal, when it was killed.
+ * @returns {string} the content with its exit status.
+ */
 export function renderShellExitStatus(content, exitCode, signal) {
   return appendStatusMarker(content, signal !== null ? `[shell killed by signal: ${signal}]` : exitCode !== null ? `[shell exited: code ${exitCode}]` : '[shell exited]')
 }
@@ -262,6 +383,15 @@ export function renderShellExitStatus(content, exitCode, signal) {
 /**
  * Render the exited-session result, reset the owner's shell, and carry the
  * notice that the next call starts fresh.
+ * @param {PersistentPtySession} session - the session that exited.
+ * @param {PersistentShellRegistry} shells - the per-owner cache to reset.
+ * @param {PersistentOwner} owner - the owning agent.
+ * @param {ExitedSessionStatus} status - the exited status snapshot.
+ * @param {CommandMarkers} marker - the unique start/end marker pair.
+ * @param {string} fallback - the incremental delta accumulated so far.
+ * @param {boolean} fallbackTruncated - whether the fallback lost bytes.
+ * @param {ResolvedPersistentConfig} config - the resolved persistent configuration.
+ * @returns {Promise<string>} the model-facing reset notice.
  */
 async function respondToSessionExit(session, shells, owner, status, marker, fallback, fallbackTruncated, config) {
   const snapshot = retainedScrollback(session)
@@ -290,30 +420,43 @@ async function respondToSessionExit(session, shells, owner, status, marker, fall
  * close keeps the session retryable instead of losing the handle, and a
  * re-entrant close awaits the in-flight one.
  *
- * @param ctx - the policy plugin's context (services resolved via `ctx.get`).
- * @param config - the resolved persistent configuration.
- * @param backend - the PTY backend (duck-typed: only `spawn(spec)` is read);
- *   defaults to a real `FishTerminalBackend` constructed against `ctx`
- *   (injectable so tests can fake spawn/close).
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the policy plugin's context (services resolved via `ctx.get`).
+ * @param {ResolvedPersistentConfig} config - the resolved persistent configuration.
+ * @param {{ spawn: (spec: import('@deepseek-ai/dsh-terminal').TerminalBackendSpawnSpec) => Promise<PersistentPtySession> }} [backend] - the PTY backend (duck-typed: only `spawn(spec)` is read); defaults to a real `FishTerminalBackend` constructed against `ctx` (injectable so tests can fake spawn/close).
+ * @returns {PersistentShellRegistry} the per-owner cache the persistent tool drives.
  */
 export function persistentShells(ctx, config, backend = new FishTerminalBackend(ctx, resolveTerminalConfig({
   backendType: config.backendType,
   ...(config.shellPath !== undefined ? { shellPath: config.shellPath } : {}),
   ...(config.shellArgs !== undefined ? { shellArgs: config.shellArgs } : {}),
-}), (spec) => ctx.get('subprocess').spawnTerminal(spec))) {
+}), (spec) => {
+  // `ctx.get` (never property access) keeps this working in a policy context
+  // whose inject list does not declare `subprocess`; a composition without the
+  // service fails loud here instead of with an undefined-property TypeError.
+  const subprocess = ctx.get('subprocess')
+  if (subprocess === undefined) throw new Error('persistent fish: the PTY backend requires ctx.subprocess in this world')
+  return subprocess.spawnTerminal(spec)
+})) {
+  /** @type {WeakMap<PersistentOwner, Promise<PersistentPtySession>>} */
   const pending = new WeakMap()
+  /** @type {Map<PersistentOwner, PersistentPtySession>} */
   const live = new Map()
+  /** @type {Set<Promise<PersistentPtySession>>} */
   const creating = new Set()
   /** Owner → in-flight close promise. A session stays here until its close
    * settles, so it still counts as activity while the PTY is being torn down
    * and a failed close leaves the session retryable (the `live` entry is
    * removed only on success). */
+  /** @type {Map<PersistentOwner, Promise<void>>} */
   const closing = new Map()
-  /** Owner → Set of unpublished spawn reservations (official registry shape). */
+  /** Owner → Set of unpublished spawn reservations (official registry shape). @type {Map<PersistentOwner, Set<SpawnReservation>>} */
   const pendingSpawns = new Map()
+  /** @type {WeakSet<PersistentOwner>} */
   const ownerCleanupInstalled = new WeakSet()
+  /** @type {WeakSet<PersistentOwner>} */
   const disposedOwners = new WeakSet()
   const lifecycle = new AbortController()
+  /** @param {PersistentOwner} owner - the owner whose activity is probed. @returns {boolean} whether that owner has a live, pending, or closing session. */
   const hasActivity = (owner) =>
     pending.get(owner) !== undefined
     || (pendingSpawns.get(owner)?.size ?? 0) > 0
@@ -323,7 +466,8 @@ export function persistentShells(ctx, config, backend = new FishTerminalBackend(
   /** Register the owner-scoped cleanup effect BEFORE the first spawn: on
    * owner disposal it aborts and awaits pending creations, then closes the
    * live session. Throws when the owner context is already disposed (no
-   * registration happens on a disposed context). */
+   * registration happens on a disposed context).
+   * @param {PersistentOwner} owner - the owner to install cleanup for. */
   const ensureOwnerCleanup = (owner) => {
     if (ownerCleanupInstalled.has(owner)) return
     if (disposedOwners.has(owner)) {
@@ -347,31 +491,43 @@ export function persistentShells(ctx, config, backend = new FishTerminalBackend(
 
   /** One unpublished spawn reservation: an AbortController plus a settlement
    * the owner-cleanup path awaits, tracked owner→Set so `hasActivity` sees
-   * creations before they are published. */
+   * creations before they are published. `release` lives ON the record:
+   * `abortPendingSpawns` releases every record it snapshotted, and a snapshot
+   * that only carried the wrapper's closure threw `release is not a function`.
+   * @param {PersistentOwner} owner - the owner the reservation belongs to.
+   * @returns {{ signal: AbortSignal, release: () => void }} the reservation's cancellation signal and release. */
   const reserveSpawn = (owner) => {
     ensureOwnerCleanup(owner)
     const controller = new AbortController()
     /** @type {PromiseWithResolvers<void>} */
     const settlement = Promise.withResolvers()
-    const pendingSpawn = { owner, controller, settled: settlement.promise }
+    const pendingSpawn = {
+      owner,
+      controller,
+      settled: settlement.promise,
+      /** Drop this reservation from the owner's set and settle the cleanup wait (idempotent). */
+      release() {
+        const owned = pendingSpawns.get(owner)
+        if (owned === undefined) return
+        owned.delete(pendingSpawn)
+        if (owned.size === 0) pendingSpawns.delete(owner)
+        settlement.resolve()
+      },
+    }
     let owned = pendingSpawns.get(owner)
     if (owned === undefined) {
       owned = new Set()
       pendingSpawns.set(owner, owned)
     }
     owned.add(pendingSpawn)
-    return {
-      signal: controller.signal,
-      release() {
-        owned.delete(pendingSpawn)
-        if (owned.size === 0) pendingSpawns.delete(owner)
-        settlement.resolve()
-      },
-    }
+    return { signal: controller.signal, release: () => pendingSpawn.release() }
   }
 
   /** Abort every pending creation of one owner and await its settlement
-   * (idempotent with each creation's own `release`). */
+   * (idempotent with each creation's own `release`).
+   * @param {PersistentOwner} owner - the owner whose creations are aborted.
+   * @param {string} reason - forwarded to each reservation's abort.
+   * @returns {Promise<void>} resolves once every pending creation settled. */
   const abortPendingSpawns = async (owner, reason) => {
     const owned = pendingSpawns.get(owner)
     if (owned === undefined) return
@@ -385,7 +541,12 @@ export function persistentShells(ctx, config, backend = new FishTerminalBackend(
    * until the close settles. On success the `live` entry is removed; on
    * failure the session stays retryable and the failure is recorded, then
    * rethrown so callers can retry. A second close of the same session awaits
-   * the in-flight one instead of stacking another close. */
+   * the in-flight one instead of stacking another close.
+   * @param {PersistentOwner} owner - the session's owner.
+   * @param {PersistentPtySession} session - the session to close.
+   * @param {string} reason - the close reason recorded on the PTY session.
+   * @param {() => void} [onClosed] - invoked once the close succeeded.
+   * @returns {Promise<void>} resolves when the close settled. */
   const closeSession = async (owner, session, reason, onClosed) => {
     if (closing.has(owner)) return closing.get(owner)
     const promise = (async () => {
@@ -409,12 +570,14 @@ export function persistentShells(ctx, config, backend = new FishTerminalBackend(
     const owners = [...live.keys()]
     await Promise.allSettled(owners.map((owner) => reset(owner, 'persistent fish disposed')))
   }, 'persistent fish shell cleanup')
+  /** @param {PersistentOwner} owner - the owner whose session is reset. @param {string} reason - the close reason. @returns {Promise<void>} resolves when the session is closed and forgotten. */
   const reset = async (owner, reason) => {
     pending.delete(owner)
     const session = live.get(owner)
     if (session === undefined) return
     await closeSession(owner, session, reason, () => live.delete(owner))
   }
+  /** @param {PersistentOwner} owner - the owner whose session is resolved. @param {AbortSignal} signal - caller cancellation. @returns {Promise<PersistentPtySession>} the live (lazily created) session. */
   const get = (owner, signal) => {
     const existing = pending.get(owner)
     if (existing !== undefined) return existing
@@ -437,8 +600,14 @@ export function persistentShells(ctx, config, backend = new FishTerminalBackend(
         // the backend's own fence call reuses this entry.
         ensureSandboxModeFence(ctx, owner, () => hasActivity(owner))
         const spawned = await backend.spawn({
+          // The registry mints `type` from the request's registered backend;
+          // the self-managed path names the configured type directly.
+          type: config.backendType,
           owner,
-          sessionId: randomUUID(),
+          // The registry normally mints this identity; the self-managed path
+          // mints its own with the seam's branding helper (a runtime identity
+          // function) so the branded `TerminalSessionIdValue` stays honest.
+          sessionId: TerminalSessionId(randomUUID()),
           ...(cwd === undefined ? {} : { cwd }),
           signal: combinedSignal,
         })
@@ -469,6 +638,13 @@ export function persistentShells(ctx, config, backend = new FishTerminalBackend(
 /**
  * Execute one wrapped command against the owner's persistent fish session,
  * reading the marker-delimited result from the scrollback.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the policy plugin's context, threaded through for the call shape (the owner-scoped fence bookkeeping lives in {@link persistentShells}; this function reads no context service).
+ * @param {PersistentShellRegistry} shells - the per-owner session cache.
+ * @param {PersistentOwner} owner - the owning agent.
+ * @param {string} command - the raw fish command text.
+ * @param {ResolvedPersistentConfig} config - the resolved persistent configuration.
+ * @param {AbortSignal | undefined} upstream - the caller's cancellation signal.
+ * @returns {Promise<string>} the model-facing command result.
  */
 async function executeCommand(ctx, shells, owner, command, config, upstream) {
   const commandDeadline = deadline(upstream, config.timeoutMs, TIMEOUT_CODE)
@@ -547,7 +723,7 @@ async function executeCommand(ctx, shells, owner, command, config, upstream) {
  * Resolve the persistent tool configuration with defaults applied.
  * @param {PersistentFishOverrides} [config] - optional overrides (backend type, deadline, output cap,
  *   fish executable).
- * @returns the fully resolved configuration (validated).
+ * @returns {ResolvedPersistentConfig} the fully resolved configuration (validated).
  */
 export function resolvePersistentConfig(config = {}) {
   const resolved = {
@@ -566,7 +742,8 @@ export function resolvePersistentConfig(config = {}) {
  * Validate the resolved persistent configuration. `timeoutMs` is additionally
  * bounded by {@link MAX_TIMER_DELAY_MS}: a larger value would make Node clamp
  * the timer to ~1ms (TimeoutOverflowWarning) and abort almost immediately.
- * @param resolved - the fully resolved configuration.
+ * @param {ResolvedPersistentConfig} resolved - the fully resolved configuration.
+ * @returns {void} throws on a value the tool cannot run with.
  */
 export function validatePersistentConfig(resolved) {
   if (resolved.backendType.trim().length === 0) throw new Error('persistent fish: backendType must be non-empty')
@@ -582,15 +759,15 @@ export function validatePersistentConfig(resolved) {
  * shadowing the host-global one-shot `fish` tool. Intended to be called by
  * `policy.js` from the agent boundary when the agent's standing bash tool is
  * the persistent form (`minimal` preset).
- * @param ctx - the host context carrying `sandboxPolicy` and `subprocess`
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the host context carrying `sandboxPolicy` and `subprocess`
  *   (resolvable from the policy plugin ctx in dsh-base/TUI host planes and
  *   in the composition test profiles); `terminals` is deliberately NOT
  *   needed — sessions are self-managed through a `FishTerminalBackend`.
- * @param agentCtx - the agent's scoped context; the tool is registered here
+ * @param {import('@deepseek-ai/cordis').Context} agentCtx - the agent's scoped context; the tool is registered here
  *   so the agent sees it (shadowing the host-global fish).
- * @param config - optional overrides (backend type, deadline, output cap,
+ * @param {PersistentFishOverrides} [config] - optional overrides (backend type, deadline, output cap,
  *   fish executable).
- * @returns the disposer; it unregisters the tool and returns a Promise that
+ * @returns {() => Promise<void> | undefined} the disposer; it unregisters the tool and returns a Promise that
  *   settles when the session cleanup has quiesced (policy.js awaits it
  *   out-of-band via `Promise.resolve(...).catch`).
  */
@@ -598,7 +775,9 @@ export function registerPersistentFish(ctx, agentCtx, config = {}) {
   const resolved = resolvePersistentConfig(config)
 
   const shells = persistentShells(ctx, resolved)
+  /** @type {WeakMap<PersistentOwner, Promise<void>>} */
   const queues = new WeakMap()
+  /** @param {PersistentOwner} owner - the agent whose calls are serialized. @param {() => Promise<string>} operation - one call's work. @returns {Promise<string>} the call's result, in submission order per owner. */
   const serialized = async (owner, operation) => {
     const run = (queues.get(owner) ?? Promise.resolve()).then(operation, operation)
     const tail = run.then(() => undefined, () => undefined)

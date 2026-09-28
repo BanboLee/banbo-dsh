@@ -65,6 +65,20 @@ import { DSH_ENV_PREFIX, parseExitStatus } from '@deepseek-ai/dsh-shell'
  */
 
 /**
+ * The `fish` tool's parsed arguments. Registration is raw JSON Schema, so the
+ * registry hands the body `unknown`; these are the fields the tool validates
+ * and narrows at runtime, typed as the schema admits them (every one optional).
+ * @typedef {object} FishToolArgs
+ * @property {string} [command] - the fish command to execute.
+ * @property {string} [description] - the one-line UI description.
+ * @property {string} [workdir] - optional working directory (session-relative when not absolute).
+ * @property {number} [timeoutMs] - optional foreground deadline.
+ * @property {boolean} [run_in_background] - run as a `ctx.jobs` background job.
+ * @property {string} [sandbox_permissions] - one-shot escalation target.
+ * @property {string} [justification] - the escalation's one-sentence reason.
+ */
+
+/**
  * The canonical JSON value of one foreground fish run — the `foreground`
  * branch of `OUTPUT_SCHEMA` and what `renderResult` renders. Structural on
  * purpose: a replay holds this projection, not the executor's
@@ -110,6 +124,12 @@ const ESCALATION_TOOL_DESCRIPTION = 'Attempting a command the sandbox may deny i
 
 const TOOL_DESCRIPTION = `${BASE_TOOL_DESCRIPTION}\n${ESCALATION_TOOL_DESCRIPTION}`
 
+/**
+ * The tool description for one composition: the escalation prose is appended
+ * only when the composition advertises escalation targets.
+ * @param {readonly import('@deepseek-ai/dsh-sandbox').SandboxMode[]} escalationModes - targets this composition advertises.
+ * @returns {string} the model-facing description.
+ */
 function fishDescription(escalationModes) {
   return escalationModes.length === 0 ? BASE_TOOL_DESCRIPTION : TOOL_DESCRIPTION
 }
@@ -148,7 +168,11 @@ const FISH_SYNTAX_HINTS = [
   },
 ]
 
-/** Find a fish syntax hint for one stderr text, or '' when none applies. */
+/**
+ * Find a fish syntax hint for one stderr text, or '' when none applies.
+ * @param {string} stderrText - the failed run's stderr text.
+ * @returns {string} the mapped hint, or `''` when nothing applies.
+ */
 function fishSyntaxHint(stderrText) {
   for (const { pattern, hint } of FISH_SYNTAX_HINTS) {
     if (pattern.test(stderrText)) return hint
@@ -169,6 +193,10 @@ function fishSyntaxHint(stderrText) {
  * @returns {string} the model-facing text.
  */
 function renderResult(result, escalationModes = []) {
+  /**
+   * @param {FishOutputStream} stream - one captured stream of the canonical value.
+   * @returns {string} its text plus the truncation notice when it was cut.
+   */
   const streamText = (stream) => {
     if (!stream.truncated) return stream.text
     return `${stream.text}\n[output truncated${stream.spillPath !== undefined
@@ -329,6 +357,10 @@ function processJob(start, outcome) {
  * @returns {FishForegroundValue} the canonical value declared by OUTPUT_SCHEMA.
  */
 function canonicalFishResult(result) {
+  /**
+   * @param {import('@deepseek-ai/dsh-shell').CollectedOutput} s - one captured stream of the settled result.
+   * @returns {FishOutputStream} its lossless-JSON projection.
+   */
   const stream = (s) => ({
     text: s.text,
     truncated: s.truncated,
@@ -443,6 +475,7 @@ const PARAMETERS = {
  * The tool's parameters for one composition: the base parameters plus
  * `run_in_background`, and the escalation fields only when the mounted
  * executor advertises confinement (an unadvertised field is never parsed).
+ * @param {readonly import('@deepseek-ai/dsh-sandbox').SandboxMode[]} escalationModes - targets the composition advertises; empty hides the escalation fields.
  */
 function fishParameters(escalationModes) {
   return {
@@ -534,8 +567,14 @@ const OUTPUT_SCHEMA = {
   ],
 }
 
-/** Resolve an explicit workdir: the sandbox policy's workspace root wins as
- * the base, then the session cwd; a relative path resolves against it. */
+/**
+ * Resolve an explicit workdir: the sandbox policy's workspace root wins as
+ * the base, then the session cwd; a relative path resolves against it.
+ * @param {string | undefined} modelWorkdir - the model's `workdir` argument.
+ * @param {import('@deepseek-ai/dsh-tools').ToolRunContext} exec - the tool execution.
+ * @param {string | undefined} policyWorkspaceRoot - the standing policy's workspace root.
+ * @returns {string | undefined} the workdir for this call, or `undefined` to let the executor default it.
+ */
 function resolveWorkdir(modelWorkdir, exec, policyWorkspaceRoot) {
   const sessionCwd = policyWorkspaceRoot ?? exec?.agent?.session?.header?.cwd
   if (modelWorkdir === undefined) return sessionCwd
@@ -563,6 +602,10 @@ export function apply(ctx) {
   if (defaultMode !== undefined && sandboxPolicy === undefined) {
     throw new Error('tool-fish: the mounted fish executor confines but ctx.sandboxPolicy is missing')
   }
+  /**
+   * @param {import('@deepseek-ai/dsh-tools').ToolRunContext} exec - the tool execution.
+   * @returns {import('@deepseek-ai/dsh-sandbox').SandboxExecutionPolicy | undefined} the standing policy for this call's session, or `undefined` without a policy owner.
+   */
   const resolveSandboxPolicy = (exec) => {
     if (sandboxPolicy === undefined) return undefined
     return sandboxPolicy.resolve(exec.agent === undefined ? {} : { session: exec.agent.session })
@@ -573,6 +616,11 @@ export function apply(ctx) {
    * anything executes, delegating the shared fail-closed sequence (strict
    * widening, channel resolution, outcome mapping) to approveEscalation —
    * the same composition guard and ingredients as the official bash tool.
+   * @param {string} mode - the requested `sandbox_permissions` value (the ladder check lives in `approveEscalation`).
+   * @param {string} justification - the model's one-sentence reason, shown verbatim to the user.
+   * @param {import('@deepseek-ai/dsh-tools').ToolRunContext} exec - the tool execution awaiting the decision.
+   * @param {import('@deepseek-ai/dsh-sandbox').SandboxExecutionPolicy} standingPolicy - the call's standing policy (present whenever escalation is advertised).
+   * @returns {Promise<import('@deepseek-ai/dsh-sandbox').SandboxMode>} the granted mode, consumed by this one call.
    */
   const approveFishEscalation = (mode, justification, exec, standingPolicy) => {
     if (escalationModes.length === 0) {
@@ -599,6 +647,13 @@ export function apply(ctx) {
     text: 'Check the [exit code: N] marker on every fish result; investigate failures before moving on.',
   })
 
+  /**
+   * One `fish` tool call: validate the model's arguments, resolve the standing
+   * policy and any same-turn escalation, then run through `ctx.shell`.
+   * @param {FishToolArgs} args - the parsed call arguments (validated below).
+   * @param {import('@deepseek-ai/dsh-tools').ToolRunContext} exec - the tool execution identity, agent, and cancellation.
+   * @returns {Promise<{ kind: 'foreground' } & FishForegroundValue | { kind: 'background', jobId: string }>} the canonical value declared by OUTPUT_SCHEMA.
+   */
   async function execute(args, exec) {
     if (typeof args.command !== 'string' || args.command.trim().length === 0) {
       throw new Error('invalid command: expected a non-empty string')
@@ -612,12 +667,17 @@ export function apply(ctx) {
     validateEscalationArgs(args.sandbox_permissions, args.justification)
     const standingPolicy = resolveSandboxPolicy(exec)
     const approvedMode = args.sandbox_permissions !== undefined && args.justification !== undefined
-      ? await approveFishEscalation(args.sandbox_permissions, args.justification, exec, standingPolicy)
+      // `escalationModes` is non-empty exactly when a policy owner is mounted,
+      // so an escalation request always has a standing policy to widen.
+      ? await approveFishEscalation(args.sandbox_permissions, args.justification, exec, /** @type {import('@deepseek-ai/dsh-sandbox').SandboxExecutionPolicy} */ (standingPolicy))
       : undefined
-    const policy = approvedMode === undefined ? standingPolicy : {
-      ...standingPolicy,
-      mode: approvedMode,
-    }
+    // A one-shot escalation widens the standing policy for this call only.
+    // `apply` fails loud when a confining executor has no policy owner, so an
+    // approved mode implies a definite standing policy — the second guard makes
+    // that explicit for the spread instead of spreading a possible `undefined`.
+    const policy = approvedMode !== undefined && standingPolicy !== undefined
+      ? { ...standingPolicy, mode: approvedMode }
+      : standingPolicy
     const workdir = resolveWorkdir(args.workdir, exec, standingPolicy?.workspaceRoot)
     const request = {
       command: args.command,

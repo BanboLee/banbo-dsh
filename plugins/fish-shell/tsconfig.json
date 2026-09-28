@@ -9,15 +9,12 @@
     "checkJs": true,
     "noEmit": true,
     "strict": true,
-    // Known baseline debt, and NOT a licence for new code: this plugin's
-    // pre-0.1.7 JavaScript carries 100+ parameters with no JSDoc type, so
-    // `noImplicitAny` stays off until those are annotated (it is the only
-    // relaxation this config relies on). The exemption does not extend to the
-    // 0.1.7 migration's own lines: every parameter it added or changed has a
-    // real JSDoc type, verified with
+    // Zero implicit any: every parameter of every checked file (the root `*.js`
+    // sources and `tests/**/*.ts`) carries a real JSDoc/TS type, so this config
+    // relies on NO relaxation — `noImplicitAny` is inherited from `strict`
+    // above. New code must keep it that way; the check is
     // `pnpm exec tsc -p plugins/fish-shell/tsconfig.json --noEmit --noImplicitAny true`,
-    // where no migration line may report an implicit-any error.
-    "noImplicitAny": false,
+    // which must report nothing.
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,

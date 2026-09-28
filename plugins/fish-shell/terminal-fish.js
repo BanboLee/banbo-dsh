@@ -83,17 +83,33 @@ const DEFAULT_PTY_CONFIG = {
  */
 
 /**
- * The resolved backend configuration fields this module reads — a structural
- * subset of `@deepseek-ai/dsh-terminal-bash`'s `ResolvedConfig`, which that
- * package does not export from its root. `resolveConfig()` below produces
- * exactly these fields (plus the dialect/PTY defaults the base class owns).
- * @typedef {object} BackendConfig
+ * The fully resolved backend configuration: the public `Config` surface with
+ * every default materialized, matching `@deepseek-ai/dsh-terminal-bash`'s
+ * `ResolvedConfig` (which that package does not export from its root).
+ * @typedef {object} ResolvedBackendConfig
+ * @property {string} backendType - backend registry type (`fish` by default).
+ * @property {'bash'} shellDialect - the readiness/prompt contract the fish prompt implements.
  * @property {string} shellPath - the fish executable to spawn.
- * @property {readonly string[]} shellArgs - the resolved fish arguments.
+ * @property {string[]} shellArgs - the resolved fish arguments.
  * @property {number} rows - initial terminal rows.
  * @property {number} cols - initial terminal columns.
+ * @property {number} scrollbackLines - retained logical lines.
+ * @property {number} scrollbackMaxBytes - retained UTF-8 bytes.
+ * @property {number} maxReadBytes - one read's byte cap.
+ * @property {number} pollIntervalMs - readiness polling interval.
+ * @property {number} exactProbeAfterMs - delay before exact syscall probes.
+ * @property {number} idleSilenceMs - silence that yields `inferred_idle`.
+ * @property {number} handoffGraceMs - extra wait for foreground handoff.
  * @property {number} timeoutMs - readiness deadline for one startup sequence.
  * @property {number} disposeGraceMs - SIGTERM→SIGKILL grace for the PTY session.
+ */
+
+/**
+ * The backend session surface this module drives: `TerminalBackendSession`
+ * with the backend's own mutable `motd`. The interface declares that field
+ * read-only, while the concrete `LocalPtySession` (and the test doubles) assign
+ * the startup banner once readiness settles.
+ * @typedef {Omit<import('@deepseek-ai/dsh-terminal').TerminalBackendSession, 'motd'> & { motd: string }} PersistentPtySession
  */
 
 /**
@@ -105,7 +121,7 @@ const DEFAULT_PTY_CONFIG = {
  * suppression per access.
  * @typedef {object} BashBackendInternals
  * @property {import('@deepseek-ai/cordis').Context} ctx - the backend's plugin context.
- * @property {BackendConfig} config - the resolved PTY configuration fields this backend reads.
+ * @property {ResolvedBackendConfig} config - the resolved backend configuration the base class stores.
  * @property {(spec: object) => Promise<TerminalHandleLike>} spawnTerminal - the subprocess terminal primitive (`ctx.subprocess.spawnTerminal` by default).
  * @property {(terminal: unknown, config: unknown) => any} createSession - the session factory (`new LocalPtySession(...)` by default).
  */
@@ -123,12 +139,15 @@ export const FISH_PROMPT_SETUP = 'function fish_greeting; end; function fish_pro
  * Resolve the effective fish shell specification: an unset or empty
  * `shellPath`/`shellArgs` selects the defaults, a non-empty explicit value
  * wins. Mirrors the official `resolveConfig` (minus dialect selection).
- * @param config - the plugin configuration.
- * @returns the fully resolved configuration.
+ * @param {import('@deepseek-ai/dsh-terminal-bash').TerminalLocalConfig} config - the plugin configuration.
+ * @returns {ResolvedBackendConfig} the fully resolved configuration.
  */
 export function resolveConfig(config) {
   return {
-    backendType: config.backendType?.length > 0 ? config.backendType : 'fish',
+    // `config.backendType?.length > 0` compared an optional property with `>`
+    // (a coercion, not a narrowing); the explicit guard is the same decision
+    // and lets the compiler see a `string` in the true branch.
+    backendType: config.backendType !== undefined && config.backendType.length > 0 ? config.backendType : 'fish',
     // Inherited `ResolvedConfig` shape, not a dialect choice: this backend
     // overrides `spawn()` with its own child environment and fish prompt, so
     // the field is inert — `bash` names the readiness/prompt contract the
@@ -137,15 +156,15 @@ export function resolveConfig(config) {
     shellPath: config.shellPath !== undefined && config.shellPath.length > 0 ? config.shellPath : DEFAULT_FISH_SHELL,
     shellArgs: config.shellArgs !== undefined && config.shellArgs.length > 0 ? config.shellArgs : DEFAULT_FISH_ARGS,
     ...DEFAULT_PTY_CONFIG,
-    ...Object.fromEntries(Object.entries(config).filter(([key]) => key in DEFAULT_PTY_CONFIG && config[key] !== undefined)),
+    ...Object.fromEntries(Object.entries(config).filter(([key, value]) => key in DEFAULT_PTY_CONFIG && value !== undefined)),
   }
 }
 
 /**
  * Validate the effective configuration (mirrors the official
  * `validateConfig`).
- * @param config - the fully resolved configuration.
- * @returns the narrowed configuration.
+ * @param {ResolvedBackendConfig} config - the fully resolved configuration.
+ * @returns {void} throws on a value the backend cannot run with.
  */
 export function validateConfig(config) {
   const resolved = config
@@ -164,8 +183,8 @@ export function validateConfig(config) {
  * Fish child environment: the official bash `childEnvironment` common set
  * (TERM=dumb so the reader emits no cursor/redraw sequences, PAGER=cat,
  * harness identity facts) minus the bash-only PS1/PROMPT_COMMAND.
- * @param spec - the spawn specification.
- * @returns the child environment.
+ * @param {import('@deepseek-ai/dsh-terminal').TerminalBackendSpawnSpec} spec - the spawn specification.
+ * @returns {Record<string, string>} the child environment.
  */
 export function childEnvironment(spec) {
   return {
@@ -196,7 +215,17 @@ export function childEnvironment(spec) {
 // ever contributed the fence falls back to the terminals registry probe
 // (`ctx.terminals` may be absent — missing services resolve to `undefined`
 // on a Cordis context, never a throw).
+/** Per-owner fence state: the context whose dispatch is watched plus every
+ * manager's aggregated activity probe. @type {WeakMap<import('@deepseek-ai/dsh-agent').Agent, { ctx: import('@deepseek-ai/cordis').Context, checkers: Set<() => boolean> }>} */
 const sandboxModeFences = new WeakMap()
+
+/**
+ * Install (or refresh) the per-owner sandbox-mode fence and register this
+ * manager's owner-activity probe with it.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the context whose `internal/dispatch` the fence listens to.
+ * @param {import('@deepseek-ai/dsh-agent').Agent} owner - the live owner whose activity keeps the fence closed.
+ * @param {() => boolean} [hasActivity] - this manager's owner-activity probe, when it has one.
+ */
 export function ensureSandboxModeFence(ctx, owner, hasActivity) {
   let state = sandboxModeFences.get(owner)
   if (state === undefined) {
@@ -229,7 +258,7 @@ export function ensureSandboxModeFence(ctx, owner, hasActivity) {
  * returned promise yields `undefined`, which made every confined persistent
  * spawn fail (previously masked by a synchronous test double).
  * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context carrying the sandbox provider.
- * @param {BackendConfig} config - the resolved backend configuration (the fields this backend reads).
+ * @param {ResolvedBackendConfig} config - the resolved backend configuration the base class stores.
  * @param {import('@deepseek-ai/dsh-sandbox').SandboxExecutionPolicy} policy - the resolved execution policy for this session; the `danger-full-access` early return narrows `mode` to a confined mode for `confine()`.
  * @param {AbortSignal} [signal] - cancellation of confinement preparation.
  * @returns {Promise<string[]>} the (possibly confined) argv.
@@ -250,11 +279,12 @@ export async function spawnArgv(ctx, config, policy, signal) {
  * poll with empty sends until the fish prompt satisfies the shared
  * readiness contract (OSC `133;D;` + `dsh> ` tail). Mirrors the official
  * `startupSession` pwsh branch, with a startup deadline race.
- * @param session - the backend session.
- * @param timeoutMs - readiness deadline.
- * @param signal - optional cancellation.
+ * @param {PersistentPtySession} session - the backend session to bring up.
+ * @param {number} timeoutMs - readiness deadline.
+ * @param {AbortSignal} [signal] - optional cancellation.
  */
 export async function startupSession(session, timeoutMs, signal) {
+  /** @type {import('@deepseek-ai/dsh-terminal').TerminalSendOperation | undefined} */
   let startupOperation
   const start = async () => {
     let viewport = ''
@@ -326,6 +356,13 @@ async function rejectAfterStartupCleanup(error, cleanup) {
  * `BashTerminalBackend`/`LocalPtySession`.
  */
 export class FishTerminalBackend extends BashTerminalBackend {
+  /**
+   * Spawn and bring up one fish PTY session for a spec the registry (or the
+   * self-managed persistent tool) resolved. Resolves with the ready session
+   * the configured session factory built (the base class declares the concrete
+   * `LocalPtySession` return, which this package cannot name).
+   * @param {import('@deepseek-ai/dsh-terminal').TerminalBackendSpawnSpec} spec - the identified spawn request.
+   */
   async spawn(spec) {
     spec.signal?.throwIfAborted()
     // The inherited fields (`ctx`, `config`, `spawnTerminal`, `createSession`)
@@ -380,8 +417,8 @@ export class FishTerminalBackend extends BashTerminalBackend {
  * backend up explicitly. Plugin configuration mirrors the official
  * `@deepseek-ai/dsh-terminal-bash` Config surface (sans dialect), with fish
  * defaults: backend type `fish`, `fish --no-config -i` argv.
- * @param ctx - the harness context.
- * @param config - optional backend configuration.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the harness context.
+ * @param {import('@deepseek-ai/dsh-terminal-bash').TerminalLocalConfig} [config] - optional backend configuration.
  */
 export function apply(ctx, config = {}) {
   const resolved = resolveConfig(config)

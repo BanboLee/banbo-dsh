@@ -9,6 +9,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { ensureSandboxModeFence, type FishTerminalBackend } from '../terminal-fish.js'
 import {
@@ -279,6 +280,17 @@ describe('persistent fish config validation', () => {
 // no terminals registry — the self-managed requirement), a FAKE backend with
 // controllable spawn/close, and the real sandbox-mode fence.
 
+/**
+ * The shell owner this harness drives, seen through the three members the
+ * persistent module reads: the session-backed identity, the agent-scoped
+ * context, and the session whose header carries the cwd. The production owner
+ * is the runtime `Agent` (the tool's `exec.agent`, and the exact owner the
+ * terminal seam types as `TerminalBackendSpawnSpec.owner` /
+ * `TerminalSessionService.spawn(owner: Agent)`), so this shape is asserted to
+ * `Agent` once in {@link composeShellHarness} rather than fabricating the
+ * harness-owned face (`options`, `inbox`, `status`, `cancel`, …) that no code
+ * under test reads.
+ */
 interface ShellOwner {
   id: string
   ctx: Context
@@ -296,7 +308,7 @@ const SHELLS_CONFIG = {
 
 async function composeShellHarness(): Promise<{
   root: Context
-  owner: ShellOwner
+  owner: Agent
   disposeOwner: () => Promise<void>
 }> {
   const root = new Context()
@@ -306,14 +318,14 @@ async function composeShellHarness(): Promise<{
     resolve: () => ({ mode: 'danger-full-access', workspaceRoot: '/ws' }),
   })
   root.provide('sessionProjections', { stateOf: () => undefined })
-  const owner: ShellOwner = {
+  const double: ShellOwner = {
     id: 'persistent-shells-owner',
     ctx: undefined as unknown as Context,
     session: { header: { cwd: '/ws' } },
   }
-  const scope = createScope(host.ctx, owner)
-  owner.ctx = scope.ctx
-  return { root, owner, disposeOwner: scope.dispose }
+  const scope = createScope(host.ctx, double)
+  double.ctx = scope.ctx
+  return { root, owner: double as unknown as Agent, disposeOwner: scope.dispose }
 }
 
 /** Fake session satisfying the surface `persistentShells.get`/`reset` use. */
@@ -336,7 +348,7 @@ function fakeSession(close: () => Promise<void>) {
 }
 
 /** Fire the harness's sandbox/mode dispatch the way the session loop does. */
-function changeSandboxMode(owner: ShellOwner): void {
+function changeSandboxMode(owner: Agent): void {
   ;(owner.ctx.emit as (event: string, ...args: unknown[]) => void)(
     'internal/dispatch',
     'native',
