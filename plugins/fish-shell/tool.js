@@ -11,8 +11,9 @@
  *
  * The functional surface mirrors the official `@deepseek-ai/dsh-tool-bash`
  * (the harness's model-facing `bash` tool) with shell-specific wording
- * swapped to fish: background execution through `ctx.jobs` (with lossy-read
- * and sandbox notices), same-turn sandbox escalation through
+ * swapped to fish: background execution through `ctx.jobs` (the process's
+ * non-consuming stream readers as the registry's pull sources, with the
+ * sandbox facts joined to the job outcome), same-turn sandbox escalation through
  * `ctx.approval` (strictly-wider modes only, fail-closed), canonical
  * foreground results carrying the complete sandbox facts
  * (`enforcement`/`runnerFailed`), terminal/generic UI presentation, and the
@@ -22,6 +23,8 @@
  *
  * @module @banbolee/dsh-fish-shell/tool
  */
+
+/// <reference path="./job-kind.d.ts" />
 
 import { isAbsolute, resolve } from 'node:path'
 import { TOOL_ABORTED } from '@deepseek-ai/dsh-tools'
@@ -34,6 +37,48 @@ import {
   validateEscalationArgs,
 } from '@deepseek-ai/dsh-sandbox'
 import { DSH_ENV_PREFIX, parseExitStatus } from '@deepseek-ai/dsh-shell'
+
+/**
+ * Type-only reference so `@deepseek-ai/dsh-shell-env`'s module augmentation
+ * (`ctx.shellEnv`, the service `inject` above requires) joins this checkJs
+ * program: the bundle patch mounts the package at runtime, and this module has
+ * no reason to import it as a value.
+ * @typedef {import('@deepseek-ai/dsh-shell-env').ShellEnvRegistry} ShellEnvRegistry
+ */
+
+/**
+ * One captured stream with its truncation facts.
+ * @typedef {object} FishOutputStream
+ * @property {string} text
+ * @property {boolean} truncated
+ * @property {string} [spillPath]
+ */
+
+/**
+ * Sandbox facts carried into the canonical result (`ShellSandboxInfo` as
+ * lossless JSON).
+ * @typedef {object} FishSandboxFacts
+ * @property {import('@deepseek-ai/dsh-sandbox').SandboxMode} mode
+ * @property {boolean} denied
+ * @property {import('@deepseek-ai/dsh-sandbox').SandboxEnforcement} [enforcement]
+ * @property {boolean} [runnerFailed]
+ */
+
+/**
+ * The canonical JSON value of one foreground fish run — the `foreground`
+ * branch of `OUTPUT_SCHEMA` and what `renderResult` renders. Structural on
+ * purpose: a replay holds this projection, not the executor's
+ * `ShellRunResult`.
+ * @typedef {object} FishForegroundValue
+ * @property {number | null} exitCode
+ * @property {string | null} signal
+ * @property {boolean} timedOut
+ * @property {boolean} aborted
+ * @property {number} timeoutMs
+ * @property {FishOutputStream} stdout
+ * @property {FishOutputStream} stderr
+ * @property {FishSandboxFacts} [sandbox]
+ */
 
 export const name = 'fish-tool'
 export const inject = ['tools', 'shell', 'systemPrompt', 'shellEnv']
@@ -117,7 +162,7 @@ function fishSyntaxHint(stderrText) {
  * contract the harness bash tool uses, so the model reads both shells
  * identically. A denied run under an escalation-advertising composition
  * additionally carries the shared same-turn escalation hint.
- * @param {object} result - the settled foreground result from the executor.
+ * @param {FishForegroundValue} result - the canonical foreground value from the executor.
  * @param {readonly string[]} [escalationModes] - the escalation targets this
  *   composition advertises; non-empty appends the same-turn escalation hint
  *   after a denial marker (default `[]`: no hint).
@@ -166,55 +211,123 @@ function renderResult(result, escalationModes = []) {
 }
 
 /**
- * Shape one background-process read into the `job_output` delta the model
- * sees: the incremental delta, plus the lossy-read notice (with full-stream
- * spill paths) when in-memory truncation dropped unread bytes, and the
- * settled sandbox facts (runner failure / denial + escalation hint) when the
- * process was confined. Empty-delta rendering (`(no new output)`) is the
- * generic job controller's job.
- * @param {object} read - one incremental read from the process handle.
- * @param {object} [sandbox] - settled sandbox facts, when this was a confined process.
- * @param {readonly string[]} [escalationModes] - escalation targets advertised by this composition.
- * @returns {string} the delta text with any loss or sandbox notice appended.
+ * Sandbox facts worth the job's terminal detail: a runner that never ran the
+ * command, or a denial (with the escalation hint this composition offers).
+ * The `ctx.jobs` registry owns the read path now, so these notes travel on the
+ * outcome's detail line — the one line every reader (the model's status line,
+ * the job roster row) shows — instead of being appended to each read.
+ * @param {import('@deepseek-ai/dsh-shell').ShellSandboxInfo | undefined} sandbox - settled sandbox facts, when this was a confined process.
+ * @param {readonly string[]} escalationModes - escalation targets advertised by this composition.
+ * @returns {string[]} the notes to append, oldest first.
  */
-function renderFishProcessRead(read, sandbox, escalationModes = []) {
-  const notices = []
-  if (read.lossy) {
-    const paths = [read.stdoutSpillPath, read.stderrSpillPath].filter((path) => path !== undefined)
-    notices.push(`[some output was dropped from memory; full output: ${paths.length > 0 ? paths.join(', ') : '(unavailable)'}]`)
-  }
+function sandboxNotes(sandbox, escalationModes) {
   if (sandbox?.runnerFailed) {
-    notices.push(`[sandbox: the sandbox runner itself failed under ${sandbox.mode} mode — the command did not run; this is a sandbox problem, not a command failure]`)
-  } else if (sandbox?.denied) {
-    notices.push(sandboxDenialMarker(sandbox.mode))
-    if (escalationModes.length > 0) notices.push(escalationHintMarker('command'))
+    return [`[sandbox: the sandbox runner itself failed under ${sandbox.mode} mode — the command did not run; this is a sandbox problem, not a command failure]`]
   }
-  if (notices.length === 0) return read.delta
-  return `${read.delta}${read.delta.length > 0 && !read.delta.endsWith('\n') ? '\n' : ''}${notices.join('\n')}`
+  if (sandbox?.denied) {
+    const notes = [sandboxDenialMarker(sandbox.mode)]
+    if (escalationModes.length > 0) notes.push(escalationHintMarker('command'))
+    return notes
+  }
+  return []
 }
 
 /**
  * Map a settled background process onto the generic task-outcome vocabulary:
  * `killed` stays `killed` (detail: the signal when one is known), everything
  * else is `completed` with the exit code as detail. A nonzero command exit is
- * reported, not failed, exactly like the foreground rendering.
- * @param {object} proc - the settled process handle.
+ * reported, not failed, exactly like the foreground rendering. Sandbox facts
+ * join the detail, since a job's terminal reason is the one line every
+ * reader — the model's status line, the roster row — shows.
+ * @param {import('@deepseek-ai/dsh-shell').ShellProcess} proc - the settled process handle.
+ * @param {readonly string[]} [escalationModes] - escalation targets advertised by this composition.
  * @returns {{ status: 'completed' | 'killed', detail: string }} the outcome for the `ctx.jobs` registration.
  */
-function processOutcome(proc) {
-  if (proc.status === 'killed') {
-    return {
-      status: 'killed',
-      detail: proc.signal !== null ? `signal: ${proc.signal}` : 'killed before exit',
-    }
-  }
-  return {
-    status: 'completed',
-    detail: `exit code: ${proc.exitCode ?? 0}`,
+function processOutcome(proc, escalationModes = []) {
+  /** @type {{ status: 'completed' | 'killed', detail: string }} */
+  const base = proc.status === 'killed'
+    ? { status: 'killed', detail: proc.signal !== null ? `signal: ${proc.signal}` : 'killed before exit' }
+    : { status: 'completed', detail: `exit code: ${proc.exitCode ?? 0}` }
+  const notes = sandboxNotes(proc.sandbox, escalationModes)
+  return notes.length === 0 ? base : {
+    ...base,
+    detail: `${base.detail}; ${notes.join(' ')}`,
   }
 }
 
-/** Detach the executor DTO from readonly Service Definition types into plain JSON data. */
+/**
+ * The process's non-consuming stream readers as `ctx.jobs` pull sources
+ * (ported from the official `@deepseek-ai/dsh-tool-bash`'s background
+ * adaptation: the registry pumps these instead of the removed
+ * `JobHooks.readOutput`). They bind lazily because the handle is published
+ * only after asynchronous preparation; a read before then yields nothing, and
+ * the pump keeps the model's consuming cursor untouched.
+ * @param {() => import('@deepseek-ai/dsh-shell').ShellProcess | undefined} process - resolves the published handle, once preparation has one.
+ * @returns {readonly import('@deepseek-ai/dsh-jobs').JobOutputSource[]} one source per stream, stdout first.
+ */
+function processSources(process) {
+  /**
+   * @param {'stdout' | 'stderr'} channel - stream label the registry attaches to this source's chunks.
+   * @returns {import('@deepseek-ai/dsh-jobs').JobOutputSource} one non-consuming pull source.
+   */
+  const source = (channel) => ({
+    channel,
+    /** @param {number} fromByte - whole-stream offset to resume from (a prior read's `nextOffset`). */
+    read: (fromByte) => {
+      const live = process()
+      return live === undefined
+        ? { text: '', nextOffset: fromByte, lossy: false }
+        : live.observed[channel].readFrom(fromByte)
+    },
+  })
+  return [source('stdout'), source('stderr')]
+}
+
+/**
+ * Synchronous job hooks over asynchronous shell preparation (ported from the
+ * official `@deepseek-ai/dsh-tool-bash`): `ctx.jobs` admits the job and calls
+ * `run()` synchronously, while `ctx.shell.execute` publishes its handle only
+ * after preparation. Cancellation aborts the preparation signal (which also
+ * stops the command during preparation) and kills an already-published
+ * process; `done` spans preparation and settlement, and never rejects.
+ * @param {(signal: AbortSignal) => Promise<import('@deepseek-ai/dsh-shell').ShellExecution>} start - starts the process under a job-owned cancellation signal.
+ * @param {(proc: import('@deepseek-ai/dsh-shell').ShellProcess) => { status: 'completed' | 'killed', detail: string }} outcome - projects the settled process into the job outcome.
+ * @returns {{ cancel: (reason?: string) => void, done: Promise<{ status: 'completed' | 'killed' | 'failed', detail: string }> }} the job's hooks.
+ */
+function processJob(start, outcome) {
+  const controller = new AbortController()
+  /** @type {import('@deepseek-ai/dsh-shell').ShellExecution | undefined} */
+  let proc
+  return {
+    cancel: (reason) => {
+      if (controller.signal.aborted) return
+      controller.abort(reason)
+      proc?.kill()
+    },
+    done: (async () => {
+      try {
+        proc = await start(controller.signal)
+        try {
+          if (controller.signal.aborted) proc.kill()
+        } finally {
+          await proc.done
+        }
+        return outcome(proc)
+      } catch (error) {
+        return {
+          status: controller.signal.aborted && proc === undefined ? 'killed' : 'failed',
+          detail: error instanceof Error ? error.message : String(error),
+        }
+      }
+    })(),
+  }
+}
+
+/**
+ * Detach the executor DTO from readonly Service Definition types into plain JSON data.
+ * @param {import('@deepseek-ai/dsh-shell').ShellRunResult} result - the settled foreground result.
+ * @returns {FishForegroundValue} the canonical value declared by OUTPUT_SCHEMA.
+ */
 function canonicalFishResult(result) {
   const stream = (s) => ({
     text: s.text,
@@ -244,6 +357,8 @@ function canonicalFishResult(result) {
  * Total over malformed replay args: a non-object or a missing/non-string
  * command/description returns `undefined` so the UI falls back to its
  * generic presentation instead of throwing or minting an invalid title.
+ * @param {any} args - the call's parsed arguments.
+ * @returns {import('@deepseek-ai/dsh-tools').ToolCallView | undefined} the pending card intent.
  */
 function presentFishCall(args) {
   if (typeof args !== 'object' || args === null || Array.isArray(args)) return undefined
@@ -271,6 +386,9 @@ function presentFishCall(args) {
  * execution errors use generic fenced output without an exit-status pill.
  * Total over malformed replay args/results: invalid inputs return
  * `undefined` (generic UI fallback) instead of throwing.
+ * @param {any} args - the call's parsed arguments.
+ * @param {any} result - the durable result projection (validated here, so malformed replays cannot throw).
+ * @returns {import('@deepseek-ai/dsh-tools').ToolResultView | undefined} the completed card intent.
  */
 function presentFishResult(args, result) {
   if (typeof args !== 'object' || args === null || Array.isArray(args)) return undefined
@@ -356,7 +474,8 @@ function fishParameters(escalationModes) {
 /** Canonical output declaration: a background acknowledgment or a foreground
  * run. The rc.1 ToolRuntime dialect forbids `type`/`additionalProperties`
  * beside a `oneOf` root (exact-one branches), so the union is expressed as a
- * bare `oneOf` with each branch carrying its own object shape. */
+ * bare `oneOf` with each branch carrying its own object shape.
+ * @type {import('@deepseek-ai/dsh-tools').JsonSchemaNode} */
 const OUTPUT_SCHEMA = {
   oneOf: [
     {
@@ -517,27 +636,39 @@ export function apply(ctx) {
         error.name = 'AbortError'
         throw error
       }
+      /** @type {import('@deepseek-ai/dsh-shell').ShellExecution | undefined} */
+      let proc
       return {
         kind: 'background',
         jobId: jobs.start({
           kind: 'fish',
           label: args.command,
-          ...exec.agent !== undefined ? { owner: exec.agent } : {},
-          run: () => {
-            const proc = ctx.shell.start(ctx.shell.resolve(request))
-            return {
-              cancel: () => void proc.kill(),
-              done: proc.done.then(() => processOutcome(proc)),
-              readOutput: () => renderFishProcessRead(proc.readOutput(), proc.sandbox, escalationModes),
-            }
-          },
+          // The registry fences access by SESSION id: `owner` is the owning
+          // session, not the live agent object (`JobSpec.owner?: SessionId`).
+          ...exec.agent !== undefined ? { owner: exec.agent.id } : {},
+          // The registry pumps output itself (0.1.7-rc.2 removed the
+          // `JobHooks.readOutput` consumer), so the process's streams are
+          // passed as pull sources bound to the handle published below.
+          output: processSources(() => proc),
+          run: () => processJob(async (signal) => {
+            // Background work carries NO deadline: 0.1.5's `start()` armed no
+            // timer at all (`startArgv` spawned with the caller's signal while
+            // only `runArgv` built a `deadline(...)`), and the official
+            // 0.1.7 `dsh-tool-bash` resolves its job lane the same way.
+            // Without `onExpiry: 'none'` the resolved spec would default to
+            // `'kill'` and silently reintroduce a timeout the documented
+            // contract ("No timeout applies") never had.
+            const spec = ctx.shell.resolve({ ...request, onExpiry: 'none' })
+            proc = await ctx.shell.execute({ ...spec, signal })
+            return proc
+          }, (started) => processOutcome(started, escalationModes)),
         }),
       }
     }
-    const result = await ctx.shell.run(ctx.shell.resolve({
+    const result = await (await ctx.shell.execute(ctx.shell.resolve({
       ...request,
       signal: exec?.signal,
-    }))
+    }))).result()
     if (result.aborted) {
       const error = new HarnessError('tool call aborted', TOOL_ABORTED)
       error.name = 'AbortError'
@@ -555,10 +686,17 @@ export function apply(ctx) {
     parameters: fishParameters(escalationModes),
     output: {
       schema: OUTPUT_SCHEMA,
-      render: (_args, value) => [{
-        type: 'text',
-        text: value.kind === 'background' ? `started background job ${value.jobId}` : renderResult(value, escalationModes),
-      }],
+      render: (_args, value) => {
+        // The canonical value crosses the lossless-JSON boundary, so it
+        // arrives as `JsonValue`; OUTPUT_SCHEMA is what guarantees the shape.
+        const record = typeof value === 'object' && value !== null && !Array.isArray(value) ? value : {}
+        return [{
+          type: 'text',
+          text: record.kind === 'background'
+            ? `started background job ${String(record.jobId)}`
+            : renderResult(/** @type {FishForegroundValue} */ (value), escalationModes),
+        }]
+      },
     },
     execute,
     presentCall: presentFishCall,

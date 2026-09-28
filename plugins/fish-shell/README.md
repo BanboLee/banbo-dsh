@@ -28,8 +28,10 @@ cordis, minimal, or a third-party preset).
   (with shell wording swapped to fish):
   - **Background execution**: `run_in_background: true` registers the command
     with `ctx.jobs` (`kind: fish`) and returns `{kind: 'background', jobId}`;
-    output reads carry the lossy-read and sandbox runner-failure/denial
-    notices, and the job controller's `job_output`/`job_kill` handle the rest.
+    the process's observed streams are handed to the registry as pull sources
+    (it owns the lossy-read reporting), the sandbox runner-failure/denial
+    facts join the job's terminal detail, and the job controller's
+    `job_output`/`job_kill` handle the rest.
   - **Sandbox escalation**: when the mounted executor confines, the schema
     advertises `sandbox_permissions` + `justification`; an escalation is
     resolved through `ctx.approval` BEFORE anything executes (strictly wider
@@ -173,7 +175,10 @@ the profile tree).
   contract.
 - `run_in_background: true` starts long-running commands as background jobs
   (`kind: fish`) and returns a job id immediately; read output with
-  `job_output` and stop it with `job_kill`. Requires the jobs services
+  `job_output` and stop it with `job_kill`. A background job arms **no
+  deadline** (the tool resolves it with `onExpiry: 'none'`, matching 0.1.5's
+  `start()` and the official `dsh-tool-bash`): it runs until `job_kill`,
+  cancellation, or composition teardown. Requires the jobs services
   (`@deepseek-ai/dsh-jobs` + `@deepseek-ai/dsh-tool-jobs`) to be composed;
   the tool fails loud when they are not.
 - Under a sandboxing executor, a denied command can be re-run wider in the

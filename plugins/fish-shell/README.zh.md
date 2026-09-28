@@ -9,7 +9,7 @@ DeepSeek Harness 的 fish shell executor 与工具：用 **fish** 而不是 bash
 - **Executor（受限 / sandboxed）**（`index.js`，默认导出）：`FishSandboxExecutor`，一个 `SandboxBashExecutor` 子类，把 `fish -c` 命令而不是 `bash -c` 关进 sandbox。它以 `ctx.shell` 的形式挂载，替代基础 `bash-sandbox` executor。sandbox 后端、拒绝分类、runner 失败事实，以及 `sandboxMode` 能力事实（`dsh-permission-presets` 需要）都继承而来。受限路径与 `danger-full-access` 路径都运行 fish（基类的 full-access 分支会落到硬编码的 bash，因此被覆盖）。
 - **Executor（非受限 / unconfined）**（`local.js`，导出为 `@banbolee/dsh-fish-shell/local`）：`FishLocalExecutor`，一个 `LocalBashExecutor` 子类，不带 sandbox 运行 `fish -c`。用于刻意在无 sandbox 下运行的自定义 composition；把它与 `dsh-permission-presets` 组合会在加载时 fail loud。
 - **Tool**（`tool.js`，导出为 `@banbolee/dsh-fish-shell/tool`）：一个面向模型的 `fish` 工具，以 host-global 方式挂载，通过 `ctx.shell` 执行。它的功能 surface 与官方 `@deepseek-ai/dsh-tool-bash` 对齐（只把 shell 措辞换成 fish）：
-  - **后台执行**：`run_in_background: true` 会把命令注册到 `ctx.jobs`（`kind: fish`）并返回 `{kind: 'background', jobId}`；输出读取会带上 lossy-read 与 sandbox runner 失败/拒绝通知，其余由 job controller 的 `job_output`/`job_kill` 处理。
+  - **后台执行**：`run_in_background: true` 会把命令注册到 `ctx.jobs`（`kind: fish`）并返回 `{kind: 'background', jobId}`；进程的 observed 流会作为 registry 的拉取源交给它（lossy-read 上报由 registry 负责），sandbox runner 失败/拒绝事实并入 job 终态 detail，其余由 job controller 的 `job_output`/`job_kill` 处理。
   - **Sandbox 升级**：当挂载的 executor 会施加限制时，schema 会声明 `sandbox_permissions` + `justification`；升级会在**任何执行发生之前**通过 `ctx.approval` 裁决（只允许严格更宽的模式，fail-closed），被拒绝的结果会带上同一轮内的升级提示。Headless composition（没有 sandboxing executor）不会暴露这两个字段。
   - **结果事实**：前台结果携带完整的规范事实集，包括 sandbox 的 `enforcement`/`runnerFailed` 字段。
   - **UI 呈现**：`presentCall`/`presentResult` 把前台调用渲染成终端卡片（带 exit-status 状态胶囊），把后台/错误结果渲染成通用的围栏式控制台输出。
@@ -49,7 +49,7 @@ dsh plugin --profile <name> add ./plugins/fish-shell
 - **One-shot**（standard、ptc、cordis、第三方 preset 与 headless）：每次 shell 调用都会新起一个 non-login shell（对 `FishSandboxExecutor` 而言是在配置的 sandbox 后端下）；调用之间不保留任何状态（cwd、变量、函数、历史）。
 - **Persistent**（`minimal` preset，它挂载了持久 PTY bash 机制）：agent 的 `fish` 工具为每个 agent 维持一个存活的 fish session。当前目录、导出的变量与已定义的函数在调用之间保留；通过该工具运行的命令串行执行；超过工具 deadline 的命令会被打断并重置 shell（下一次调用会从 workspace 用一个全新的 shell 开始）。持久 fish PTY 由工具自己通过 `FishTerminalBackend` 启动并驱动（不涉及 `terminals` registry）。
 - 每条流的输出都受 executor 配置的上限约束；超时会被钳到 executor 的上限；模型看到的是 harness marker 契约。
-- `run_in_background: true` 会把长时间运行的命令作为后台 job 启动（`kind: fish`）并立即返回一个 job id；用 `job_output` 读取输出，用 `job_kill` 停止它。需要组合 jobs service（`@deepseek-ai/dsh-jobs` + `@deepseek-ai/dsh-tool-jobs`）；未组合时该工具会 fail loud。
+- `run_in_background: true` 会把长时间运行的命令作为后台 job 启动（`kind: fish`）并立即返回一个 job id；用 `job_output` 读取输出，用 `job_kill` 停止它。后台 job **不设 deadline**（工具以 `onExpiry: 'none'` 解析它，与 0.1.5 的 `start()` 及官方 `dsh-tool-bash` 一致）：它会一直运行到 `job_kill`、取消或 composition teardown。需要组合 jobs service（`@deepseek-ai/dsh-jobs` + `@deepseek-ai/dsh-tool-jobs`）；未组合时该工具会 fail loud。
 - 在 sandboxing executor 下，被拒绝的命令可以在同一轮内用 `sandbox_permissions`（够用的最窄的更宽模式）加一句 `justification` 重新以更宽权限执行；这次重试弹出的 approval prompt 就是用户表示同意的方式。当 approval prompt 被禁用或升级被拒绝时，拒绝即为最终结果。
 - 要求 PATH 中有 `fish`；缺失时 executor 会 fail loud。
 

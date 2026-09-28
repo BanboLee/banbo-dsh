@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2024"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    // Known baseline debt, and NOT a licence for new code: this plugin's
+    // pre-0.1.7 JavaScript carries 100+ parameters with no JSDoc type, so
+    // `noImplicitAny` stays off until those are annotated (it is the only
+    // relaxation this config relies on). The exemption does not extend to the
+    // 0.1.7 migration's own lines: every parameter it added or changed has a
+    // real JSDoc type, verified with
+    // `pnpm exec tsc -p plugins/fish-shell/tsconfig.json --noEmit --noImplicitAny true`,
+    // where no migration line may report an implicit-any error.
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["tests/**/*.ts", "*.js"]
+}

@@ -160,7 +160,7 @@ export function uninstallFishPolicy(agent) {
  * disposers THIS call created.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx - the policy plugin's context.
- * @param {object} agent - the live agent (its `ctx` is the agent's scoped context).
+ * @param {{ id?: string, ctx: import('@deepseek-ai/cordis').Context }} agent - the live agent (its `ctx` is the agent's scoped context).
  */
 export function installFishPolicy(ctx, agent) {
   if (installing.has(agent)) return
@@ -222,6 +222,7 @@ export function installFishPolicy(ctx, agent) {
       // bash is hidden, so minimal sessions keep persistent semantics.
       persistentFish = registerPersistentFish(ctx, agent.ctx)
     }
+    /** @type {Array<() => void>} */
     const created = []
     try {
       const restriction = agent.ctx.tools.restrict({ deny: ['bash'] })
@@ -244,7 +245,7 @@ export function installFishPolicy(ctx, agent) {
       // persistent fish. The previous state's entries were already removed
       // above, so `states` ends up consistent: no restriction, no shadow, no
       // persistent fish — bash stays visible and the failure is surfaced.
-      for (let index = created.length - 1; index >= 0; index -= 1) created[index]()
+      for (let index = created.length - 1; index >= 0; index -= 1) created[index]?.()
       disposeQuietly(persistentFish, 'persistent fish tool', agent)
       throw error
     }

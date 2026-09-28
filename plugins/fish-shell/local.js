@@ -8,6 +8,11 @@
  * `ctx.subprocess` and reuses all of bash-local's mechanics (resolve and
  * defaulting, deadline and cause classification, the model-friendly terminal
  * environment, bounded output with spill files, background process groups).
+ * The shell swap happens at the `executeArgv()` injection point
+ * `LocalBashExecutor.execute` documents for subclasses: this executor
+ * replaces the public command's shell argv and keeps every other mechanic
+ * (including the single `execute()` entry the host calls for foreground AND
+ * background work).
  *
  * Prefer {@link FishSandboxExecutor} (this package's default export) in any
  * composition that mounts `dsh-permission-presets`, which requires the
@@ -29,21 +34,15 @@ import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local'
  */
 export class FishLocalExecutor extends LocalBashExecutor {
   /**
-   * Run a command in the foreground through `fish -c`.
-   * @param spec - a resolved spec from `resolve()`.
-   * @returns the settled foreground result.
+   * Prepare and spawn the command through `fish -c`. Foreground and
+   * background callers share this one entry: whoever awaits
+   * `result()` ran it in the foreground, whoever keeps the handle ran it in
+   * the background.
+   * @param {import('@deepseek-ai/dsh-shell').ShellExecSpec} spec - a resolved spec from `resolve()`.
+   * @returns {Promise<import('@deepseek-ai/dsh-shell').ShellExecution>} the live execution handle.
    */
-  run(spec) {
-    return this.runArgv(spec, ['fish', '-c', spec.command])
-  }
-
-  /**
-   * Start a background process through `fish -c`.
-   * @param spec - a resolved spec from `resolve()`.
-   * @returns the live background process handle.
-   */
-  start(spec) {
-    return this.startArgv(spec, ['fish', '-c', spec.command])
+  async execute(spec) {
+    return this.executeArgv(spec, ['fish', '-c', spec.command])
   }
 }
 

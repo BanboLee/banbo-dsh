@@ -255,28 +255,68 @@ describe('presentFishCall / presentFishResult (C)', () => {
 interface FakeShell {
   sandboxMode: string | undefined
   resolve: ReturnType<typeof vi.fn>
-  run: ReturnType<typeof vi.fn>
-  start: ReturnType<typeof vi.fn>
+  execute: ReturnType<typeof vi.fn>
 }
 
-function fakeShell(sandboxMode: string | undefined): FakeShell {
-  const run = vi.fn(async () => ({
-    exitCode: 0,
+interface FakeExecutionOptions {
+  /** Mounted sandbox mode; `undefined` = headless (no sandboxing executor). */
+  sandboxMode?: string | undefined
+  denied?: boolean
+  exitCode?: number
+}
+
+/** One fake `ShellExecution`: the live handle `execute()` publishes plus the
+ * settled foreground projection `result()` returns. `kill()` settles the
+ * handle as killed, exactly like a terminated process, so the job hooks can be
+ * driven through cancellation. */
+function fakeExecution(options: FakeExecutionOptions = {}) {
+  const { sandboxMode, denied = false, exitCode = 0 } = options
+  const sandbox = sandboxMode === undefined
+    ? undefined
+    : { mode: sandboxMode, denied, enforcement: 'full' as const, runnerFailed: false }
+  const outcome = {
+    exitCode,
     signal: null,
     timedOut: false,
     aborted: false,
     timeoutMs: 30000,
     stdout: { text: 'hello from fish\n', truncated: false },
     stderr: { text: '', truncated: false },
-    ...(sandboxMode !== undefined
-      ? { sandbox: { mode: sandboxMode, denied: false, enforcement: 'full' as const, runnerFailed: false } }
-      : {}),
-  }))
+    ...(sandbox === undefined ? {} : { sandbox }),
+  }
+  const proc = {
+    // The real handle settles these from the subprocess outcome before `done`
+    // resolves; this fake resolves `done` immediately, so it starts settled.
+    status: 'completed' as 'running' | 'completed' | 'killed',
+    exitCode: exitCode as number | null,
+    signal: null as string | null,
+    done: Promise.resolve(),
+    observed: {
+      stdout: {
+        readFrom: (fromByte: number) => ({
+          text: 'hello from fish\n'.slice(fromByte),
+          nextOffset: 'hello from fish\n'.length,
+          lossy: false,
+        }),
+      },
+      stderr: { readFrom: () => ({ text: '', nextOffset: 0, lossy: false }) },
+    },
+    readOutput: () => ({ delta: '', lossy: false }),
+    kill: vi.fn(() => {
+      proc.status = 'killed'
+      return true
+    }),
+    sandbox,
+    result: async () => outcome,
+  }
+  return proc
+}
+
+function fakeShell(sandboxMode: string | undefined): FakeShell {
   return {
     sandboxMode,
     resolve: vi.fn((request: unknown) => request),
-    run,
-    start: vi.fn(),
+    execute: vi.fn(async () => fakeExecution({ sandboxMode })),
   }
 }
 
@@ -328,7 +368,7 @@ function executeCall(ctx: Context, args: Record<string, unknown>, extra: Record<
 }
 
 describe('fish tool integration on real Cordis services (D)', () => {
-  it('a. returns the canonical foreground result with full sandbox facts', async () => {
+  it('a. runs the command through ctx.shell.execute and returns the canonical foreground result', async () => {
     const { ctx, shell } = await mountTool()
 
     const outcome = await executeCall(ctx, { command: 'echo hi', description: 'Echo hi', workdir: '/ws' })
@@ -344,15 +384,19 @@ describe('fish tool integration on real Cordis services (D)', () => {
       stderr: { text: '', truncated: false },
       sandbox: { mode: 'workspace-write', denied: false, enforcement: 'full', runnerFailed: false },
     })
-    const spec = shell.run.mock.calls[0]?.[0]
-    expect(shell.run).toHaveBeenCalledTimes(1)
+    expect(shell.resolve).toHaveBeenCalledTimes(1)
+    expect(shell.execute).toHaveBeenCalledTimes(1)
+    const spec = shell.execute.mock.calls[0]?.[0]
     expect(spec?.command).toBe('echo hi')
     expect(spec?.workdir).toBe('/ws')
     expect(spec?.sandboxPolicy).toEqual({ mode: 'workspace-write', workspaceRoot: '/ws' })
     expect(spec?.dshEnv).toEqual({})
+    // The foreground lane leaves the deadline policy to the executor's
+    // resolver (whose default is `kill`), exactly like the official tool-bash.
+    expect(spec?.onExpiry).toBeUndefined()
   })
 
-  it('b. starts a background job through ctx.jobs and wires cancel/done/readOutput', async () => {
+  it('b. registers a background job whose pull sources and hooks drive ctx.shell.execute', async () => {
     const { ctx, shell, jobs } = await mountTool()
     const agent = { id: 'a1', session: { id: 's1' } }
 
@@ -368,26 +412,32 @@ describe('fish tool integration on real Cordis services (D)', () => {
     const spec = jobs.start.mock.calls[0]?.[0]
     expect(spec?.kind).toBe('fish')
     expect(spec?.label).toBe('sleep 30')
-    expect(spec?.owner).toBe(agent)
+    // `JobSpec.owner` is the owning SESSION id in 0.1.7-rc.2, not the agent object.
+    expect(spec?.owner).toBe('a1')
     expect(typeof spec?.run).toBe('function')
+    // 0.1.7-rc.2 removed `JobHooks.readOutput`: the registry pumps the
+    // process's observed streams instead, one pull source per stream.
+    expect(spec?.output?.map((source: { channel: string }) => source.channel)).toEqual(['stdout', 'stderr'])
+    // Lazily bound to the handle: a read taken before preparation publishes the
+    // process yields nothing rather than failing.
+    expect(spec?.output?.[0]?.read(0)).toEqual({ text: '', nextOffset: 0, lossy: false })
     // The starter is lazy: nothing spawns until the job controller calls run().
-    expect(shell.start).not.toHaveBeenCalled()
+    expect(shell.execute).not.toHaveBeenCalled()
 
-    const proc = {
-      kill: vi.fn(() => true),
-      done: Promise.resolve(),
-      readOutput: vi.fn(() => ({ delta: 'out\n', lossy: false })),
-      sandbox: undefined,
-    }
-    shell.start.mockReturnValue(proc)
     const hooks = spec.run()
-    expect(shell.start).toHaveBeenCalledTimes(1)
-    expect(shell.start.mock.calls[0]?.[0]?.command).toBe('sleep 30')
     expect(typeof hooks.cancel).toBe('function')
-    expect(typeof hooks.done.then).toBe('function')
-    expect(hooks.readOutput()).toBe('out\n')
-    hooks.cancel()
-    expect(proc.kill).toHaveBeenCalledTimes(1)
+    expect(hooks.done).toBeInstanceOf(Promise)
+    await hooks.done
+    expect(shell.execute).toHaveBeenCalledTimes(1)
+    expect(shell.execute.mock.calls[0]?.[0]?.command).toBe('sleep 30')
+    expect(shell.execute.mock.calls[0]?.[0]?.signal).toBeInstanceOf(AbortSignal)
+    // A background job arms NO deadline ("No timeout applies": 0.1.5's
+    // `start()` armed none, and the official 0.1.7 tool-bash resolves its job
+    // lane with `onExpiry: 'none'` too).
+    expect(shell.execute.mock.calls[0]?.[0]?.onExpiry).toBe('none')
+    // Once published, the same sources read the process's observed streams.
+    expect(spec?.output?.[0]?.read(0)).toEqual({ text: 'hello from fish\n', nextOffset: 'hello from fish\n'.length, lossy: false })
+    expect(spec?.output?.[1]?.read(0)).toEqual({ text: '', nextOffset: 0, lossy: false })
   })
 
   it('c. fails loud with the jobs error when ctx.jobs is missing', async () => {
@@ -419,7 +469,7 @@ describe('fish tool integration on real Cordis services (D)', () => {
     expect(ask?.agent).toBe(agent)
     expect(ask?.reason).toContain('danger-full-access')
     expect(ask?.reason).toContain('need to write a system config')
-    const spec = shell.run.mock.calls[0]?.[0]
+    const spec = shell.execute.mock.calls[0]?.[0]
     expect(spec?.sandboxPolicy.mode).toBe('danger-full-access')
   })
 
@@ -434,6 +484,70 @@ describe('fish tool integration on real Cordis services (D)', () => {
     expect(fish?.parameters.properties.run_in_background).toBeDefined()
     expect(fish?.parameters.properties.sandbox_permissions).toBeUndefined()
     expect(fish?.parameters.properties.justification).toBeUndefined()
+  })
+
+  it('f. cancels a background job during preparation through the job-owned signal', async () => {
+    const { ctx, shell, jobs } = await mountTool()
+    const agent = { id: 'a1', session: { id: 's1' } }
+    await executeCall(ctx, { command: 'sleep 30', description: 'Sleep', run_in_background: true }, { agent })
+
+    const proc = fakeExecution({ sandboxMode: 'workspace-write' })
+    /** Publish the handle only when the test decides preparation is over. */
+    let publish: (value: unknown) => void = () => {}
+    shell.execute.mockImplementationOnce(() => new Promise((resolve) => {
+      publish = resolve
+    }))
+
+    const spec = jobs.start.mock.calls[0]?.[0]
+    const hooks = spec.run()
+    const settled = hooks.done
+    hooks.cancel('user stopped the job')
+
+    // `ctx.shell.execute` is async: cancellation must reach the preparation
+    // signal (so a command still being prepared is killed too) instead of
+    // relying on a handle that does not exist yet.
+    expect(shell.execute.mock.calls[0]?.[0]?.signal.aborted).toBe(true)
+    publish(proc)
+    await expect(settled).resolves.toEqual({ status: 'killed', detail: 'killed before exit' })
+    expect(proc.kill).toHaveBeenCalledTimes(1)
+  })
+
+  it('g. joins settled sandbox facts to the background job outcome detail', async () => {
+    const { ctx, shell, jobs } = await mountTool()
+    shell.execute.mockImplementationOnce(async () => fakeExecution({
+      sandboxMode: 'workspace-write',
+      denied: true,
+      exitCode: 1,
+    }))
+    await executeCall(
+      ctx,
+      { command: 'touch /etc/motd', description: 'Write banner', run_in_background: true },
+      { agent: { id: 'a1', session: { id: 's1' } } },
+    )
+
+    const settled = await jobs.start.mock.calls[0]?.[0].run().done
+
+    // The registry owns the read path in 0.1.7-rc.2, so the denial (and the
+    // escalation hint this composition advertises) travels on the job's
+    // terminal detail line instead of a per-read notice.
+    expect(settled.status).toBe('completed')
+    expect(settled.detail).toContain('exit code: 1')
+    expect(settled.detail).toContain('[sandbox: file access denied under workspace-write mode]')
+    expect(settled.detail).toContain('[sandbox: escalation available — retry this exact command once with sandbox_permissions')
+  })
+
+  it('h. reports a job whose preparation failed as failed with the error detail', async () => {
+    const { ctx, shell, jobs } = await mountTool()
+    shell.execute.mockRejectedValueOnce(new Error('subprocess provider exploded'))
+    await executeCall(
+      ctx,
+      { command: 'sleep 30', description: 'Sleep', run_in_background: true },
+      { agent: { id: 'a1', session: { id: 's1' } } },
+    )
+
+    const settled = await jobs.start.mock.calls[0]?.[0].run().done
+
+    expect(settled).toEqual({ status: 'failed', detail: 'subprocess provider exploded' })
   })
 
   it('registers the tool:fish prompt section with fish-result guidance', async () => {

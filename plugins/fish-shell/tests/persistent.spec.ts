@@ -10,7 +10,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-scope'
-import { ensureSandboxModeFence } from '../terminal-fish.js'
+import { ensureSandboxModeFence, type FishTerminalBackend } from '../terminal-fish.js'
 import {
   MAX_TIMER_DELAY_MS,
   TIMEOUT_CODE,
@@ -353,7 +353,7 @@ describe('persistentShells owner lifecycle', () => {
       closeAttempts += 1
       if (closeAttempts === 1) throw new Error('close failed')
     })
-    const shells = persistentShells(root, SHELLS_CONFIG, { spawn: async () => session })
+    const shells = persistentShells(root, SHELLS_CONFIG, { spawn: async () => session } as unknown as FishTerminalBackend)
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
@@ -386,7 +386,7 @@ describe('persistentShells owner lifecycle', () => {
         spec.signal.addEventListener('abort', () => reject(spec.signal.reason ?? new Error('spawn aborted')), { once: true })
       }),
     }
-    const shells = persistentShells(root, SHELLS_CONFIG, backend)
+    const shells = persistentShells(root, SHELLS_CONFIG, backend as unknown as FishTerminalBackend)
 
     // Owner disposal while the spawn is still in flight: the owner-scoped
     // cleanup (installed BEFORE the first spawn) aborts the creation and

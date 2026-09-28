@@ -83,6 +83,10 @@ interface Assembly {
   tools: Array<{ name: string }>
 }
 
+/** The agent shape the policy installs against: the agent object IS its scope
+ * key and carries the scoped context the policy registers on. */
+type PolicyAgent = Parameters<typeof policy.installFishPolicy>[1]
+
 interface Harness {
   ctx: Context
   /** Host plugin context used to create additional standing preset scopes. */
@@ -94,17 +98,17 @@ interface Harness {
   /** The binding that can re-link this agent to another preset scope. */
   binding: { rebind(parent: object): void }
   /** The agent object, which is also its scope key (as in dsh-agent-loop). */
-  agent: object
+  agent: PolicyAgent
   agentCtx: Context
   /** Additional agents composed under the same preset scope (multi-agent). */
-  extraAgents: object[]
+  extraAgents: PolicyAgent[]
 }
 
 /** Compose one agent scope; the agent object IS the scope key and carries
  * its scoped ctx, exactly like dsh-agent-loop. The caller binds it under a
  * preset scope (and keeps the binding when re-linking is needed). */
-function createAgentUnder(hostCtx: Context): { agent: object; agentCtx: Context } {
-  const agent: { ctx?: Context } = {}
+function createAgentUnder(hostCtx: Context): { agent: PolicyAgent; agentCtx: Context } {
+  const agent = {} as PolicyAgent
   const agentScope = createScope(hostCtx, agent)
   agent.ctx = agentScope.ctx
   return { agent, agentCtx: agentScope.ctx }
@@ -174,7 +178,7 @@ async function composeHarness(options: {
       text: 'third-party agent bash guidance',
     })
   }
-  const extraAgentsList: object[] = []
+  const extraAgentsList: PolicyAgent[] = []
   for (let index = 0; index < extraAgents; index += 1) {
     const extra = createAgentUnder(hostCtx)
     bindScopeParent(extra.agent, presetKey)

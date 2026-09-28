@@ -7,9 +7,16 @@
  * by the self-managed `persistent` tool. Verifies with real fish (4.0.0,
  * must exist on PATH) that persistent semantics survive across calls, that
  * timeouts reset the shell, and that calls are serialized.
+ *
+ * It also drives the CONFINED spawn path (`workspace-write`) with a real PTY:
+ * no real sandbox backend package is a dependency of this plugin, so the
+ * `ctx.sandbox` provider here is an ASYNC argv recorder/passthrough (the real
+ * `SandboxProvider.confine` is a promise, which is exactly what the backend
+ * must await). The child's `TERM` is asserted from inside the PTY, because the
+ * subprocess provider advertises `terminalType` as `TERM` (overwriting `env`).
  */
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -43,7 +50,11 @@ interface RealAgent {
 let ctx: Context | undefined
 let agent: RealAgent | undefined
 let timeoutAgent: RealAgent | undefined
+let confinedAgent: RealAgent | undefined
 let workspace: string | undefined
+let confinedWorkspace: string | undefined
+/** Every `ctx.sandbox.confine(argv, policy)` the confined lane requested. */
+const confineCalls: Array<{ argv: readonly string[], mode: string }> = []
 
 async function execute(owner: RealAgent | undefined, command: string): Promise<string> {
   const tool = ctx?.tools.get('fish', owner as never)
@@ -63,20 +74,35 @@ async function execute(owner: RealAgent | undefined, command: string): Promise<s
 beforeAll(async () => {
   if (!REAL_FISH_PTY || fishPath === undefined) return
   workspace = mkdtempSync(join(tmpdir(), 'dsh-fish-real-'))
+  confinedWorkspace = join(workspace, 'confined')
+  mkdirSync(confinedWorkspace)
+  confineCalls.length = 0
   const root = new Context()
   await root.plugin(SystemPrompt, {})
   await root.plugin(ToolRuntime, {})
   // NO @deepseek-ai/dsh-terminal registry: the self-managed persistent tool
   // must work without ctx.terminals (invisible at the host/agent plane).
   await root.plugin(LocalSubprocessRuntime)
-  // Confinement and projection stubs: the backend only needs the resolved
-  // policy (danger-full-access avoids the sandbox wrapper entirely) and the
-  // projection state used by the sandbox-mode fence (never queried here).
+  // The projection state used by the sandbox-mode fence (never queried here).
+  root.provide('sessionProjections', { stateOf: () => undefined })
+  // Confinement seams. The provider is ASYNC, exactly like the real
+  // `SandboxProvider.confine` in 0.1.7-rc.2 (a synchronous double is what hid
+  // the backend's un-awaited use), and it records every requested argv. The
+  // mode is per calling session, so the confined agent below takes the
+  // workspace-write path while every other agent stays unconfined.
+  root.provide('sandbox', {
+    confine: async (argv: readonly string[], policy: { mode: string }) => {
+      confineCalls.push({ argv: [...argv], mode: policy.mode })
+      return { argv: [...argv], enforcement: 'full', denialSignatures: [], runnerFailureRules: [] }
+    },
+  })
   root.provide('sandboxPolicy', {
     defaultMode: 'danger-full-access',
-    resolve: () => ({ mode: 'danger-full-access', workspaceRoot: workspace }),
+    resolve: (options?: { session?: { header?: { cwd?: string } } }) =>
+      options?.session?.header?.cwd === confinedWorkspace
+        ? { mode: 'workspace-write', workspaceRoot: confinedWorkspace }
+        : { mode: 'danger-full-access', workspaceRoot: workspace },
   })
-  root.provide('sessionProjections', { stateOf: () => undefined })
 
   const host = await root.plugin({ name: 'persistent-real-host', inject: ['tools', 'systemPrompt'], apply() {} })
   const hostCtx = host.ctx
@@ -103,14 +129,28 @@ beforeAll(async () => {
   const timeoutScope = createScope(hostCtx, timeoutObject)
   timeoutObject.ctx = timeoutScope.ctx
   timeoutAgent = timeoutObject
+
+  // A third agent whose sessions resolve to `workspace-write`: its persistent
+  // fish PTY must go through the confined spawn path (async confine +
+  // terminalType) and still start, answer, and report `TERM=dumb`.
+  const confinedObject: RealAgent = {
+    id: 'real-fish-confined-agent',
+    ctx: undefined as unknown as Context,
+    session: { header: { cwd: confinedWorkspace } },
+  }
+  const confinedScope = createScope(hostCtx, confinedObject)
+  confinedObject.ctx = confinedScope.ctx
+  confinedAgent = confinedObject
+
   root.provide('agents', {
-    get: (id: string) => (id === agent?.id ? agent : id === timeoutAgent?.id ? timeoutAgent : undefined),
+    get: (id: string) => (id === agent?.id ? agent : id === timeoutAgent?.id ? timeoutAgent : id === confinedAgent?.id ? confinedAgent : undefined),
   })
 
   // The persistent fish tool is registered at each agent scope, exactly like
   // policy.js does when it detects the minimal preset's persistent bash.
   registerPersistentFish(root, agent.ctx)
   registerPersistentFish(root, timeoutAgent.ctx, { timeoutMs: 500 })
+  registerPersistentFish(root, confinedAgent.ctx)
   ctx = root
 }, 60_000)
 
@@ -119,10 +159,12 @@ afterAll(async () => {
   ctx = undefined
   agent = undefined
   timeoutAgent = undefined
+  confinedAgent = undefined
   if (workspace !== undefined) {
     rmSync(workspace, { recursive: true, force: true })
     workspace = undefined
   }
+  confinedWorkspace = undefined
 })
 
 realDescribe('real persistent fish PTY (DSH_REAL_FISH_PTY=1)', () => {
@@ -166,6 +208,27 @@ realDescribe('real persistent fish PTY (DSH_REAL_FISH_PTY=1)', () => {
     expect(b).toContain('second-done')
     expect(a.indexOf('first-done')).toBeGreaterThan(-1)
   })
+
+  it('starts and answers through the CONFINED (workspace-write) spawn path with real fish', async () => {
+    confineCalls.length = 0
+
+    const out = await execute(confinedAgent, 'echo confined-persist-ok')
+    expect(out).toContain('confined-persist-ok')
+    expect(out).toContain('[Command finished with exit code 0]')
+
+    // The backend awaited the async provider and spawned its (wrapped) argv:
+    // the fish dialect reached `confine()` instead of the spawn reading
+    // `.argv` off a promise (which failed every confined persistent spawn).
+    expect(confineCalls.map((call) => call.argv)).toEqual([['fish', '--no-config', '-i']])
+    expect(confineCalls[0]?.mode).toBe('workspace-write')
+
+    // `terminalType` is what the subprocess provider advertises as the child's
+    // TERM (it overwrites `env`), so the readiness contract's `TERM=dumb` is
+    // observable inside the real PTY.
+    const term = await execute(confinedAgent, 'echo TERM=$TERM')
+    expect(term).toContain('TERM=dumb')
+    expect(term).toContain('[Command finished with exit code 0]')
+  }, 30_000)
 
   it('resets the shell when a command exceeds the deadline and the next call starts fresh', async () => {
     const timedOut = await execute(timeoutAgent, 'sleep 5')

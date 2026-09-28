@@ -77,6 +77,40 @@ const DEFAULT_PTY_CONFIG = {
 }
 
 /**
+ * The terminal handle surface this backend reads: the cleanup verb a failed
+ * session factory must call (the real handle is `SubprocessTerminalHandle`).
+ * @typedef {{ terminate(): void | Promise<void> }} TerminalHandleLike
+ */
+
+/**
+ * The resolved backend configuration fields this module reads — a structural
+ * subset of `@deepseek-ai/dsh-terminal-bash`'s `ResolvedConfig`, which that
+ * package does not export from its root. `resolveConfig()` below produces
+ * exactly these fields (plus the dialect/PTY defaults the base class owns).
+ * @typedef {object} BackendConfig
+ * @property {string} shellPath - the fish executable to spawn.
+ * @property {readonly string[]} shellArgs - the resolved fish arguments.
+ * @property {number} rows - initial terminal rows.
+ * @property {number} cols - initial terminal columns.
+ * @property {number} timeoutMs - readiness deadline for one startup sequence.
+ * @property {number} disposeGraceMs - SIGTERM→SIGKILL grace for the PTY session.
+ */
+
+/**
+ * The `BashTerminalBackend` internals this subclass must reach to override
+ * `spawn()`. The upstream declarations mark `ctx`, `config`, `spawnTerminal`,
+ * and `createSession` private — and are byte-identical in 0.1.5-rc.1 and
+ * 0.1.7-rc.2 — while the JS prototype keeps them as ordinary fields, so the
+ * subclass reads them through this one structural view instead of a
+ * suppression per access.
+ * @typedef {object} BashBackendInternals
+ * @property {import('@deepseek-ai/cordis').Context} ctx - the backend's plugin context.
+ * @property {BackendConfig} config - the resolved PTY configuration fields this backend reads.
+ * @property {(spec: object) => Promise<TerminalHandleLike>} spawnTerminal - the subprocess terminal primitive (`ctx.subprocess.spawnTerminal` by default).
+ * @property {(terminal: unknown, config: unknown) => any} createSession - the session factory (`new LocalPtySession(...)` by default).
+ */
+
+/**
  * One-line fish prompt setup submitted before readiness: suppresses the
  * greeting and right prompt, and defines a prompt that emits the shared OSC
  * `133;D;<status>` + BEL marker followed by exactly `dsh> `. ESC/BEL are
@@ -95,6 +129,11 @@ export const FISH_PROMPT_SETUP = 'function fish_greeting; end; function fish_pro
 export function resolveConfig(config) {
   return {
     backendType: config.backendType?.length > 0 ? config.backendType : 'fish',
+    // Inherited `ResolvedConfig` shape, not a dialect choice: this backend
+    // overrides `spawn()` with its own child environment and fish prompt, so
+    // the field is inert — `bash` names the readiness/prompt contract the
+    // fish prompt implements (`dsh-terminal-bash`'s bash branch).
+    shellDialect: /** @type {const} */ ('bash'),
     shellPath: config.shellPath !== undefined && config.shellPath.length > 0 ? config.shellPath : DEFAULT_FISH_SHELL,
     shellArgs: config.shellArgs !== undefined && config.shellArgs.length > 0 ? config.shellArgs : DEFAULT_FISH_ARGS,
     ...DEFAULT_PTY_CONFIG,
@@ -185,21 +224,25 @@ export function ensureSandboxModeFence(ctx, owner, hasActivity) {
 /**
  * Confine the fish argv through the shared sandbox policy, exactly like the
  * official `spawnArgv` (which is private to `@deepseek-ai/dsh-terminal-bash`
- * and therefore copied here).
- * @param ctx - the plugin context carrying the sandbox provider.
- * @param config - the resolved backend configuration.
- * @param policy - the resolved execution policy for this session.
- * @returns the (possibly confined) argv.
+ * and therefore copied here). `SandboxProvider.confine` is ASYNC in
+ * 0.1.7-rc.2, so the confined branch MUST be awaited: reading `.argv` off the
+ * returned promise yields `undefined`, which made every confined persistent
+ * spawn fail (previously masked by a synchronous test double).
+ * @param {import('@deepseek-ai/cordis').Context} ctx - the plugin context carrying the sandbox provider.
+ * @param {BackendConfig} config - the resolved backend configuration (the fields this backend reads).
+ * @param {import('@deepseek-ai/dsh-sandbox').SandboxExecutionPolicy} policy - the resolved execution policy for this session; the `danger-full-access` early return narrows `mode` to a confined mode for `confine()`.
+ * @param {AbortSignal} [signal] - cancellation of confinement preparation.
+ * @returns {Promise<string[]>} the (possibly confined) argv.
  */
-export function spawnArgv(ctx, config, policy) {
+export async function spawnArgv(ctx, config, policy, signal) {
   const argv = [config.shellPath, ...config.shellArgs]
   if (policy.mode === 'danger-full-access') return argv
   const sandbox = ctx.get('sandbox')
   if (sandbox === undefined) throw new Error(`terminal-fish: sandbox mode "${policy.mode}" requires a ctx.sandbox provider in the execution world`)
-  return sandbox.confine(argv, {
+  return (await sandbox.confine(argv, {
     ...policy,
     mode: policy.mode,
-  }).argv
+  }, signal)).argv
 }
 
 /**
@@ -256,6 +299,25 @@ export async function startupSession(session, timeoutMs, signal) {
 }
 
 /**
+ * Reject a failed startup only after its unpublished resources reach
+ * quiescence (copied from the official `@deepseek-ai/dsh-terminal-bash`,
+ * which does not export it): a cleanup failure is reported as
+ * `TerminalBackendCleanupError` so a leaked PTY is distinguishable from the
+ * startup failure that caused it.
+ * @param {unknown} error - the startup or session-factory failure.
+ * @param {() => unknown} cleanup - releases the resource the failure left behind.
+ * @returns {Promise<never>} never resolves; always rejects.
+ */
+async function rejectAfterStartupCleanup(error, cleanup) {
+  try {
+    await cleanup()
+  } catch (cleanupError) {
+    throw new TerminalBackendCleanupError(error, cleanupError)
+  }
+  throw error
+}
+
+/**
  * Local fish PTY backend registered under the configured type (`fish`):
  * spawns `fish --no-config -i` (config-overridable) with the fish child
  * environment, confined through the shared sandbox policy, and brings it to
@@ -266,35 +328,46 @@ export async function startupSession(session, timeoutMs, signal) {
 export class FishTerminalBackend extends BashTerminalBackend {
   async spawn(spec) {
     spec.signal?.throwIfAborted()
-    ensureSandboxModeFence(this.ctx, spec.owner)
+    // The inherited fields (`ctx`, `config`, `spawnTerminal`, `createSession`)
+    // are TS-private upstream, so they are read through the one structural
+    // view declared above instead of repeating the same suppression per use.
+    const backend = /** @type {BashBackendInternals} */ (/** @type {unknown} */ (this))
+    ensureSandboxModeFence(backend.ctx, spec.owner)
     // Resolve services through `ctx.get` (never property access): the
     // backend may be constructed with a plugin context whose inject list
     // does not declare these services (the policy plugin's ctx), and Cordis
     // property access would throw "cannot get property … without inject".
     // `ctx.get` resolves any registered service regardless of inject.
-    const policy = this.ctx.get('sandboxPolicy').resolve({ session: spec.owner.session })
-    const argv = spawnArgv(this.ctx, this.config, policy)
+    const policy = backend.ctx.get('sandboxPolicy').resolve({ session: spec.owner.session })
+    const argv = await spawnArgv(backend.ctx, backend.config, policy, spec.signal)
+    // Confinement is async, so the caller may have cancelled while it ran.
+    spec.signal?.throwIfAborted()
     if (argv[0] === undefined) throw new Error('terminal-fish: sandbox returned empty argv')
-    const terminal = await this.spawnTerminal({
+    const terminal = await backend.spawnTerminal({
       argv,
       cwd: spec.cwd ?? policy.workspaceRoot,
       env: childEnvironment(spec),
-      rows: this.config.rows,
-      cols: this.config.cols,
-      graceMs: this.config.disposeGraceMs,
+      rows: backend.config.rows,
+      cols: backend.config.cols,
+      // The provider advertises this as the child's `TERM` (it overwrites
+      // whatever `env` carried with it), so it must be the same `dumb` the
+      // fish prompt readiness contract is verified against.
+      terminalType: 'dumb',
+      graceMs: backend.config.disposeGraceMs,
       signal: spec.signal,
     })
-    const session = this.createSession(terminal, this.config)
+    let session
     try {
-      await startupSession(session, this.config.timeoutMs, spec.signal)
+      session = backend.createSession(terminal, backend.config)
+    } catch (error) {
+      // A failed session factory must not leak the freshly allocated terminal.
+      return rejectAfterStartupCleanup(error, () => terminal.terminate())
+    }
+    try {
+      await startupSession(session, backend.config.timeoutMs, spec.signal)
       return session
     } catch (error) {
-      try {
-        await session.close('PTY startup failed')
-      } catch (closeError) {
-        throw new TerminalBackendCleanupError(error, closeError)
-      }
-      throw error
+      return rejectAfterStartupCleanup(error, () => session.close('PTY startup failed'))
     }
   }
 }

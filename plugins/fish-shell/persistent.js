@@ -351,6 +351,7 @@ export function persistentShells(ctx, config, backend = new FishTerminalBackend(
   const reserveSpawn = (owner) => {
     ensureOwnerCleanup(owner)
     const controller = new AbortController()
+    /** @type {PromiseWithResolvers<void>} */
     const settlement = Promise.withResolvers()
     const pendingSpawn = { owner, controller, settled: settlement.promise }
     let owned = pendingSpawns.get(owner)
@@ -530,8 +531,21 @@ async function executeCommand(ctx, shells, owner, command, config, upstream) {
 }
 
 /**
+ * Optional overrides for the persistent tool, as accepted by
+ * {@link resolvePersistentConfig} and passed through by
+ * {@link registerPersistentFish}.
+ * @typedef {object} PersistentFishOverrides
+ * @property {string} [backendType] - PTY backend registry type (default `fish`).
+ * @property {number} [timeoutMs] - per-command deadline in milliseconds (default 300000).
+ * @property {number} [maxOutputChars] - rendered-output cap in characters (default 16000).
+ * @property {string} [description] - model-facing tool description.
+ * @property {string} [shellPath] - fish executable override.
+ * @property {string[]} [shellArgs] - fish argument override.
+ */
+
+/**
  * Resolve the persistent tool configuration with defaults applied.
- * @param config - optional overrides (backend type, deadline, output cap,
+ * @param {PersistentFishOverrides} [config] - optional overrides (backend type, deadline, output cap,
  *   fish executable).
  * @returns the fully resolved configuration (validated).
  */
