@@ -190,6 +190,22 @@ describe('contract preflight rejects the whole call before any start', () => {
     await expect(call(deadline, { deadlineMs: 1 })).rejects.toThrow(/\[60000, 1800000\]/)
   })
 
+  it('rejection names the batchable agentIds instead of the delegation tool names', async () => {
+    // The observed mistake is passing the TOOL name the model saw in its tool
+    // list ("agent_explorer") where the Agent id belongs ("explorer"). The
+    // rejected call is the model's only feedback, so it has to carry both the
+    // valid ids and the tool-name correction.
+    const unknown = runtime([])
+    await expect(call(unknown, { tasks: [{ agentId: 'agent_unknown', prompt: 'x', description: 'x' }] }))
+      .rejects.toThrow(/valid batch agentId values: a, b, not-allowed, optional/i)
+    const unknownAgain = runtime([])
+    await expect(call(unknownAgain, { tasks: [{ agentId: 'agent_unknown', prompt: 'x', description: 'x' }] }))
+      .rejects.toThrow(/the id is the Agent id \("explorer"\), not the delegation tool name \("agent_explorer"\)/i)
+    const kept = runtime([])
+    await expect(call(kept, { tasks: [{ agentId: 'kept', prompt: 'x', description: 'x' }] }))
+      .rejects.toThrow(/remaining batchable Agents: a, b, not-allowed, optional/i)
+  })
+
   it('refuses an always-kept target, because a batched child can never be followed up', async () => {
     // §16.14. Batch executes every item through `startOneShot`, so a batched
     // review would be exactly the one-shot outcome the declaration forbids.

@@ -847,6 +847,10 @@ export async function delegateOne(runtime, options) {
 /** Validate batch shape/definition facts before any budget or child start. */
 function validateBatchContract(runtime, options, budget) {
   const tasks = options.tasks
+  // A rejected call is the model's only feedback, so every batch-target error
+  // names the ids it could have passed instead of leaving them to inference.
+  const batchable = batchTargetIds(runtime)
+  const choices = `valid batch agentId values: ${batchable.join(', ')}`
   if (!Array.isArray(tasks) || tasks.length < 1 || tasks.length > budget.maxBatchWidth) {
     throw new DelegationError(
       'bad-batch-width',
@@ -883,7 +887,7 @@ function validateBatchContract(runtime, options, budget) {
       })
     }
     if (definition?.child === undefined) {
-      throw new DelegationError('batch-target-invalid', `banbo-agents: delegate_batch target "${task.agentId}" does not exist or has no child form; pick an Agent that has a child form`, {
+      throw new DelegationError('batch-target-invalid', `banbo-agents: delegate_batch target "${task.agentId}" does not exist or has no child form; pick an Agent that has a child form — ${choices}; the id is the Agent id ("explorer"), not the delegation tool name ("${deriveToolName('explorer')}")`, {
         targetAgentId: task.agentId,
       })
     }
@@ -899,7 +903,7 @@ function validateBatchContract(runtime, options, budget) {
     // possible — as three background calls, which is the path that keeps each
     // one resumable.
     if (definition.child.preferBackground === true) {
-      throw new DelegationError('batch-target-kept', `banbo-agents: delegate_batch cannot run "${task.agentId}" because this Agent is always kept for follow-up work; make a separate call with run_in_background: true instead`, {
+      throw new DelegationError('batch-target-kept', `banbo-agents: delegate_batch cannot run "${task.agentId}" because this Agent is always kept for follow-up work; call it on its own with run_in_background: true instead — remaining batchable Agents: ${batchable.join(', ')}`, {
         targetAgentId: task.agentId,
       })
     }
@@ -1218,11 +1222,50 @@ function namedTool(ctx, shared, configuredMainAgentId, record) {
   })
 }
 
+/**
+ * The Agents a batch may name: live, with a child form, and not kept for
+ * follow-up work. The floor is the documented default team, so a runtime whose
+ * definitions have not published yet still yields usable guidance rather than
+ * an empty list.
+ */
+const BATCH_FALLBACK_AGENT_IDS = Object.freeze(['explorer', 'research'])
+
+function batchTargetIds(runtime) {
+  const records = runtime?.service?.abi?.agents
+  const definitions = runtime?.service?.definitions
+  const ids = []
+  if (Array.isArray(records) === true && definitions instanceof Map) {
+    for (const record of records) {
+      if (record?.retired === true) continue
+      const definition = definitions.get(record.id)
+      if (definition?.child === undefined) continue
+      if (definition.child.preferBackground === true) continue
+      ids.push(record.id)
+    }
+  }
+  return ids.length > 0 ? ids : [...BATCH_FALLBACK_AGENT_IDS]
+}
+
+/**
+ * The batch tool's model-facing description.
+ *
+ * Two observed failure modes are answered here, because the model chooses
+ * `agentId` at this exact moment:
+ *   1. it copies the TOOL name (`agent_explorer`) instead of the Agent id
+ *      (`explorer`), which the delegation contract rejects by design;
+ *   2. it batches an Agent that is kept for follow-up work, which a batch
+ *      cannot honour because every item runs one-shot.
+ * The ids themselves are not rendered here: at tool-definition time the live
+ * catalog may not have published yet, and a stale or empty list would be worse
+ * than none. Every rejection names them instead (`batchTargetIds`).
+ */
+const BATCH_DESCRIPTION = 'Run 1..maxBatchWidth independent Agent tasks as ONE foreground barrier and return every result in the same turn. A task names its target by the Agent id — for example "explorer" — never by the delegation TOOL name ("agent_explorer" is rejected): see the `agentId` field. Agents whose work must stay resumable cannot be batched at all; call those singly with run_in_background: true. Each item runs as a ONE-SHOT run regardless of that Agent\'s continuation, so a batch child can never be resumed with send_message afterwards. To keep a child for follow-up work, make a single background agent_<id> call instead — background plus an optional Agent yields a durable child. Every item is terminal on return, including partial failures and deadline cleanup state.'
+
 /** The foreground-only one-shot batch tool. */
 function batchTool(ctx, shared, configuredMainAgentId) {
   return defineTool({
     name: 'delegate_batch',
-    description: 'Run 1..maxBatchWidth independent Agent tasks as ONE foreground barrier and return every result in the same turn. Each item runs its target as a ONE-SHOT run regardless of that Agent\'s continuation, so a batch child can never be resumed with send_message afterwards. To keep a child for follow-up work, make a single background agent_<id> call instead — background plus an optional Agent yields a durable child. Every item is terminal on return, including partial failures and deadline cleanup state.',
+    description: BATCH_DESCRIPTION,
     parameters: {
       tasks: {
         type: 'array',
@@ -1231,7 +1274,11 @@ function batchTool(ctx, shared, configuredMainAgentId) {
           type: 'object',
           additionalProperties: false,
           properties: {
-            agentId: { type: 'string', required: true },
+            agentId: {
+              type: 'string',
+              required: true,
+              description: 'The target Agent\'s id (for example "explorer"), not the delegation tool name ("agent_explorer").',
+            },
             prompt: { type: 'string', required: true },
             description: { type: 'string', required: true },
           },
