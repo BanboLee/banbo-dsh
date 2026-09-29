@@ -389,7 +389,7 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
     const managed = computeStandardInventory(renderComposition(templateText, 'probe'))
     expect(managed.digest).toBe(shipped.templateDigest)
     expect(managed.tools).toEqual(shipped.tools)
-    expect(shipped.dshVersion).toMatch(/^0\.1\.7-rc\.\d+$/)
+    expect(shipped.dshVersion).toMatch(/^0\.2\.0-rc\.\d+$/)
   })
 
   // The official `standard` composition lives in the `preset-standard` row of
@@ -475,7 +475,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
   const options = (root: string, definitions: unknown[], extra: Record<string, unknown> = {}) => ({
     rootDir: root,
     definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-    dshVersion: '0.1.7-rc.2',
+    dshVersion: '0.2.0-rc.1',
     selfVersion: '0.0.0',
     ...extra,
   })
@@ -542,7 +542,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
     expect(abi.agents[0].presetId).toBe('my-lead')
     expect(abi.agents[0].hasMain).toBe(true)
     expect(abi.agents[0].toolName).toBe('agent_my_lead')
-    expect(abi.dshVersion).toBe('0.1.7-rc.2')
+    expect(abi.dshVersion).toBe('0.2.0-rc.1')
     // The marker names no preset count any more: presets are not compiled here.
     expect(JSON.parse(readFileSync(join(result.generationDir, COMPLETE_MARKER), 'utf8')))
       .not.toHaveProperty('presets')
@@ -790,7 +790,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.1.7-rc.2',
+        dshVersion: '0.2.0-rc.1',
         selfVersion: '0.0.0',
       } as never)
 
@@ -841,7 +841,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.1.7-rc.2',
+        dshVersion: '0.2.0-rc.1',
         selfVersion: '0.0.0',
       } as never)
 

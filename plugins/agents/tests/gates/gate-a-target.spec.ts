@@ -69,15 +69,16 @@ afterEach(() => {
 /* ------------------------------------------------------------------ A1 --- */
 
 describe('A1 — dependency family is uniform', () => {
-  it('the workspace lockfile resolves no 0.1.7-rc.1 package alongside 0.1.7-rc.2', () => {
+  it('the workspace lockfile resolves no 0.1.7-rc.2 package alongside 0.2.0-rc.1', () => {
     const lock = readFileSync(join(repoRoot, 'pnpm-lock.yaml'), 'utf8')
-    const rc1 = lock.match(/0\.1\.7-rc\.1/g) ?? []
-    const rc2 = lock.match(/0\.1\.7-rc\.2/g) ?? []
+    const previous = lock.match(/0\.1\.7-rc\.2/g) ?? []
+    const family = lock.match(/0\.2\.0-rc\.1/g) ?? []
     // Mixing prereleases inside one family is the exact failure this probe
-    // exists to catch: `^0.1.7-rc.1` cannot express "stay on rc.1", so a
-    // caret range silently drifts to the newest rc.x.
-    expect(rc1).toHaveLength(0)
-    expect(rc2.length).toBeGreaterThan(0)
+    // exists to catch: `^0.2.0-rc.1` cannot express "stay on rc.1", so a
+    // caret range silently drifts to the newest rc.x — and a package left
+    // behind on the previous family is the other half of the same drift.
+    expect(previous).toHaveLength(0)
+    expect(family.length).toBeGreaterThan(0)
   })
 
   it('this plugin declares the same family for every @deepseek-ai dependency', () => {
@@ -94,7 +95,7 @@ describe('A1 — dependency family is uniform', () => {
 
     expect(family.length).toBeGreaterThan(0)
     for (const [name, range] of family) {
-      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.1\.7-rc\.2$/)
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.0-rc\.1$/)
     }
   })
 })

@@ -1,5 +1,5 @@
 {
-  "dshVersion": "0.1.7-rc.2",
+  "dshVersion": "0.2.0-rc.1",
   "standardDigest": "sha256:3b088f03f12c2bebb93a63634a07dfd48a4f04b5ecaaec7b7a85437b25209c88",
   "templateProbe": "probe",
   "templateDigest": "sha256:059180ddea932452c32147621b21305f949b7e281f64087bd23a008d11a77009",

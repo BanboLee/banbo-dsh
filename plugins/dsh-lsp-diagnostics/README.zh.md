@@ -99,7 +99,7 @@ Unavailable reason 是封闭的：`server not found`、`server crashed`、`timeo
 - 对于自动反馈，无 agent 的工具执行、cwd 缺失/为空或不是目录，以及没有 marker 根 git worktree 的外部 target，都被静默排除在范围之外，永不产生 notice。直接调用则改用与官方 `read` 等价的路径权限：session cwd 之外的可读文件符合条件，并在可用时使用其 marker 根项目/worktree 根。
 - 插件不安装也不下载 `typescript-language-server`、`gopls`、`clangd`、`rust-analyzer` 或 `pyright-langserver`；请自行安装所需可执行文件并配置其路径。服务端缺失时 fail open，给出 `diagnostics unavailable (server not found)`。
 - 可移植的确定性测试使用仓库内的 fixture 服务端，绝不使用真实服务端或网络。独立的显式 real-server lane 需显式开启，只使用本地文件系统/进程，且从不安装或下载工具。
-- 实现与测试使用 `0.1.7-rc.2` 依赖族；peer 依赖 `@deepseek-ai/dsh-fs`、`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-subprocess` 和 `@deepseek-ai/dsh-tools` 为 `^0.1.7-rc.2`。
+- 实现与测试使用 `0.2.0-rc.1` 依赖族；peer 依赖 `@deepseek-ai/dsh-fs`、`@deepseek-ai/dsh-llm`、`@deepseek-ai/dsh-subprocess` 和 `@deepseek-ai/dsh-tools` 为 `^0.2.0-rc.1`。
 
 ## 验证
 

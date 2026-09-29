@@ -8,7 +8,7 @@ DeepSeek Harness（DSH）插件集合：6 个开箱即用的插件，全部发�
 
 ## 快速安装（用户）
 
-前置条件：已安装 `dsh`（0.1.7-rc.2 族）、Node.js ≥ 22、pnpm 9.x。
+前置条件：已安装 `dsh`（0.2.0-rc.1 族）、Node.js ≥ 22、pnpm 9.x。
 
 想装哪个装哪个：
 
