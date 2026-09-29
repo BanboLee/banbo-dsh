@@ -1,6 +1,6 @@
 {
   "name": "@banbolee/dsh-lsp-diagnostics",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Automatic post-write and model-callable read-only LSP diagnostics for existing files in DeepSeek Harness.",
   "type": "module",
   "main": "index.js",
