@@ -65,11 +65,11 @@ profile patch 会按 id 替换整个 row 的 config（最后写入者生效；�
 
 ## Agent 指令
 
-无需安装 —— 上游的工具描述已经教会模型优先使用 CodeGraph，本 bundle 也刻意不在任何地方写 AGENTS.md。
+无需安装 —— 服务端自己的 MCP `initialize` `instructions` 与上游的工具描述已经教会模型优先使用 CodeGraph，本 bundle 也刻意不在任何地方写 AGENTS.md。
 
-- CodeGraph 把它的使用手册放在 MCP `initialize` 的 `instructions` 里（上游 `src/mcp/server-instructions.ts`），MCP 客户端会把它呈现到 agent 的 system prompt 中。DSH bridge（`@deepseek-ai/dsh-mcp-client`）**不**消费这些 instructions —— 它只桥接 MCP 工具 —— 因此那些文字永远不会通过 bridge 到达模型。
-- 真正能穿过 bridge 的指引是工具描述本身：上游服务端把 `codegraph_explore` 描述为 `PRIMARY TOOL — call FIRST for almost any question OR before an edit`，其他 codegraph 工具都让位于它（`Use codegraph_explore instead`）。bridge 会把每个对外公布的工具描述原样注册到 harness ToolRuntime，因此主 agent 与被委派的 subagent 在每一次工具选择时都会看到这份强调。
-- 因此本 bundle **不**向 `$DSH_HOME/AGENTS.md`（或任何其他 AGENTS.md）安装任何带 marker fence 的块。`$DSH_HOME/AGENTS.md` 是用户全局的：`dsh-agent-instructions`（在 `@deepseek-ai/dsh-base` 中默认启用）会把它加载进每个项目和每个 profile，因此在那里放一个 codegraph 块会污染没有 `.codegraph/` 索引的仓库、以及没有装本 bundle 的 profile —— 变成没有工具支撑的指引。依赖工具描述可以让指引只作用于真正拥有这些 MCP 工具的 session。
+- CodeGraph 把它的使用手册放在 MCP `initialize` 的 `instructions` 里（上游 `src/mcp/server-instructions.ts`）。DSH bridge（`@deepseek-ai/dsh-mcp-client`）**确实**消费这些 `initialize` `instructions`：连接时它会用 `### MCP server: codegraph` 作为前缀，并把它们注册为一个 harness `systemPrompt` section，因此那些文字**确实**会到达模型 —— 出现在每个挂载了本 bundle 的 session 的 system prompt 中。
+- 指引也会以工具描述本身的形式穿过 bridge：上游服务端把 `codegraph_explore` 描述为 `PRIMARY TOOL — call FIRST for almost any question OR before an edit`，其他 codegraph 工具都让位于它（`Use codegraph_explore instead`）。bridge 会把每个对外公布的工具描述原样注册到 harness ToolRuntime，因此主 agent 与被委派的 subagent 在每一次工具选择时都会看到这份强调。
+- 因此本 bundle **不**向 `$DSH_HOME/AGENTS.md`（或任何其他 AGENTS.md）安装任何带 marker fence 的块，即便上面的 instructions 确实会到达。上面两条通道都限定在单个 session 内：`systemPrompt` section 只在安装了本 bundle、且它的 `codegraph` 服务端已连接时才承载服务端的文字。相比之下，`$DSH_HOME/AGENTS.md` 是用户全局的：`dsh-agent-instructions`（在 `@deepseek-ai/dsh-base` 中默认启用）会把它加载进每个项目和每个 profile，因此在那里放一个 codegraph 块会污染没有 `.codegraph/` 索引的仓库、以及没有装本 bundle 的 profile —— 变成没有工具支撑的指引。依赖服务端自己的 instructions 加上工具描述，可以让指引只作用于真正拥有这些 MCP 工具的 session。
 
 说明：
 
@@ -82,11 +82,11 @@ profile patch 会按 id 替换整个 row 的 config（最后写入者生效；�
 
 ## 已知限制与待办工作
 
-- DSH bridge 目前只覆盖工具；MCP Resources 和 Prompts 没有 harness 消费者，属于待办，因此本 bundle 不桥接它们。
+- DSH bridge 目前覆盖工具、MCP Resources 以及服务端的 `initialize` `instructions`；MCP Prompts 没有 harness 消费者，属于待办，因此本 bundle 不桥接它们。
 - DSH bridge 不发送 `rootUri`，也不宣告 MCP `roots` capability，因此 CodeGraph 无法从客户端得知项目：没有 `--path` 时，服务端从其启动目录（DSH 启动时所在的目录）推导项目。按 profile 固定 `--path`，让项目变得显式且确定（见“项目路径的 profile override”）。
-- DSH bridge 不消费 MCP `initialize` 的 `instructions`，因此 CodeGraph 的使用手册永远不会通过 bridge 到达模型。本 bundle 用真正能穿过 bridge 的东西来补偿：上游的工具描述本身（见“Agent 指令”），它教会主 agent 及其 subagent 优先调用 `mcp__codegraph__codegraph_explore` —— 这正是上游安装器为其他 agent 写进 CLAUDE.md/AGENTS.md/GEMINI.md 的 marker-fenced 块的 DSH 等价物，而且不需要写任何文件。
+- DSH bridge 会消费 MCP `initialize` 的 `instructions`，并把它们发布为一个 `systemPrompt` section，因此 CodeGraph 的使用手册**确实**会通过 bridge 到达模型 —— 但只存在于挂载了本 bundle 并连上 `codegraph` 服务端的 session 中；这正是本 bundle 依然不写 AGENTS.md 的原因（见“Agent 指令”）。MCP Prompts 仍是唯一没有 harness 消费者的 MCP 面，因此以 prompts 形式交付的使用手册不会到达模型。指引也会以工具描述本身的形式穿过 bridge（见“Agent 指令”），它教会主 agent 及其 subagent 优先调用 `mcp__codegraph__codegraph_explore` —— 这正是上游安装器为其他 agent 写进 CLAUDE.md/AGENTS.md/GEMINI.md 的 marker-fenced 块的 DSH 等价物，而且不需要写任何文件。
 - DSH 没有像 Claude Code 的 `settings.json` `permissions.allow` 那样的静态 MCP 权限允许列表。上游安装器在那里自动批准 `mcp__codegraph__*`，以避免每次调用都弹提示；DSH 的批准接缝是 per-session 的 `ask`/`never` 策略，且只支持一次性授权，因此 codegraph 调用是否弹提示取决于组合出来的 approval 策略 —— 而不是本 bundle。如果交互式 profile 在每次 codegraph 调用时都询问，请把 session 策略设为 `never`，或改用非交互式 profile。
-- 上游 Claude Code 安装器还会接一个可选（opt-in）的 `UserPromptSubmit` hook，运行 `codegraph prompt-hook`，在结构性提问（“how / where / trace”）上提前注入 codegraph 上下文，让 agent 无需被提醒就会去用图。DSH 没有等价的 prompt hook 面（`dsh-agent-instructions` 链是静态的，不对 prompt 作出反应），因此 codegraph 指引只能通过工具描述到达模型 —— prompt-hook 的提前注入属于待办，此处未复刻。
+- 上游 Claude Code 安装器还会接一个可选（opt-in）的 `UserPromptSubmit` hook，运行 `codegraph prompt-hook`，在结构性提问（“how / where / trace”）上提前注入 codegraph 上下文，让 agent 无需被提醒就会去用图。DSH 没有等价的 prompt hook 面（`dsh-agent-instructions` 链是静态的，不对 prompt 作出反应），因此 codegraph 指引无法被 hook 提前注入；它经由服务端自己的 `instructions` 与工具描述到达模型 —— prompt-hook 的提前注入属于待办，此处未复刻。
 - 确定性的 fake-MCP 测试是本 bundle 的权威验收。它们针对 `tests/fixtures/fake-mcp-server.mjs` 运行，不需要真实 `codegraph` 二进制、不需要网络，也不需要 daemon。确定性验收在无 daemon 的情况下运行。
 - 真实 CodeGraph 冒烟测试仍然可选。安装、测试或运行本 bundle 从不需要真实 `codegraph` 二进制；`scripts/smoke-codegraph-mcp.sh` 是尽力而为的诊断脚本，二进制缺失时会跳过。
 - 真实的 `codegraph serve --mcp` 服务端默认开启遥测，并在启动时执行一次后台的更新可用性检查（已对照 CodeGraph 源码验证）。想要退出的 profile 可以把环境变量加到该 row 的 `env` 中：
@@ -103,7 +103,7 @@ profile patch 会按 id 替换整个 row 的 config（最后写入者生效；�
 pnpm exec vitest run plugins/codegraph-mcp/tests/*.spec.ts
 ```
 
-文档形态测试（必需章节与契约字符串，包括 agent 指引策略 —— 不写 AGENTS.md，指引经由工具描述）：
+文档形态测试（必需章节与契约字符串，包括 agent 指引策略 —— 不写 AGENTS.md，指引经由服务端自己的 instructions 与工具描述）：
 
 ```bash
 pnpm exec vitest run tests/docs-shape-codegraph.spec.ts

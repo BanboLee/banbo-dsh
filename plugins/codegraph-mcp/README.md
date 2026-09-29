@@ -87,16 +87,18 @@ flag appended:
 
 ## Agent instructions
 
-No installation needed — the upstream tool descriptions already teach the
-model to reach for CodeGraph first, and this bundle deliberately writes no
-AGENTS.md anywhere.
+No installation needed — the server's own MCP `initialize` `instructions` and
+the upstream tool descriptions already teach the model to reach for CodeGraph
+first, and this bundle deliberately writes no AGENTS.md anywhere.
 
 - CodeGraph ships its usage playbook in the MCP `initialize` `instructions`
-  (upstream `src/mcp/server-instructions.ts`), which MCP clients surface in the
-  agent's system prompt. The DSH bridge (`@deepseek-ai/dsh-mcp-client`) does
-  NOT consume those instructions — it bridges MCP tools alone — so that prose
-  never reaches the model through the bridge.
-- The guidance that DOES cross the bridge is the tool description itself: the
+  (upstream `src/mcp/server-instructions.ts`). The DSH bridge
+  (`@deepseek-ai/dsh-mcp-client`) DOES consume those `initialize`
+  `instructions`: on connect it prefixes the text with
+  `### MCP server: codegraph` and registers it as a harness `systemPrompt`
+  section, so that prose DOES reach the model — in the system prompt of every
+  session that mounts this bundle.
+- The guidance also crosses the bridge through the tool description itself: the
   upstream server describes `codegraph_explore` as
   `PRIMARY TOOL — call FIRST for almost any question OR before an edit`, and
   the other codegraph tools defer to it (`Use codegraph_explore instead`). The
@@ -104,13 +106,16 @@ AGENTS.md anywhere.
   ToolRuntime, so the main agent AND delegated subagents see that emphasis on
   every tool-selection pass.
 - This bundle therefore does NOT install any marker-fenced block into
-  `$DSH_HOME/AGENTS.md` (or any other AGENTS.md). `$DSH_HOME/AGENTS.md` is
-  user-global: `dsh-agent-instructions` (shipped enabled in
+  `$DSH_HOME/AGENTS.md` (or any other AGENTS.md), even though the instructions
+  above do arrive. Both channels above are scoped to a session: the
+  `systemPrompt` section only carries the server's text where this bundle is
+  installed and its `codegraph` server has connected. `$DSH_HOME/AGENTS.md`, by
+  contrast, is user-global: `dsh-agent-instructions` (shipped enabled in
   `@deepseek-ai/dsh-base`) loads it into every project and every profile, so a
   codegraph block there would pollute repositories without a `.codegraph/`
   index and profiles without this bundle — guidance with no tool behind it.
-  Relying on the tool description keeps the guidance scoped to sessions that
-  actually have the MCP tools.
+  Relying on the server's own instructions plus the tool descriptions keeps the
+  guidance scoped to sessions that actually have the MCP tools.
 
 Notes:
 
@@ -131,16 +136,21 @@ tool, `mcp__codegraph__echo_context`, and calling it returns the fake server's
 
 ## Known Limitations and Deferred Work
 
-- The DSH bridge currently covers tools only; MCP Resources and Prompts have
-  no harness consumer and are deferred, so this bundle does not bridge them.
+- The DSH bridge currently covers tools, MCP Resources, and the server's
+  `initialize` `instructions`; MCP Prompts have no harness consumer and are
+  deferred, so this bundle does not bridge them.
 - The DSH bridge does not send a `rootUri` and does not advertise the MCP
   `roots` capability, so CodeGraph cannot learn the project from the client:
   without `--path`, the server derives the project from its launch directory
   (the directory DSH was started from). Pin `--path` per profile to make the
   project explicit and deterministic (see "Profile override for project path").
-- The DSH bridge does not consume the MCP `initialize` `instructions`, so
-  CodeGraph's usage playbook never reaches the model through the bridge. This
-  bundle compensates with what DOES cross the bridge: the upstream tool
+- The DSH bridge consumes the MCP `initialize` `instructions` and publishes
+  them as a `systemPrompt` section, so CodeGraph's usage playbook does reach the
+  model — but only in a session that mounts this bundle and connects to the
+  `codegraph` server, which is exactly why this bundle still writes no
+  AGENTS.md (see "Agent instructions"). MCP Prompts remain the one MCP surface
+  with no harness consumer, so a playbook delivered as prompts would not reach
+  the model. Guidance also crosses the bridge through the upstream tool
   descriptions themselves (see "Agent instructions"), which teach the main
   agent and its subagents to call `mcp__codegraph__codegraph_explore` first —
   the DSH analog of the marker-fenced block upstream installers write into
@@ -157,8 +167,9 @@ tool, `mcp__codegraph__echo_context`, and calling it returns the fake server's
   structural ("how / where / trace") prompts so the agent reaches for the graph
   without being told. DSH has no equivalent prompt hook surface (the
   `dsh-agent-instructions` chain is static, not prompt-reactive), so codegraph
-  guidance reaches the model only through the tool descriptions — the
-  prompt-hook front-loading is deferred, not replicated here.
+  guidance cannot be front-loaded by a hook; it reaches the model through the
+  server's own `instructions` and the tool descriptions — the prompt-hook
+  front-loading is deferred, not replicated here.
 - Deterministic fake-MCP tests are the authoritative acceptance for this
   bundle. They run against `tests/fixtures/fake-mcp-server.mjs` and require no
   live `codegraph` binary, no network, and no daemon. Deterministic acceptance
@@ -188,8 +199,8 @@ pnpm exec vitest run plugins/codegraph-mcp/tests/*.spec.ts
 ```
 
 Documentation shape test (required sections and contract strings, including
-the agent-guidance strategy — no AGENTS.md writes, guidance via tool
-descriptions):
+the agent-guidance strategy — no AGENTS.md writes, guidance via the server's
+own instructions and the tool descriptions):
 
 ```bash
 pnpm exec vitest run tests/docs-shape-codegraph.spec.ts
