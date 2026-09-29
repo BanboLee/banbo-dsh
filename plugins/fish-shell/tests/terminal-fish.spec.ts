@@ -21,7 +21,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { SubprocessTerminalHandle, SubprocessTerminalSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { TerminalBackendCleanupError } from '@deepseek-ai/dsh-terminal'
-import { FishTerminalBackend, resolveConfig } from '../terminal-fish.js'
+import { FishTerminalBackend, resolveConfig, validateConfig } from '../terminal-fish.js'
 
 /** The default argv `resolveConfig({})` resolves to (fish, config-free, interactive). */
 const FISH_ARGV = ['fish', '--no-config', '-i']
@@ -61,6 +61,7 @@ interface MountOptions {
   mode?: string
   ready?: boolean
   timeoutMs?: number
+  promptTailGraceMs?: number
   createSession?: (terminal: unknown, config: unknown) => unknown
   terminateFails?: boolean
 }
@@ -79,6 +80,7 @@ async function mountBackend(options: MountOptions = {}): Promise<BackendHarness>
     mode = 'workspace-write',
     ready = true,
     timeoutMs = 1000,
+    promptTailGraceMs,
     createSession,
     terminateFails = false,
   } = options
@@ -108,7 +110,9 @@ async function mountBackend(options: MountOptions = {}): Promise<BackendHarness>
   } as never)
   const backend = new FishTerminalBackend(
     ctx,
-    resolveConfig({ timeoutMs }),
+    // `promptTailGraceMs` stays out of the resolved config when the caller did
+    // not set it, so the default is what the base class receives.
+    resolveConfig({ timeoutMs, promptTailGraceMs }),
     async (spec: SubprocessTerminalSpawnSpec) => {
       spawned.push(spec)
       // Only `terminate` is read by the backend; the rest of the real handle
@@ -192,5 +196,69 @@ describe('FishTerminalBackend.spawn over the 0.1.7-rc.2 seams', () => {
 
     expect(harness.session.close).toHaveBeenCalledWith('PTY startup failed')
     expect(harness.terminate).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * `promptTailGraceMs` — the field the 0.2.0-rc.1 family added to the shared
+ * PTY/readiness surface, and the one duration whose `0` is legal.
+ *
+ * The base class' `ResolvedConfig` requires it, so it must be part of this
+ * backend's resolved shape (and of the `ResolvedBackendConfig` typedef) or
+ * `new FishTerminalBackend(…)` stops type-checking. Its semantics — the grace
+ * applies only once an OSC prompt marker was seen, the printable tail is still
+ * incomplete, and what arrived is a controlled-prompt prefix — live in the
+ * inherited `LocalPtySession`, which `@deepseek-ai/dsh-terminal-bash` does NOT
+ * export (root exports are `BashTerminalBackend`, `Config`,
+ * `PWSH_PROMPT_SETUP`, `apply`, `inject`, `name`, and the published package
+ * ships `lib/` alone, so the `./src/*` subpath resolves to nothing). A fake
+ * session never reaches that state machine, so an "inherited partial `dsh> `
+ * prompt tail" readiness case cannot be written honestly here; what this bundle
+ * owns is pinned instead: the default, the validation, and the pass-through of
+ * the value the inherited poll reads.
+ */
+describe('FishTerminalBackend over the 0.2.0-rc.1 prompt-tail grace', () => {
+  it('defaults promptTailGraceMs to 0 — tail grace disabled, never an invented tolerance', () => {
+    expect(resolveConfig({}).promptTailGraceMs).toBe(0)
+    expect(() => validateConfig(resolveConfig({}))).not.toThrow()
+  })
+
+  it('accepts zero and every nonzero tolerance of at least pollIntervalMs', () => {
+    const { pollIntervalMs } = resolveConfig({})
+    for (const promptTailGraceMs of [0, pollIntervalMs, 250]) {
+      expect(() => validateConfig({ ...resolveConfig({}), promptTailGraceMs })).not.toThrow()
+    }
+    // A caller's explicit value is merged through, not shadowed by the default.
+    expect(resolveConfig({ promptTailGraceMs: 250 }).promptTailGraceMs).toBe(250)
+  })
+
+  it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects %p as a tail grace', (promptTailGraceMs) => {
+    // Rejected by the field's own rule, not by the positive-integer sweep that
+    // would also reject the legal `0`.
+    expect(() => validateConfig({ ...resolveConfig({}), promptTailGraceMs })).toThrow(/promptTailGraceMs/)
+  })
+
+  it('rejects a nonzero tolerance below pollIntervalMs as a silent no-op', () => {
+    const resolved = resolveConfig({})
+    expect(() => validateConfig({ ...resolved, promptTailGraceMs: resolved.pollIntervalMs - 1 }))
+      .toThrow(/zero or at least pollIntervalMs/)
+  })
+
+  it('hands the resolved tolerance to the session factory the base class calls', async () => {
+    const configs: unknown[] = []
+    const harness = await mountBackend({
+      mode: 'danger-full-access',
+      promptTailGraceMs: 250,
+      createSession: (_terminal, config) => {
+        configs.push(config)
+        return fakeSession(true)
+      },
+    })
+
+    await harness.backend.spawn(ownerSpec(harness.ctx) as never)
+
+    // The base class hands its stored resolved config straight to the session
+    // factory, so this is the exact value the inherited readiness poll reads.
+    expect((configs[0] as { promptTailGraceMs: number }).promptTailGraceMs).toBe(250)
   })
 })

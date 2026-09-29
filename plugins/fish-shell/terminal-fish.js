@@ -72,6 +72,11 @@ const DEFAULT_PTY_CONFIG = {
   exactProbeAfterMs: 150,
   idleSilenceMs: 3e3,
   handoffGraceMs: 500,
+  // The official default is `0` (tail grace DISABLED, i.e. the pre-`promptTailGraceMs`
+  // behaviour). This backend keeps that default rather than inventing a positive
+  // one: the fish prompt is verified to arrive whole under `TERM=dumb`, so the
+  // tolerance is only there for a caller that asks for it.
+  promptTailGraceMs: 0,
   timeoutMs: 3e4,
   disposeGraceMs: 3e3,
 }
@@ -100,6 +105,7 @@ const DEFAULT_PTY_CONFIG = {
  * @property {number} exactProbeAfterMs - delay before exact syscall probes.
  * @property {number} idleSilenceMs - silence that yields `inferred_idle`.
  * @property {number} handoffGraceMs - extra wait for foreground handoff.
+ * @property {number} promptTailGraceMs - extra wait for a controlled prompt prefix to complete; `0` disables the tail grace.
  * @property {number} timeoutMs - readiness deadline for one startup sequence.
  * @property {number} disposeGraceMs - SIGTERM→SIGKILL grace for the PTY session.
  */
@@ -171,12 +177,24 @@ export function validateConfig(config) {
   if (resolved.backendType.length === 0) throw new Error('terminal-fish: backendType must be non-empty')
   if (resolved.shellPath.length === 0) throw new Error('terminal-fish: shellPath must be non-empty')
   for (const [field, value] of Object.entries(resolved)) {
+    // `promptTailGraceMs` is the one duration that legally reads `0` (it means
+    // "no tail grace", which is the official default), so it is checked on its
+    // own below instead of by the positive-integer rule.
+    if (field === 'promptTailGraceMs') continue
     if (typeof value === 'number' && (!Number.isSafeInteger(value) || value <= 0)) {
       throw new Error(`terminal-fish: ${field} must be a positive safe integer`)
     }
   }
+  if (!Number.isSafeInteger(resolved.promptTailGraceMs) || resolved.promptTailGraceMs < 0) {
+    throw new Error('terminal-fish: promptTailGraceMs must be a non-negative safe integer (0 disables the prompt tail grace)')
+  }
   if (resolved.maxReadBytes > resolved.scrollbackMaxBytes) throw new Error('terminal-fish: maxReadBytes must not exceed scrollbackMaxBytes')
   if (resolved.handoffGraceMs < resolved.pollIntervalMs) throw new Error('terminal-fish: handoffGraceMs must be at least pollIntervalMs so one readiness poll runs inside the grace window')
+  // A nonzero tolerance shorter than one poll cannot observe the rest of the
+  // prompt, so it would be a silent no-op; the official schema rejects it too.
+  if (resolved.promptTailGraceMs !== 0 && resolved.promptTailGraceMs < resolved.pollIntervalMs) {
+    throw new Error('terminal-fish: promptTailGraceMs must be zero or at least pollIntervalMs so a nonzero tail grace covers one readiness poll')
+  }
 }
 
 /**
