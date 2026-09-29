@@ -46,12 +46,17 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The gates lane needs this, not the composition suite (which is its own
-      # job): Gate B resolves `@deepseek-ai/dsh-app-boot` and the real 0.1.7
+      # job): Gate B resolves `@deepseek-ai/dsh-app-boot` and the real 0.2.0-rc.1
       # packages beside the global `dsh`, and the install/uninstall gate shells
       # out to `dsh`. The version must match the plugin dependency family
       # (AGENTS.md).
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.1.7-rc.2
+        run: npm install -g @deepseek-ai/dsh@0.2.0-rc.1
+
+      # gate-b's B4 probes resolve `dsh-tui` beside the global `dsh`; without it
+      # they skip, so pin the version whose peers include 0.2.0-rc.1.
+      - name: Install dsh TUI
+        run: npm install -g @deepseek-harness-tui/dsh-tui@0.11.2
 
       # The real fish PTY lane runs in this job (`DSH_REAL_FISH_PTY=1` below),
       # so the binary has to be here; that spec still skips itself when fish is
@@ -125,7 +130,7 @@ jobs:
       # These specs shell out to the `dsh` CLI to boot profiles, so it must be on
       # PATH at the version the plugin family is pinned to (AGENTS.md).
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.1.7-rc.2
+        run: npm install -g @deepseek-ai/dsh@0.2.0-rc.1
 
       # fish-shell is the only shell these profiles mount, so without the binary
       # the sandbox executor refuses to run anything: fish-rtk-coexist.spec.ts
@@ -215,7 +220,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.1.7-rc.2
+        run: npm install -g @deepseek-ai/dsh@0.2.0-rc.1
 
       - name: Install fish
         run: sudo apt-get update && sudo apt-get install -y fish
