@@ -148,13 +148,73 @@ describe('dependencyFamilyVersion — the locked harness range (§11.2)', () => 
 
   it('refuses a manifest whose harness dependencies disagree', () => {
     expect(() => dependencyFamilyVersion({
-      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.1.7-rc.2', '@deepseek-ai/dsh-agent': '^0.1.8' },
+      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.0-rc.1', '@deepseek-ai/dsh-agent': '^0.1.8' },
     })).toThrow(/family|uniform|one range/i)
   })
 
   it('is content, not a host path — the same manifest gives the same answer', () => {
-    const manifest = { peerDependencies: { '@deepseek-ai/dsh-tools': '^0.1.7-rc.2' } }
+    const manifest = { peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.0-rc.1' } }
     expect(dependencyFamilyVersion(manifest)).toBe(dependencyFamilyVersion(manifest))
+  })
+})
+
+/* ------------------------------------------------- range ⇄ target runtime --- */
+
+const repoRoot = resolve(pluginRoot, '..', '..')
+/** The runtime the declared family names — the version the range must admit. */
+const TARGET_DSH_VERSION = '0.2.0-rc.1'
+/** The runtime the family was upgraded FROM: the negative control. */
+const PREVIOUS_DSH_VERSION = '0.1.7-rc.2'
+
+/**
+ * Load a module from THIS workspace's installed tree.
+ *
+ * pnpm hoists every installed package into `node_modules/.pnpm/node_modules`,
+ * which is on no test file's resolution path; `@deepseek-ai/dsh-app-boot` is
+ * not a declared dependency of this bundle either. Resolving from the hoisted
+ * store keeps the check offline and deterministic: the module comes from the
+ * lockfile's own install, never from the network and never from whatever
+ * global `dsh` happens to be on `PATH`.
+ *
+ * @returns the module namespace, or `undefined` when it is not installed.
+ */
+function optionalInstalledModule(id: string): unknown {
+  try {
+    const hoisted = createRequire(join(repoRoot, 'node_modules', '.pnpm', 'node_modules', 'package.json'))
+    return hoisted(id) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+describe('dependencyFamilyVersion — the declared range admits the target runtime', () => {
+  it('accepts 0.2.0-rc.1 through the platform evaluator, with semver as the fallback', () => {
+    const manifest: object = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'))
+    const appBoot = optionalInstalledModule('@deepseek-ai/dsh-app-boot') as {
+      evaluatePluginCompatibility: (
+        manifest: object,
+        exemptions?: Readonly<Record<string, readonly string[]>>,
+        runtimeVersion?: string,
+      ) => { peers: Record<string, string> } | undefined
+    } | undefined
+    if (appBoot !== undefined) {
+      // The evaluator the plugin manager refuses a plugin with, so agreeing
+      // with it is the one non-approximate statement about the declaration.
+      expect(appBoot.evaluatePluginCompatibility(manifest, {}, TARGET_DSH_VERSION)).toBeUndefined()
+      // A probe that cannot fail proves nothing: the same manifest against the
+      // previous runtime must be rejected, peer by peer.
+      const stale = appBoot.evaluatePluginCompatibility(manifest, {}, PREVIOUS_DSH_VERSION)
+      expect(stale).toBeDefined()
+      expect(Object.keys(stale?.peers ?? {}).length).toBeGreaterThan(0)
+      return
+    }
+    // Documented fallback when the platform module is absent: plain `semver`
+    // with prereleases participating in the range.
+    const semver = optionalInstalledModule('semver') as {
+      satisfies: (version: string, range: string, options?: { includePrerelease?: boolean }) => boolean
+    }
+    expect(semver.satisfies(TARGET_DSH_VERSION, dependencyFamilyVersion(), { includePrerelease: true })).toBe(true)
+    expect(semver.satisfies(PREVIOUS_DSH_VERSION, dependencyFamilyVersion(), { includePrerelease: true })).toBe(false)
   })
 })
 
