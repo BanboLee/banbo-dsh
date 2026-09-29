@@ -4,7 +4,8 @@
  * These cases assert the documented behavior contract through the shared
  * validator in `./contract.ts` (parsing helpers live in `./parsers.ts`).
  * The full set of required headings, exact Config-table rows, profile-override
- * restatement, raw-name negative binding, Resources/Prompts limitation,
+ * restatement, raw-name negative binding, MCP Prompts limitation (Resources are
+ * covered) and the pushed instructions channel,
  * deterministic-acceptance no-live/no-network/no-daemon claim, and the seven
  * contradiction/value mutation regressions all run the SAME
  * `validateCodegraphReadmeContract` used for the real README, so the checks
@@ -72,13 +73,15 @@ describe('@banbolee/dsh-codegraph-mcp README shape', () => {
     expect(override).toMatch(/(?:no deep merge|whole-config replacement|last write wins)/)
   })
 
-  it('documents the no-write agent-guidance strategy (tool descriptions, no AGENTS.md)', () => {
+  it('documents the no-write agent-guidance strategy (server instructions + tool descriptions, no AGENTS.md)', () => {
     expect(agentInstructionsChecks(README)).toEqual([])
     const block = section(README, 'Agent instructions', 'Model Experience')
     expect(block).toContain('mcp__codegraph__codegraph_explore')
-    expect(block).toMatch(/does NOT consume/i)
+    expect(block).toMatch(/DOES consume those `initialize`\s+`instructions`/)
+    expect(block).toMatch(/systemPrompt/)
     expect(block).toMatch(/tool description/i)
     expect(block).toMatch(/no AGENTS\.md|writes? no|does NOT install/i)
+    expect(block).not.toMatch(/never reaches the model|does not consume/i)
     expect(block).not.toMatch(/install-codegraph-instructions\.sh|instructions\/CODEGRAPH\.md/)
   })
 
@@ -90,9 +93,11 @@ describe('@banbolee/dsh-codegraph-mcp README shape', () => {
     expect(rawNameChecks(experience)).toEqual([])
   })
 
-  it('documents the tools-only limitation and telemetry/update-check opt-outs', () => {
+  it('documents the Resources coverage, deferred Prompts, and telemetry/update-check opt-outs', () => {
     const limits = section(README, 'Known Limitations and Deferred Work', 'Verification')
-    expect(limits).toContain('tools only')
+    expect(limits).toContain('MCP Resources')
+    expect(limits).toContain('MCP Prompts')
+    expect(limits).not.toContain('tools only')
     expect(resourcesPromptsChecks(limits)).toEqual([])
     expect(limits).toContain('without a daemon')
     expect(noNetworkChecks(limits)).toEqual([])
@@ -115,8 +120,29 @@ describe('@banbolee/dsh-codegraph-mcp README shape', () => {
     expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
   })
 
-  it('rejects a README that claims Resources/Prompts are bridged (mutation regression)', () => {
-    const mutated = README.replace('tools only', 'tools, resources, and prompts')
+  it('rejects a README that claims MCP Prompts are bridged (mutation regression)', () => {
+    const mutated = README.replace(
+      'MCP Prompts have no harness consumer',
+      'MCP Prompts are bridged by the DSH client',
+    )
+    expect(mutated).not.toEqual(README)
+    expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects a README that drops the MCP Resources coverage claim (mutation regression)', () => {
+    const mutated = README.replace(
+      "covers tools, MCP Resources, and the server's",
+      "covers tools only, and the server's",
+    )
+    expect(mutated).not.toEqual(README)
+    expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
+  })
+
+  it('rejects a README that revives the stale "instructions never reach the model" claim (mutation regression)', () => {
+    const mutated = README.replace(
+      'so that prose DOES reach the model',
+      'so that prose never reaches the model',
+    )
     expect(mutated).not.toEqual(README)
     expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
   })
@@ -151,10 +177,10 @@ describe('@banbolee/dsh-codegraph-mcp README shape', () => {
     expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])
   })
 
-  it('rejects Resources/Prompts bridged while tools only/Resources/Prompts tokens remain (mutation regression)', () => {
+  it('rejects MCP Prompts asserted as bridged while the deferred/no-consumer tokens remain (mutation regression)', () => {
     const mutated = README.replace(
       'so this bundle does not bridge them.',
-      'so this bundle bridges them alongside tools only after startup.',
+      'so this bundle bridges them alongside the deferred surfaces after startup.',
     )
     expect(mutated).not.toEqual(README)
     expect(validateCodegraphReadmeContract(mutated)).not.toEqual([])

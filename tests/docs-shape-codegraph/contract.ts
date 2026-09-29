@@ -6,7 +6,7 @@
  * YAML block is parsed line-by-line to require full restatement, and
  * sentence-scoped negative bindings reject direct contradictions even when
  * all positive tokens remain (raw MCP names registered alongside qualified
- * names; Resources/Prompts bridged alongside tools only; wrong default-row
+ * names; MCP Prompts asserted as bridged; wrong default-row
  * values; incomplete override; no-network claim dropped).
  */
 
@@ -93,22 +93,27 @@ export function rawNameChecks(experience: string): string[] {
 }
 
 /**
- * Bind the tools-only limitation: a sentence naming both Resources and
- * Prompts must commit to not-bridged/deferred semantics, and no sentence may
- * assert they are bridged.
+ * Bind the MCP-surface limitation: MCP Prompts are the one surface with no
+ * harness consumer, so a sentence naming them must commit to
+ * not-bridged/deferred semantics and no sentence may assert they are bridged.
+ * MCP Resources ARE bridged by the client (the `mcpResources` service), so the
+ * section must name them as covered too.
  */
 export function resourcesPromptsChecks(limits: string): string[] {
   const failures: string[] = []
-  const named = sentences(limits).filter((sentence) => sentence.includes('Resources') && sentence.includes('Prompts'))
+  const named = sentences(limits).filter((sentence) => sentence.includes('Prompts'))
   if (named.length === 0) {
-    failures.push('Known Limitations must name MCP Resources and Prompts as not bridged/deferred')
+    failures.push('Known Limitations must name MCP Prompts as not bridged/deferred')
     return failures
   }
   if (!named.some((sentence) => /(?:not bridged|does not bridge|no harness consumer|deferred)/.test(sentence))) {
-    failures.push('Known Limitations must bind Resources/Prompts to not-bridged/deferred semantics')
+    failures.push('Known Limitations must bind MCP Prompts to not-bridged/deferred semantics')
   }
   if (named.some((sentence) => /(?:bridges|bridged|is bridged|are bridged|will bridge|can bridge)\b/.test(sentence))) {
-    failures.push('Known Limitations contradicts itself: Resources/Prompts asserted as bridged')
+    failures.push('Known Limitations contradicts itself: MCP Prompts asserted as bridged')
+  }
+  if (!limits.includes('MCP Resources')) {
+    failures.push('Known Limitations must state MCP Resources are covered by the DSH client')
   }
   return failures
 }
@@ -131,13 +136,16 @@ export function noNetworkChecks(limits: string): string[] {
 
 /**
  * Bind the Agent-instructions section to the no-write strategy: it must explain
- * WHY no AGENTS.md block is installed (the DSH bridge does not consume the MCP
- * initialize instructions, so guidance must cross the bridge some other way),
- * state that guidance comes from the upstream tool descriptions (which the
+ * that the DSH bridge DOES consume the MCP initialize instructions and registers
+ * them as a `systemPrompt` section (they do reach the model — in the sessions
+ * that mount this bundle, which is why scoping still matters), state that
+ * guidance also crosses the bridge as the upstream tool descriptions (which the
  * bridge registers verbatim, so agents and subagents see them), point agents at
- * the server-qualified tool, and commit to writing no AGENTS.md. No sentence
- * may claim the bridge surfaces the initialize instructions, and none may
- * reference the removed install script or block file.
+ * the server-qualified tool, and commit to writing no AGENTS.md because
+ * `$DSH_HOME/AGENTS.md` is user-global and loads into every project and profile
+ * (including ones without a `.codegraph/` index or this bundle). No sentence may
+ * resurrect the stale claim that the initialize instructions never reach the
+ * model, and none may reference the removed install script or block file.
  */
 export function agentInstructionsChecks(readme: string): string[] {
   const failures: string[] = []
@@ -146,26 +154,28 @@ export function agentInstructionsChecks(readme: string): string[] {
   if (!sectionText.includes('mcp__codegraph__codegraph_explore')) {
     failures.push('Agent instructions must point agents at mcp__codegraph__codegraph_explore')
   }
-  if (!/does NOT consume those instructions|does not consume.*instructions/i.test(normalized)) {
-    failures.push('Agent instructions must explain the DSH bridge does not consume initialize instructions')
-  }
-  // A sentence claiming the instructions reach the model is only a violation
-  // when it is not negated ("never reaches the model" is the required stance).
+  const parsed = sentences(normalized)
   if (
-    sentences(normalized).some(
+    !parsed.some(
       (sentence) =>
-        /instructions/.test(sentence) &&
-        /reach(?:es)? the model/.test(sentence) &&
-        !/(?:never|no|not|nor)\b/.test(sentence),
+        /instructions/i.test(sentence) &&
+        /(?:consume|register)/i.test(sentence) &&
+        /system ?Prompt/i.test(sentence),
     )
   ) {
-    failures.push('Agent instructions contradicts itself: initialize instructions asserted as reaching the model')
+    failures.push('Agent instructions must state the DSH bridge consumes the initialize instructions and registers them as a systemPrompt section')
+  }
+  if (parsed.some((sentence) => /instructions/i.test(sentence) && /(?:never|not)\s+reach(?:es)?\b/i.test(sentence))) {
+    failures.push('Agent instructions contradicts itself: initialize instructions asserted as never reaching the model')
   }
   if (!/tool description/i.test(normalized)) {
     failures.push('Agent instructions must state the guidance comes from the tool descriptions')
   }
   if (!/no AGENTS\.md|writes? no|does NOT install|does not install/i.test(normalized)) {
     failures.push('Agent instructions must commit to writing no AGENTS.md (no file installation)')
+  }
+  if (!/(?:user-global|every project and every profile)/i.test(normalized)) {
+    failures.push('Agent instructions must explain that $DSH_HOME/AGENTS.md is user-global (every project, every profile) while the instructions channel is session-scoped')
   }
   if (/install-codegraph-instructions\.sh|instructions\/CODEGRAPH\.md/i.test(sectionText)) {
     failures.push('Agent instructions must not reference the removed install script or block file')
@@ -212,9 +222,10 @@ export function validateCodegraphReadmeContract(readme: string): string[] {
   }
   failures.push(...overrideRowChecks(readme))
 
-  // Agent instructions: the no-write strategy — guidance via tool descriptions,
-  // no AGENTS.md installation, plus the reason (DSH bridge does not consume
-  // initialize instructions).
+  // Agent instructions: the no-write strategy — guidance via the server's own
+  // initialize instructions (registered as a systemPrompt section) plus the
+  // tool descriptions, and no AGENTS.md installation because that file is
+  // user-global.
   failures.push(...agentInstructionsChecks(readme))
 
   // Model Experience: only server-qualified tools surfaced; raw names never.
@@ -230,9 +241,9 @@ export function validateCodegraphReadmeContract(readme: string): string[] {
   }
   failures.push(...rawNameChecks(experience))
 
-  // Known Limitations: tools-only, Resources/Prompts deferred, no live/network/daemon.
+  // Known Limitations: Prompts deferred while Resources ARE covered, plus
+  // no-live/network/daemon.
   const limits = section(readme, 'Known Limitations and Deferred Work', 'Verification')
-  if (!limits.includes('tools only')) failures.push('Known Limitations must state the bridge covers tools only')
   failures.push(...resourcesPromptsChecks(limits))
   if (!limits.includes('authoritative')) failures.push('Known Limitations must state the deterministic fake tests are authoritative')
   if (!limits.includes('optional')) failures.push('Known Limitations must state real CodeGraph smoke is optional')
