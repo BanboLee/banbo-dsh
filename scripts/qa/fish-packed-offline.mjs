@@ -415,7 +415,18 @@ async function main() {
 
   // The resolver probe behind this plan's "resolved from inside the package"
   // assumption: the profile-plane resolution must own an entry for the bundled
-  // package, declared by the installed bundle and located inside its directory.
+  // package that IS the copy inside the installed bundle, declared by that
+  // bundle's own package.json, and located inside this profile's isolated home.
+  //
+  // The check is deliberately layout-independent. Which linker pnpm runs with
+  // decides how the tarball lands: a developer machine's pnpm 12 links the
+  // package at `<profile>/node_modules/@banbolee/dsh-fish-shell`, while the
+  // repository-pinned pnpm 9.3.0 (CI) installs it into the `.pnpm` virtual store
+  // and resolves through `node_modules/.pnpm/<…>/node_modules/@banbolee/
+  // dsh-fish-shell`. Prefix comparison therefore false-reds on CI, while name or
+  // version alone would not catch a copy resolved from somewhere else — the
+  // trailing bundle-relative path plus the declaring package is what identifies
+  // the bundled copy in both layouts.
   const resolution = typeof appBoot.createRuntimeResolution === 'function' && appBoot.PluginPackages !== undefined
     ? await appBoot.createRuntimeResolution({ installAnchor, profile, home: dshHome })
     : undefined
@@ -430,10 +441,18 @@ async function main() {
     if (toolEntry === undefined) {
       throw new ProbeError(`the runtime resolution has no entry for the bundled ${TOOL_PACKAGE}`)
     }
-    if (toolEntry.scope !== 'profile' || !String(toolEntry.packageDir).startsWith(bundleLayer.packageDir)) {
-      throw new ProbeError(`${TOOL_PACKAGE} resolved outside the installed bundle: ${JSON.stringify(toolEntry)}`)
+    const packageDir = String(toolEntry.packageDir)
+    const declarer = String(toolEntry.declarer)
+    const bundledSuffix = join(BUNDLE_NAME, 'node_modules', TOOL_PACKAGE)
+    if (toolEntry.scope !== 'profile'
+      || !packageDir.endsWith(bundledSuffix)
+      || !declarer.endsWith(join(BUNDLE_NAME, 'package.json'))
+      || !packageDir.startsWith(dshHome)) {
+      throw new ProbeError(
+        `${TOOL_PACKAGE} did not resolve to the copy bundled inside the installed ${BUNDLE_NAME}: ${JSON.stringify(toolEntry)}`,
+      )
     }
-    info(`resolution entry: ${TOOL_PACKAGE}@${String(toolEntry.version)} scope=${String(toolEntry.scope)} dir=${String(toolEntry.packageDir)}`)
+    info(`resolution entry: ${TOOL_PACKAGE}@${String(toolEntry.version)} scope=${String(toolEntry.scope)} dir=${packageDir}`)
   }
 
   step('boot the installed profile for real')

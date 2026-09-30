@@ -19,9 +19,9 @@
  */
 
 import { execFile, execFileSync } from 'node:child_process'
-import { accessSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { accessSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -131,10 +131,17 @@ beforeAll(async () => {
   }
   // ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED surfaces here if the hoisted
   // linker is dropped from the pack — that is a defect, so it fails the lane.
-  const report = JSON.parse(
-    await runPnpm(['pack', '--config.node-linker=hoisted', '--json', '--pack-destination', packs], staged),
-  ) as { filename: string }
-  const tarballPath = isAbsolute(report.filename) ? report.filename : resolve(packs, report.filename)
+  // `pack --json` is deliberately NOT used: pnpm 9.3.0 (the version CI pins)
+  // rejects it with "Unknown option: 'json'", so the tarball is discovered the
+  // way scripts/sync-to-profile.sh does — exactly one `*.tgz` in the
+  // destination directory.
+  await runPnpm(['pack', '--config.node-linker=hoisted', '--pack-destination', packs], staged)
+  const packed = readdirSync(packs).filter(name => name.endsWith('.tgz'))
+  const packedName = packed.length === 1 ? packed[0] : undefined
+  if (packedName === undefined) {
+    throw new Error(`expected exactly one tarball in ${packs}, found ${packed.length}: ${packed.join(', ') || '(none)'}`)
+  }
+  const tarballPath = join(packs, packedName)
   tarball = tarballPath
   entries = execFileSync('tar', ['-tzf', tarballPath], { encoding: 'utf8' }).trim().split('\n')
   mkdirSync(extracted, { recursive: true })
