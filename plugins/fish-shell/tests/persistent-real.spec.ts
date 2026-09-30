@@ -4,9 +4,10 @@
  * Context with NO `@deepseek-ai/dsh-terminal` registry — the key self-managed
  * requirement — plus the real `@deepseek-ai/dsh-subprocess-local` PTY
  * substrate, and this bundle's real `terminal-fish` backend driven directly
- * by the self-managed `persistent` tool. Verifies with real fish (4.0.0,
- * must exist on PATH) that persistent semantics survive across calls, that
- * timeouts reset the shell, and that calls are serialized.
+ * by the self-managed `persistent` tool. Verifies with real fish (4.0.0, must
+ * exist on PATH once the gate is open — a missing fish fails loud rather than
+ * skipping) that persistent semantics survive across calls, that timeouts
+ * reset the shell, and that calls are serialized.
  *
  * It also drives the CONFINED spawn path (`workspace-write`) with a real PTY:
  * no real sandbox backend package is a dependency of this plugin, so the
@@ -39,7 +40,13 @@ function findFish(): string | undefined {
 }
 
 const fishPath = findFish()
-const realDescribe = REAL_FISH_PTY && fishPath !== undefined ? describe : describe.skip
+/**
+ * The gate is the ONLY skip. Once `DSH_REAL_FISH_PTY=1` is open, a missing
+ * `fish` FAILS in `beforeAll`: a silent skip would report green coverage that
+ * never ran. (Unlike `terminal-session-real.spec.ts` this lane needs no `dsh`
+ * CLI — it drives the backend through a real in-process Cordis Context.)
+ */
+const realDescribe = REAL_FISH_PTY ? describe : describe.skip
 
 interface RealAgent {
   id: string
@@ -72,7 +79,15 @@ async function execute(owner: RealAgent | undefined, command: string): Promise<s
 }
 
 beforeAll(async () => {
-  if (!REAL_FISH_PTY || fishPath === undefined) return
+  if (!REAL_FISH_PTY) return
+  if (fishPath === undefined) {
+    throw new Error([
+      'DSH_REAL_FISH_PTY=1 is open, but this lane cannot run:',
+      '  - `fish` is not on PATH: install it (`apt-get install fish` on Linux, `brew install fish` on macOS) and re-run.',
+      `PATH searched: ${process.env.PATH ?? ''}`,
+      'This lane refuses to skip silently once its gate is open.',
+    ].join('\n'))
+  }
   workspace = mkdtempSync(join(tmpdir(), 'dsh-fish-real-'))
   confinedWorkspace = join(workspace, 'confined')
   mkdirSync(confinedWorkspace)
