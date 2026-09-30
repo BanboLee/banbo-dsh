@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { parse as parseYaml } from 'yaml'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { FISH_PROMPT_SETUP } from '../terminal-fish.js'
 
 const PATCH_PATH = fileURLToPath(new URL('../cordis.patch.yml', import.meta.url))
 
@@ -9,12 +10,33 @@ interface PatchRow {
   id?: string
   name?: string
   disabled?: boolean
+  group?: boolean
   insert?: PatchRow[]
+  /** `cordis:group` rows hold their child rows here; leaf rows hold the
+   * plugin config object (`shellPath`, `shellArgs`, `timeoutMs`, …). */
+  config?: PatchRow[] | Record<string, unknown>
+  isolate?: Record<string, boolean>
 }
 
 function patchRows(source: string): PatchRow[] {
   const rows = parseYaml(source) as PatchRow[]
   return rows.flatMap(row => row.insert ?? [row])
+}
+
+/** The child rows of a `cordis:group` row (empty for a leaf row). */
+function configRows(row: PatchRow | undefined): PatchRow[] {
+  return Array.isArray(row?.config) ? row.config : []
+}
+
+/** The plugin config object of a leaf row (empty for a group row). */
+function configObject(row: PatchRow | undefined): Record<string, unknown> {
+  const config = row?.config
+  return config !== undefined && !Array.isArray(config) ? config : {}
+}
+
+/** Every row at every level: host rows, insert blocks, and group children. */
+function allRows(rows: PatchRow[]): PatchRow[] {
+  return rows.flatMap(row => [row, ...allRows(row.insert ?? []), ...allRows(configRows(row))])
 }
 
 describe('@banbolee/dsh-fish-shell bundle patch', () => {
@@ -34,16 +56,51 @@ describe('@banbolee/dsh-fish-shell bundle patch', () => {
     expect(source).not.toContain('default: fish')
   })
 
-  it('no longer mounts the fish-terminal host plugin row (persistent PTY is policy-managed)', () => {
+  it('mounts the L2 terminal surface as one isolated group driven with fish argv', () => {
     const source = readFileSync(PATCH_PATH, 'utf8')
-    // The terminals service is entry-local to the minimal preset's isolate
-    // realm and invisible at the host plane (headless / dsh-tui / composition
-    // test profiles), so a host row injecting terminals would stay pending
-    // forever. persistent.js self-manages a FishTerminalBackend instead;
-    // terminal-fish.js remains exported as a library for direct assembly.
-    expect(source).not.toContain('fish-terminal')
-    expect(source).not.toContain('@banbolee/dsh-fish-shell/terminal-fish')
-    expect(parseYaml(source) as PatchRow[]).not.toContain(expect.objectContaining({ id: 'fish-terminal' }))
+    const tree = parseYaml(source) as PatchRow[]
+
+    // The host plane still mounts no `terminal-fish` row: persistent.js
+    // self-manages a FishTerminalBackend, and a host row injecting `terminals`
+    // would stay pending forever in profiles whose host plane has no
+    // `terminals` service. The L2 sessions live in their own isolate group
+    // instead (fish-shell-tty-v3 §3.1), so `terminal-fish.js` stays a library
+    // export only: it must never appear as a patch row at any level.
+    expect(allRows(tree).filter(row => row.name === '@banbolee/dsh-fish-shell/terminal-fish')).toHaveLength(0)
+
+    const groups = allRows(tree).filter(row => row.id === 'fish-terminal-group')
+    expect(groups).toHaveLength(1)
+    const group = groups[0]
+    expect(group?.name).toBe('cordis:group')
+    expect(group?.group).toBe(true)
+    // `terminals` is entry-local to the group; mounting it at the host plane
+    // would leave the entry pending.
+    expect(group?.isolate).toEqual({ terminals: true })
+
+    const children = configRows(group)
+    expect(children.map(row => [row.id, row.name])).toEqual([
+      ['pty', '@deepseek-ai/dsh-terminal'],
+      ['terminal-fish-pty', '@deepseek-ai/dsh-terminal-bash'],
+      ['terminal-tools', '@deepseek-ai/dsh-tool-terminal'],
+      ['fish-terminal-tools', '@banbolee/dsh-fish-shell/terminal-tools'],
+    ])
+
+    // The group is appended after the host-plane rows (bash disabled +
+    // fish-shell/tool-fish/fish-preset-policy), which stay untouched.
+    const hostIds = patchRows(source).map(row => row.id)
+    expect(hostIds.indexOf('fish-terminal-group')).toBeGreaterThan(hostIds.indexOf('fish-preset-policy'))
+
+    // The official backend is driven with fish argv; the prompt setup rides in
+    // the trailing `-C` and must stay byte-identical to the exported constant
+    // (the patch is YAML, so it cannot import it).
+    const backend = children.find(row => row.id === 'terminal-fish-pty')
+    const backendConfig = configObject(backend)
+    expect(backendConfig['shellPath']).toBe('fish')
+    const shellArgs = backendConfig['shellArgs'] as string[]
+    expect(shellArgs.slice(0, 3)).toEqual(['--no-config', '-i', '-C'])
+    expect(shellArgs).toHaveLength(4)
+    expect(shellArgs[3]).toBe(FISH_PROMPT_SETUP)
+    expect(backendConfig['timeoutMs']).toBe(300000)
   })
 
   it('still disables the host bash executor/tool and mounts fish-shell + tool-fish', () => {

@@ -14,6 +14,8 @@ interface PackageManifest {
   readonly files: readonly string[]
   readonly peerDependencies: Readonly<Record<string, string>>
   readonly devDependencies: Readonly<Record<string, string>>
+  readonly dependencies: Readonly<Record<string, string>>
+  readonly bundledDependencies: readonly string[]
   readonly dsh: {
     readonly bundle?: {
       readonly patch?: string
@@ -26,6 +28,8 @@ interface BundleExpectation {
   readonly packageName: string
   readonly files: readonly string[]
   readonly peerDependencies: Readonly<Record<string, string>>
+  readonly dependencies?: Readonly<Record<string, string>>
+  readonly bundledDependencies?: readonly string[]
 }
 
 const bundleExpectations: readonly BundleExpectation[] = [
@@ -73,7 +77,11 @@ const bundleExpectations: readonly BundleExpectation[] = [
   {
     directory: 'plugins/fish-shell',
     packageName: '@banbolee/dsh-fish-shell',
-    files: ['index.js', 'local.js', 'tool.js', 'policy.js', 'terminal-fish.js', 'persistent.js', 'job-kind.d.ts', 'cordis.patch.yml', 'README.md'],
+    files: ['index.js', 'local.js', 'tool.js', 'policy.js', 'terminal-fish.js', 'persistent.js', 'job-kind.d.ts', 'terminal-tools.js', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG.md'],
+    dependencies: {
+      '@deepseek-ai/dsh-tool-terminal': '0.2.0-rc.1',
+    },
+    bundledDependencies: ['@deepseek-ai/dsh-tool-terminal'],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.0.4',
       '@deepseek-ai/dsh-agent': '^0.2.0-rc.1',
@@ -197,6 +205,8 @@ function readManifest(directory: string): PackageManifest {
     files: stringArrayField(parsed, 'files'),
     peerDependencies: stringRecordField(parsed, 'peerDependencies'),
     devDependencies: stringRecordField(parsed, 'devDependencies'),
+    dependencies: stringRecordField(parsed, 'dependencies'),
+    bundledDependencies: stringArrayField(parsed, 'bundledDependencies'),
     dsh: { bundle: { patch: stringField(bundle, 'patch') } },
   }
 }
@@ -223,6 +233,12 @@ describe('DSH bundle package manifests', () => {
       expect(manifest.dsh.bundle?.patch).toBe('./cordis.patch.yml')
       expect(manifest.files).toEqual(expect.arrayContaining([...expected.files]))
       expect(manifest.peerDependencies).toEqual(expected.peerDependencies)
+      for (const [dependency, range] of Object.entries(expected.dependencies ?? {})) {
+        expect(manifest.dependencies[dependency], `${expected.packageName} declares ${dependency}`).toBe(range)
+      }
+      if (expected.bundledDependencies !== undefined) {
+        expect(manifest.bundledDependencies, `${expected.packageName} bundledDependencies`).toEqual([...expected.bundledDependencies])
+      }
 
       const patchPath = join(repoRoot, expected.directory, manifest.dsh.bundle?.patch ?? 'missing')
       expect(normalize(patchPath)).toBe(join(repoRoot, expected.directory, 'cordis.patch.yml'))
