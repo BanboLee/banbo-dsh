@@ -86,7 +86,7 @@ dsh plugin --profile <profile> add ./plugins/fish-shell
 ```sh
 DSH_HOME="$(mktemp -d)" scripts/sync-rtk-codegraph-to-profile.sh <profile>
 DSH_HOME="$(mktemp -d)" scripts/sync-lsp-diagnostics-to-profile.sh <profile>
-scripts/sync-to-profile.sh            # fish-shell：把插件拷贝进 profile 树
+scripts/sync-to-profile.sh <profile>            # fish-shell：打包 bundle，再把 tarball 装进 profile
 ```
 
 ### 测试

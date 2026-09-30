@@ -3,10 +3,15 @@
 **English** | [中文](./README.zh.md)
 
 Fish shell executors and tool for DeepSeek Harness: run commands with
-**fish** instead of bash. Distribution-ready and surface-agnostic: works in
-any profile that mounts it — preset-roster based (dsh-tui, web) or
-host-tool based (headless) — and under **any agent preset** (standard, ptc,
-cordis, minimal, or a third-party preset).
+**fish** instead of bash. The bundle is surface-agnostic by construction —
+preset-roster based (dsh-tui, web) or host-tool based (headless) — and the
+per-agent policy is written to apply under any agent preset (standard, ptc,
+cordis, minimal, or a third-party preset). The **verified envelope is narrower
+than the design**: the real lanes cover `dsh-base`-class profiles (an isolated
+profile whose bundle layers are `@deepseek-ai/dsh-base` + this bundle). Every
+other preset/profile combination is **unverified** — the dsh-tui combination is
+being covered now — so read **Known Limitations** below for the authoritative
+scope before deploying elsewhere.
 
 ## What this bundle does
 
@@ -101,6 +106,22 @@ cordis, minimal, or a third-party preset).
   realm). Command quoting uses fish single-quote escaping and `eval` with
   one string argument (fish 4 has no `$'...'` ANSI-C quoting and no
   `eval --`), verified against real fish 4.0.0.
+- **Interactive terminal sessions** (`terminal-tools.js`, exported as
+  `@banbolee/dsh-fish-shell/terminal-tools`): the `terminalTools: 'allow' |
+  'deny'` switch for the interactive (L2) surface, whose patch group mounts the
+  official `@deepseek-ai/dsh-terminal` registry, the official
+  `@deepseek-ai/dsh-terminal-bash` backend driven with fish argv, and the
+  official `@deepseek-ai/dsh-tool-terminal` (six `terminal_*` tools). See
+  **Interactive terminal sessions (L2)** below.
+
+## Support matrix
+
+| Item | Supported | Verified |
+|---|---|---|
+| `@deepseek-ai/*` dsh family | `0.2.0-rc.1` — the exact pins live in the repository root `package.json` (`pnpm.overrides`) | yes: real isolated profiles in the S0 probe runs |
+| `fish` | `3.7+` | yes on `3.7.1`; lower versions are unverified |
+| Platform | POSIX only: Linux and macOS. Windows is not supported (the `pwsh` family covers it) | Linux: real profile runs; the `fish-pty-posix` CI job runs the same real PTY lane on `ubuntu-latest` and `macos-latest` |
+| Node.js | `>=22` (`engines.node`) | yes |
 
 ## Install
 
@@ -116,13 +137,17 @@ From this checkout, per profile:
 dsh plugin --profile <name> add ./plugins/fish-shell
 ```
 
-Add it to every profile that should run fish (dsh-tui, web, headless, …).
-The bundle patch (`cordis.patch.yml`) is one safe patch across surfaces: it
-disables the host bash executor and `tool-bash` rows, mounts the fish
-executor and the host-global `fish` tool, and inserts the
-`fish-preset-policy` row, which hides the preset-inherited `bash` tool per
-agent (restriction + empty `tool:bash` prompt shadow, persistent-fish swap
-under `minimal`). The patch no longer touches the preset roster.
+Add it to every profile that should run fish (dsh-tui, web, headless, …) —
+remembering the envelope above: only `dsh-base`-class profiles are verified
+today, every other preset/profile combination is unverified, and the dsh-tui
+combination is being covered now (see **Known Limitations**). The bundle patch
+(`cordis.patch.yml`) is one safe patch across surfaces: it disables the host
+bash executor and `tool-bash` rows, mounts the fish executor and the
+host-global `fish` tool, and inserts the `fish-preset-policy` row, which hides
+the preset-inherited `bash` tool per agent (restriction + empty `tool:bash`
+prompt shadow, persistent-fish swap under `minimal`). It also appends the
+`fish-terminal-group` for interactive terminal sessions (see **Interactive
+terminal sessions (L2)** below). The patch no longer touches the preset roster.
 
 ### Deployed copy and the symlink chain
 
@@ -132,10 +157,106 @@ runtime instance the harness uses — the launcher-maintained
 `profiles/node_modules/@deepseek-ai/*` symlink chain. A plain `link:` to this
 checkout (outside the profile tree) would resolve no `@deepseek-ai` package,
 so the deployed copy lives at `profiles/node_modules/@banbolee/dsh-fish-shell` (inside
-the tree). `scripts/sync-to-profile.sh` copies the plugin there after edits.
+the tree). `scripts/sync-to-profile.sh <profile>` packs the plugin with the hoisted
+linker (`pnpm install --prod --config.node-linker=hoisted` then
+`pnpm pack --config.node-linker=hoisted`) and installs the resulting tarball
+into the profile with
+`dsh plugin --profile <profile> add -w <tgz> --offline --config.auto-install-peers=false`.
 A pnpm `file:` dependency points each profile at the deployed copy. A
 package published to npm installs normally (its realpath already lies inside
 the profile tree).
+
+### Release and provenance
+
+Releases are expected to ship with **npm provenance**: `publishConfig` carries
+`provenance: true`, so publishing works from an OIDC-capable CI (GitHub
+Actions), or with an explicit
+`npm publish --provenance --access public`. A local publish has no OIDC
+provider to attest the build, so a maintainer releasing from a workstation
+has to turn provenance off for that one run with `--no-provenance`. **2FA is a
+release prerequisite** — provenance does not replace it and npm checks it on
+the account/organization side, which this repository cannot verify. Before
+publishing, turn the `[Unreleased]` section of `CHANGELOG.md` into the version
+being released (`0.7.0` → `0.8.0`).
+
+## Interactive terminal sessions (L2)
+
+Next to the one-shot `fish` tool, the bundle mounts an interactive terminal
+surface: a real fish PTY the model drives with `terminal_open`,
+`terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close` and
+`terminal_list`. It reuses the official terminal stack — the plugin builds no
+backend of its own.
+
+The patch appends one `insert` group, `fish-terminal-group`, at the end of
+`cordis.patch.yml`:
+
+| Row id | Package | Config |
+|---|---|---|
+| `pty` | `@deepseek-ai/dsh-terminal` | — |
+| `terminal-fish-pty` | `@deepseek-ai/dsh-terminal-bash` | `shellPath: fish`, `shellArgs: ["--no-config","-i","-C", <FISH_PROMPT_SETUP>]`, `timeoutMs: 300000` |
+| `terminal-tools` | `@deepseek-ai/dsh-tool-terminal` | — |
+| `fish-terminal-tools` | `@banbolee/dsh-fish-shell/terminal-tools` | `terminalTools: allow` |
+
+The group row is `cordis:group` with `group: true` and
+`isolate: { terminals: true }`: the `terminals` service has to be self-contained
+inside the group, because a host-plane row would stay pending in every profile
+whose host plane has no `terminals` service. `tools` is deliberately **not**
+isolated, so the six `terminal_*` tools registered by `terminal-tools` land in
+the host tool registry and are visible to agents.
+
+The prompt setup travels in the `-C` argument (the same `FISH_PROMPT_SETUP`
+string that `terminal-fish.js` exports): startup submits nothing, so the motd
+stays clean, whereas feeding the same setup through PTY input gets it echoed
+back by the fish line editor.
+
+`fish-terminal-tools` is the only entry this plugin adds for the surface: the
+`terminalTools` switch implemented in `terminal-tools.js`. Its default is
+`allow` (do nothing, matching every other tool in the deployment); `deny` takes
+the six tools away per agent — see **Security model**.
+
+**Why the one-shot path is untouched.** The appended group is purely additive.
+The host-plane rows above it stay byte-identical (`bash-sandbox`/`tool-bash`
+disabled, `fish-shell`/`tool-fish`/`fish-preset-policy` inserted), and
+`ctx.shell` (`index.js`), the one-shot `fish` tool (`tool.js`), the `minimal`
+preset's persistent tool (`persistent.js`) and the `terminal-fish.js` library
+keep their exact code paths: nothing about a one-shot command changes because
+an interactive surface exists.
+
+**The bundled `@deepseek-ai/dsh-tool-terminal`.** The `terminal-tools` row
+resolves the official tool package from inside this package, not from the
+profile plane: `@deepseek-ai/dsh-tool-terminal@0.2.0-rc.1` is declared in
+`dependencies` and `bundledDependencies`, so packing ships it, and its
+transitive dependencies, as real files under `node_modules/` inside the
+tarball. That is what makes an offline profile install work. It must not be
+moved to `peerDependencies`: peer resolution would look for a profile-plane
+copy, which is exactly what this design avoids. Versions, origins and licenses
+are listed in `./THIRD-PARTY-NOTICES.md`.
+
+## Security model
+
+- **Default: `terminalTools: 'allow'`.** The interactive surface is on by
+  default, exactly like every other tool the deployment mounts; a fish profile
+  with this bundle installed behaves like any other profile that has the
+  official terminal tools. `deny` is the opt-out: set the
+  `fish-terminal-tools` row's config to `terminalTools: deny`, and at
+  `agent/created`, and again on every `tools/change`, the policy restricts the
+  six names per agent through the official
+  `agent.ctx.tools.restrict({ deny: [...] })`. The names are
+  enumerated one by one (never a `terminal_*` wildcard), so an upstream seventh
+  tool cannot silently pass the policy.
+- **The six tools**: `terminal_open`, `terminal_send`, `terminal_read`,
+  `terminal_signal`, `terminal_close`, `terminal_list`.
+- **No privilege escalation.** This plugin registers no tool of its own, wraps
+  or replaces no host object, monkey-patches nothing, and offers no
+  sudo/elevation entry point. A session process is `fish` running with the
+  permissions of the user that launched the profile.
+- **Sandbox inheritance.** Confinement is the host's: a `workspace-write`
+  profile fences the interactive session through the same sandbox backend as
+  any other command (measured: a write to `/etc` is denied). The plugin does
+  not bypass the fence and caches nothing outside the sandbox.
+- **Secret handling and audit are bounded** — **Known Limitations** below
+  states the hidden-input boundary, the unsupported interaction surface and the
+  best-effort audit scope.
 
 ## Per-surface behavior
 
@@ -180,7 +301,11 @@ the profile tree).
   `start()` and the official `dsh-tool-bash`): it runs until `job_kill`,
   cancellation, or composition teardown. Requires the jobs services
   (`@deepseek-ai/dsh-jobs` + `@deepseek-ai/dsh-tool-jobs`) to be composed;
-  the tool fails loud when they are not.
+  the tool fails loud when they are not. Killing a job while it is still
+  running is verified by the real PTY lane
+  (`plugins/fish-shell/tests/terminal-session-real.spec.ts`): `job_output`
+  reads a live `terminal_send` job and `job_kill` settles it to the terminal
+  `killed` status.
 - Under a sandboxing executor, a denied command can be re-run wider in the
   same turn with `sandbox_permissions` (the narrowest wider mode that
   suffices) plus a one-sentence `justification`; the approval prompt raised
@@ -216,5 +341,61 @@ the profile tree).
   escalation (`sandbox_permissions`/`justification` via `ctx.approval`),
   terminal/generic UI presentation, and the `tool:fish` exit-code prompt
   section are all supported.
+- **Secrets: only true hidden input is hidden.** A command line, an argument or
+  a `terminal_send` payload is public to the session: the fish line editor
+  echoes what it receives and the session keeps the scrollback, so anything
+  that entered non-hidden can be read back by `terminal_read`. Never pass a
+  secret as a command argument or through `terminal_send`; a real hidden read
+  (`read -s` in fish) is the only supported way to keep text out of the echoed
+  stream. `stty -echo` is **not** a mitigation: fish's line editor repaints and
+  the sentinel stays in the scrollback (measured).
+- **Audit is best-effort, not a lifecycle guarantee.** The plugin observes only
+  what the model's explicit `terminal_open`/`terminal_close` calls expose
+  (session id, PID, status transitions). It does **not** cover host-side
+  reclamation, timeout kills, a process exiting on its own, other agents' or
+  owners' sessions, or the group's `terminals` realm internals (invisible at
+  the host plane). There is no full-lifecycle promise: the official
+  `TerminalSessionService` exposes no open/exit/dispose events, and the plugin
+  does not invent an audit surface of its own.
+- **Text interaction only.** `resize`, named keys (arrow keys, named Ctrl
+  combinations), full-screen TUIs (`vim`, `htop`) and `TERM=dumb`-style
+  degraded terminals are not supported by the official session API; supporting
+  them would require a plugin-owned backend, which is out of scope.
+- **Cross-agent owner isolation is unverified.** Until the real lane covers it,
+  the plugin documents the behavior inherited from the official session
+  implementation and promises no isolation between agents.
+- **Unverified (do not read as supported)**: the same group shape under the
+  `minimal` preset or a dsh-tui combination; a mode switch being fenced while a
+  PTY session is active; PTY spawn under the read-only mode; the
+  `FishTerminalBackend` submitted-setup path converging on fish 3.7.1 (that
+  library is not mounted, so the L2 surface is unaffected); cross-agent owner
+  isolation; a first install in a fully offline, cold-store environment; and a
+  profile `cordis.patch.yml` referencing the bundled package name directly.
 - POSIX only: the `fish` binary and the underlying process-group semantics
   are not available on Windows (the pwsh family covers Windows).
+
+## Troubleshooting
+
+### `ERR_MODULE_NOT_FOUND` for `@deepseek-ai/dsh-tool-terminal`
+
+The bundled tool package did not make it into the installed package, or it was
+resolved as a peer (profile-plane) dependency. Build with the hoisted linker:
+`pnpm install --prod --config.node-linker=hoisted` and then
+`pnpm pack --config.node-linker=hoisted`. Without it pnpm refuses to pack a
+bundled dependency and fails with
+`ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`. Check the artefact: the
+tarball must contain
+`package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json`. One
+upstream cause is not ours to fix: `@deepseek-ai/dsh-tool-terminal@0.2.0-rc.1`
+declares `exports` entries for `./src/*` that the published tarball does not
+contain, so anything resolving through that subpath fails with
+`ERR_MODULE_NOT_FOUND`.
+
+### `ERR_PNPM_NO_OFFLINE_TARBALL`
+
+The offline install ran against a cold pnpm store: with `--offline`, pnpm
+refuses to go to the network for a tarball it has not cached. Warm the store
+once with a networked install (or run the same `dsh plugin ... add` without
+`--offline` for the first install), then re-run the offline command. The
+plugin's own runtime dependency travels inside the plugin tarball, so this is a
+store-state problem, not a missing bundled file.
