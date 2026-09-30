@@ -96,6 +96,7 @@
       "@deepseek-ai/dsh-timeout": "0.2.0-rc.1",
       "@deepseek-ai/dsh-tool-fs": "0.2.0-rc.1",
       "@deepseek-ai/dsh-tool-str-replace-editor": "0.2.0-rc.1",
+      "@deepseek-ai/dsh-tool-terminal": "0.2.0-rc.1",
       "@deepseek-ai/dsh-tools": "0.2.0-rc.1",
       "@deepseek-ai/dsh-typert-generator": "0.2.0-rc.1",
       "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.1",

@@ -11,6 +11,7 @@
     "./policy": "./policy.js",
     "./terminal-fish": "./terminal-fish.js",
     "./persistent": "./persistent.js",
+    "./terminal-tools": "./terminal-tools.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -20,16 +21,25 @@
     "policy.js",
     "terminal-fish.js",
     "persistent.js",
+    "terminal-tools.js",
     "job-kind.d.ts",
     "cordis.patch.yml",
     "README.md",
-    "README.zh.md"
+    "README.zh.md",
+    "THIRD-PARTY-NOTICES.md",
+    "CHANGELOG.md"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
   },
+  "dependencies": {
+    "@deepseek-ai/dsh-tool-terminal": "0.2.0-rc.1"
+  },
+  "bundledDependencies": [
+    "@deepseek-ai/dsh-tool-terminal"
+  ],
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/dsh-agent": "^0.2.0-rc.1",
@@ -86,7 +96,8 @@
   "license": "MIT",
   "publishConfig": {
     "access": "public",
-    "registry": "https://registry.npmjs.org"
+    "registry": "https://registry.npmjs.org",
+    "provenance": true
   },
   "engines": {
     "node": ">=22"

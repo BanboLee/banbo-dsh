@@ -52,3 +52,48 @@
 
     - id: fish-preset-policy
       name: '@banbolee/dsh-fish-shell/policy'
+# ── L2 interactive terminal sessions (fish-shell-tty-v3 §3.1) ───────────────────
+# A self-contained group: `isolate.terminals` keeps the `terminals` service
+# entry-local to the group (mounting it at the host plane would leave the entry
+# pending in profiles whose host plane has no `terminals` service). Inside it:
+#   - `pty`               the official terminal registry;
+#   - `terminal-fish-pty` the OFFICIAL bash backend driven with fish argv. The
+#     prompt setup rides in `-C` (startup submits nothing) so the motd stays
+#     clean — feeding the same setup through PTY input gets it echoed back by
+#     the fish line editor. The string below is FISH_PROMPT_SETUP from
+#     `terminal-fish.js` verbatim: the `\x1b` / `\x07` escapes must reach fish
+#     as literal backslash sequences for its `printf` to build the bytes at
+#     runtime (a contract test compares this value with the exported constant);
+#   - `terminal-tools`    the official tool package; `tools` is NOT isolated,
+#     so its six `terminal_*` tools register into the host registry and are
+#     visible to agents;
+#   - `fish-terminal-tools` this bundle's `terminalTools` policy, mounted in the
+#     same group so its scope matches the session surface (`deny` restricts the
+#     six explicit names per agent; `allow` is the default no-op).
+# The host-plane rows above (bash disabled + fish-shell/tool-fish/
+# fish-preset-policy) are untouched: `ctx.shell` and the one-shot `fish` tool
+# keep their exact code path.
+- insert:
+    - id: fish-terminal-group
+      name: 'cordis:group'
+      group: true
+      isolate:
+        terminals: true
+      config:
+        - id: pty
+          name: '@deepseek-ai/dsh-terminal'
+
+        - id: terminal-fish-pty
+          name: '@deepseek-ai/dsh-terminal-bash'
+          config:
+            shellPath: fish
+            shellArgs: ["--no-config","-i","-C","function fish_greeting; end; function fish_prompt; printf '\\x1b]133;D;%s\\x07' $status; echo -n 'dsh> '; end; function fish_right_prompt; end;"]
+            timeoutMs: 300000
+
+        - id: terminal-tools
+          name: '@deepseek-ai/dsh-tool-terminal'
+
+        - id: fish-terminal-tools
+          name: '@banbolee/dsh-fish-shell/terminal-tools'
+          config:
+            terminalTools: allow
