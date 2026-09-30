@@ -57,7 +57,7 @@
 4. 根 `README.md`：插件总览表、卸载命令（`dsh plugin --profile <p> remove @banbolee/dsh-<name>`）
 5. 根 `package.json` 的 `typecheck` 脚本：把新插件的 `tsconfig.json` 追加进那条写死的 `tsc -p … --noEmit` 链
 6. `scripts/qa/lib/profile.mjs`：`[插件目录, 包名]` 映射表
-7. `scripts/sync-to-profile.sh`：fish 部署路径 `profiles/node_modules/@banbolee/dsh-fish-shell`
+7. `scripts/sync-to-profile.sh <profile>`：fish 部署路径仍是 `profiles/node_modules/@banbolee/dsh-fish-shell`，但不再手写拷贝清单——改为 pack（hoisted linker：`pnpm install --prod --config.node-linker=hoisted` → `pnpm pack --config.node-linker=hoisted`）后 `dsh plugin --profile <p> add -w <tgz> --offline --config.auto-install-peers=false`，bundled 依赖必须随 tgz 进 profile
 8. `pnpm-lock.yaml`：改名后执行 `pnpm install` 重新生成
 9. 测试中的 `pnpm list --filter @banbolee/dsh-<name>` 与断言字符串
 
