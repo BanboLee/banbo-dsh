@@ -1,5 +1,5 @@
 import { chmodSync, copyFileSync, cpSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { runChild } from './process.mjs'
 
 export const BUNDLES = [
@@ -60,11 +60,61 @@ export async function packBundles(repoRoot, layout, pnpm, environment, targetTui
   tarballs.push(join(layout.packs, `deepseek-harness-tui-dsh-tui-${tuiPackage.version}.tgz`))
   rmSync(stagedTui, { recursive: true, force: true })
   for (const [directory, name] of BUNDLES) {
-    await runChild(pnpm, ['--dir', join(repoRoot, directory), 'pack', '--pack-destination', layout.packs], {
-      cwd: repoRoot,
-      env: environment,
-    })
-    tarballs.push(join(layout.packs, `${name}-${JSON.parse(readFileSync(join(repoRoot, directory, 'package.json'))).version}.tgz`))
+    const source = join(repoRoot, directory)
+    const manifest = JSON.parse(readFileSync(join(source, 'package.json')))
+    if (directory === 'plugins/fish-shell') {
+      // fish-shell bundles `@deepseek-ai/dsh-tool-terminal`, and pnpm refuses
+      // to pack bundledDependencies when the tree was resolved with the
+      // default linker (ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED). The
+      // install and the pack therefore both run with the hoisted linker, and
+      // they run on a STAGED COPY: installing inside the checkout would
+      // resolve against the repository's pnpm workspace, which would prune the
+      // workspace devDependencies and rewrite the workspace node_modules
+      // layout — and a symlinked (isolated) tree packs symlinks into the
+      // tarball instead of the bundled files. `layout.root` is an isolated
+      // temp directory outside the workspace, so the staged copy is its own
+      // project. The copy drops `node_modules/` (its entries are symlinks
+      // into the checkout); the install recreates them as real files.
+      const staged = join(layout.root, 'target-fish-shell')
+      rmSync(staged, { recursive: true, force: true })
+      cpSync(source, staged, {
+        recursive: true,
+        filter: (entry) => basename(entry) !== 'node_modules',
+      })
+      try {
+        await runChild(pnpm, [
+          'install',
+          '--prod',
+          '--config.node-linker=hoisted',
+          '--config.auto-install-peers=false',
+        ], {
+          cwd: staged,
+          env: environment,
+        })
+        await runChild(pnpm, [
+          '--config.node-linker=hoisted',
+          '--dir', staged,
+          'pack',
+          '--pack-destination', layout.packs,
+        ], {
+          cwd: layout.root,
+          env: environment,
+        })
+      } finally {
+        rmSync(staged, { recursive: true, force: true })
+      }
+    } else {
+      await runChild(pnpm, ['--dir', source, 'pack', '--pack-destination', layout.packs], {
+        cwd: repoRoot,
+        env: environment,
+      })
+    }
+    // pnpm writes a scoped package's tarball as `<scope>-<name>-<version>.tgz`
+    // (`@` stripped, `/` replaced by `-`) — the same shape the staged dsh-tui
+    // tarball above uses. Keeping the `@`/`/` would hand installProfile a path
+    // that does not exist.
+    const tarballName = `${name.replace('@', '').replace('/', '-')}-${manifest.version}.tgz`
+    tarballs.push(join(layout.packs, tarballName))
   }
   return tarballs
 }
