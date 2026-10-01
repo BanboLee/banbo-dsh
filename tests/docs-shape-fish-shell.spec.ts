@@ -9,8 +9,9 @@
  * （强制）」), so a rewrite cannot quietly drop the four sections, the six tool
  * names, the "no secret on the command line" boundary, the "stty -echo is not a
  * mitigation" finding, the best-effort audit scope, either troubleshooting
- * error code, or any one of the seven claims the `Unverified` bullet still owes
- * the user.
+ * error code, each L2 behavior the new lanes record as verified, the lane index
+ * behind those claims, or either of the two claims the `Unverified` bullet still
+ * owes the user.
  *
  * Structural equality between the two files is `tests/docs-bilingual.spec.ts`'s
  * job; this spec asserts the content that only the fish-shell READMEs carry.
@@ -27,9 +28,10 @@ const ZH = readFileSync(new URL('../plugins/fish-shell/README.zh.md', import.met
 const ROOT_EN = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
 const ROOT_ZH = readFileSync(new URL('../README.zh.md', import.meta.url), 'utf8')
 
-/** The four sections the L2 surface promises, per language. */
+/** The five sections the L2 surface promises, per language. */
 const SECTIONS = [
   { en: '## Support matrix', zh: '## 支持矩阵' },
+  { en: '## Test coverage matrix', zh: '## 测试覆盖矩阵' },
   { en: '## Security model', zh: '## 安全模型' },
   { en: '## Known Limitations', zh: '## 已知限制' },
   { en: '## Troubleshooting', zh: '## 排障' },
@@ -108,49 +110,47 @@ function near(text: string, tokens: readonly [string, ...string[]], span = 200):
 
 /**
  * Every claim the `Unverified (do not read as supported)` bullet still owes the
- * user — `.omo/plans/fish-shell-tty-v3.md` §9 minus the running-job kill, which
- * the real PTY lane now covers and the Behavior section documents as verified.
- * Each entry carries the semantic anchors of exactly one item, matched through
- * `near` inside the bullet: deleting an item, or quietly promoting it to
- * "supported" outside the bullet, drops the anchors and fails.
+ * user — `.omo/plans/fish-shell-tty-v3.md` §9 minus the six items the new lanes
+ * now record (the preset compositions, the mode-switch fence, the `read-only`
+ * semantics, the running-job kill, owner isolation and the bundled-name
+ * boundary). Each entry carries the semantic anchors of exactly one item,
+ * matched through `near` inside the bullet: deleting an item, or quietly
+ * promoting it to "supported" outside the bullet, drops the anchors and fails.
  */
 const UNVERIFIED_CLAIMS = [
-  {
-    label: 'the same group shape under `minimal` or a dsh-tui combination',
-    en: ['group shape', '`minimal`', 'dsh-tui'],
-    zh: ['minimal', 'dsh-tui', '同形态 group'],
-  },
-  {
-    label: 'a mode switch being fenced while a PTY session is active',
-    en: ['mode switch', 'fenced', 'PTY'],
-    zh: ['PTY', '切 mode', 'fence'],
-  },
-  {
-    label: 'PTY spawn under the read-only mode',
-    en: ['PTY spawn', 'read-only'],
-    zh: ['read-only', 'PTY spawn'],
-  },
   {
     label: 'the FishTerminalBackend submitted-setup path on fish 3.7.1',
     en: ['FishTerminalBackend', 'fish 3.7.1'],
     zh: ['FishTerminalBackend', 'fish 3.7.1'],
   },
   {
-    label: 'cross-agent owner isolation',
-    en: ['cross-agent', 'owner isolation'],
-    zh: ['跨 agent', 'owner 隔离'],
-  },
-  {
     label: 'a first install in a fully offline, cold-store environment',
     en: ['offline', 'cold-store'],
     zh: ['无网', '冷环境首装'],
   },
-  {
-    label: 'a profile cordis.patch.yml referencing the bundled package name',
-    en: ['cordis.patch.yml', 'bundled package name'],
-    zh: ['cordis.patch.yml', 'bundled 包名'],
-  },
 ] as const
+
+/**
+ * The lanes the `Test coverage matrix` must index, each with one behavior
+ * anchor its own row has to bind. A lane that disappears from the index, or a
+ * row that keeps the path but loses what it covers, fails.
+ */
+const COVERAGE_LANES = [
+  { path: 'plugins/fish-shell/tests/terminal-session-real.spec.ts', en: 'FOREIGN_SESSION', zh: 'FOREIGN_SESSION' },
+  { path: 'tests/composition/fish-pty-dsh-tui.spec.ts', en: 'no pending L2 rows', zh: '没有 pending 的 L2 row' },
+  { path: 'tests/composition/fish-pty-minimal.spec.ts', en: 'exactly once', zh: '恰好一次' },
+  {
+    path: 'tests/composition/fish-pty-bundled-row.spec.ts',
+    en: 'pending (waiting for service: terminals)',
+    zh: 'pending (waiting for service: terminals)',
+  },
+  { path: 'scripts/qa/fish-packed-offline.mjs', en: 'listBackends()', zh: 'listBackends()' },
+] as const
+
+/** The markdown table row carrying `path`, verbatim; '' when absent. */
+function tableRow(text: string, path: string): string {
+  return text.split('\n').find((line) => line.startsWith('|') && line.includes(path)) ?? ''
+}
 
 describe('@banbolee/dsh-fish-shell README shape — the four L2 sections', () => {
   it('carries every required section heading, per language', () => {
@@ -285,6 +285,57 @@ describe('@banbolee/dsh-fish-shell README shape — the safety boundaries are st
       'job_kill',
     )
     expect(window(ZH, '运行中的 job 被 kill/cancel'), 'the verified kill claim must name job_kill').toContain('job_kill')
+  })
+})
+
+describe('@banbolee/dsh-fish-shell README shape — verified L2 behaviors and their lanes', () => {
+  it('indexes every lane in the coverage matrix, per language', () => {
+    for (const lane of COVERAGE_LANES) {
+      const en = tableRow(EN, lane.path)
+      const zh = tableRow(ZH, lane.path)
+      expect(en, `README.md has no coverage-matrix row for ${lane.path}`).not.toBe('')
+      expect(zh, `README.zh.md has no coverage-matrix row for ${lane.path}`).not.toBe('')
+      expect(en, `${lane.path} must keep the behavior it covers`).toContain(lane.en)
+      expect(zh, `${lane.path} must keep the behavior it covers`).toContain(lane.zh)
+    }
+  })
+
+  it('records the preset compositions as verified (two terminals realms, tools exactly once)', () => {
+    expect(flat(EN)).toMatch(/Two `terminals` realms[^.]*exactly once/u)
+    expect(flat(ZH)).toMatch(/两个 `terminals` realm[^。]*恰好各出现一次/u)
+  })
+
+  it('records the mode-switch fence as verified', () => {
+    expect(flat(EN)).toMatch(
+      /cannot change sandbox mode[^.]*while persistent terminal sessions are open[^.]*succeeds once the session is closed/u,
+    )
+    expect(flat(ZH)).toMatch(
+      /cannot change sandbox mode[^。]*while persistent terminal sessions are open[^。]*会话关闭后同一调用成功/u,
+    )
+  })
+
+  it('records the read-only semantics as verified (no writable root, workspace writes denied)', () => {
+    expect(flat(EN)).toMatch(/no writable root[^.]*even a write inside the session workspace is denied/u)
+    expect(flat(ZH)).toMatch(/完全没有 writable root[^。]*workspace 内的写入也被拒绝/u)
+  })
+
+  it('records owner isolation as verified (FOREIGN_SESSION)', () => {
+    expect(flat(EN)).toMatch(/belongs to another agent[^.]*FOREIGN_SESSION/u)
+    expect(flat(ZH)).toMatch(/belongs to another agent[^。]*FOREIGN_SESSION/u)
+  })
+
+  it('records the bundled-name boundary as verified (pending, never registered twice)', () => {
+    expect(flat(EN)).toMatch(/pending \(waiting for service: terminals\)[^.]*are never registered twice/u)
+    expect(flat(ZH)).toMatch(/pending \(waiting for service: terminals\)[^。]*不会被注册第二次/u)
+  })
+
+  it('does not leave a promoted item in the Unverified bullet', () => {
+    const en = listItem(EN, '**Unverified (do not read as supported)**')
+    const zh = listItem(ZH, '**未验证（不要当成已支持）**')
+    for (const token of ['minimal', 'dsh-tui', 'read-only', 'owner isolation', 'bundled', 'fence', 'running']) {
+      expect(en, `README.md still lists "${token}" as unverified`).not.toContain(token)
+      expect(zh, `README.zh.md still lists "${token}" as unverified`).not.toContain(token)
+    }
   })
 })
 
