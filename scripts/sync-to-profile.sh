@@ -40,6 +40,18 @@
 # and removes only tarballs that no profile manifest references any more, after
 # the add has succeeded.
 #
+# Why PACK_HOME is locked: every run parks its tarball under a content-addressed
+# name and then removes the parked tarballs that no profile manifest references.
+# Two overlapping runs would delete each other's brand-new tarball before it has
+# been referenced — the loser then fails at `dsh plugin add` with a `file:`
+# specifier that no longer exists. The lock is an atomically created
+# `<PACK_HOME>.lock` directory that records pid/host/start and is released by an
+# EXIT trap, so every normal and error path frees it. A run that cannot take the
+# lock fails fast with the holder named instead of waiting; a lock left behind by
+# a killed process is reported with the exact removal command rather than
+# guessed at. `mkdir` is the primitive because it is atomic on every POSIX
+# filesystem and needs no `flock`.
+#
 # Usage: scripts/sync-to-profile.sh <profile>
 #
 # Environment:
@@ -66,7 +78,29 @@ fi
 
 STAGE="$(mktemp -d)"
 PACK_HOME="$DSH_HOME_RESOLVED/.cache/banbo-dsh-fish-shell"
-trap 'rm -rf "$STAGE"' EXIT
+LOCK_DIR="$PACK_HOME.lock"
+
+cleanup() {
+	rm -rf "$STAGE"
+	if [[ -n "${LOCK_DIR:-}" ]]; then
+		rm -rf "$LOCK_DIR"
+	fi
+}
+trap cleanup EXIT
+
+# Serialize on PACK_HOME before any packing or parking: `mkdir` fails when the
+# directory exists, which is the portable atomic test-and-set.
+mkdir -p "$(dirname "$LOCK_DIR")"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+	holder="$(cat "$LOCK_DIR/owner" 2>/dev/null || true)"
+	echo "error: another sync-to-profile run holds the packed-artifact lock" >&2
+	echo "error:   lock:   ${LOCK_DIR}" >&2
+	echo "error:   holder: ${holder:-unknown (the holder had not written its claim yet)}" >&2
+	echo "error: concurrent runs delete each other's parked tarballs, so this run stops instead of waiting." >&2
+	echo "error: wait for that run to finish, then retry; if it is gone the lock is stale — remove it with: rm -rf '${LOCK_DIR}'" >&2
+	exit 1
+fi
+printf 'pid=%s host=%s started=%s\n' "$$" "$(hostname 2>/dev/null || echo unknown)" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$LOCK_DIR/owner"
 
 # The staged copy omits `node_modules/`: its entries are symlinks into the
 # checkout, while the install below recreates the tree as real hoisted files.
