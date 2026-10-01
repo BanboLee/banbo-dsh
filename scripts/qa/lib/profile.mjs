@@ -38,15 +38,38 @@ export function targetTuiPackagePath(dsh) {
   return resolve(dirname(dsh), '..', '..', '..', '@deepseek-harness-tui', 'dsh-tui')
 }
 
-export async function packBundles(repoRoot, layout, pnpm, environment, targetTui) {
-  const tarballs = []
-  const stagedTui = join(layout.root, 'target-tui')
+/**
+ * Stage the published `@deepseek-harness-tui/dsh-tui` package for `pnpm pack`
+ * and return its rewritten manifest.
+ *
+ * The published manifest already carries a curated `bundledDependencies` list
+ * (the vendored `@dsh-std/*`, `@dsh-tui-vendor/mathjax-tex-svg` and the bundled
+ * `@deepseek-harness-tui/dsh-auth`). Replacing that list with
+ * `Object.keys(dependencies)` — what this staging used to do — produced a
+ * tarball whose `plugin-host`, `extensions` and `oauth` rows could not import
+ * their vendored bundles: those rows recorded activation errors, the main
+ * `dsh-tui` row stayed pending on the services they own, and the QA lanes kept
+ * reporting green. The UNION of both lists is the only shape that works in
+ * both directions: the published list keeps the vendored copies a real install
+ * depends on, while the dependency list keeps the tarball self-contained (the
+ * published list alone fails an install against a cold store with
+ * ERR_PNPM_NO_OFFLINE_META).
+ */
+export function stageTuiPackage(targetTui, stagedTui) {
   cpSync(targetTui, stagedTui, { recursive: true })
   const tuiPackagePath = join(stagedTui, 'package.json')
   const tuiPackage = JSON.parse(readFileSync(tuiPackagePath))
-  tuiPackage.bundledDependencies = Object.keys(tuiPackage.dependencies)
+  const publishedBundles = Array.isArray(tuiPackage.bundledDependencies) ? tuiPackage.bundledDependencies : []
+  tuiPackage.bundledDependencies = [...new Set([...publishedBundles, ...Object.keys(tuiPackage.dependencies ?? {})])]
   delete tuiPackage.scripts.prepare
   writeFileSync(tuiPackagePath, `${JSON.stringify(tuiPackage, null, 2)}\n`)
+  return tuiPackage
+}
+
+export async function packBundles(repoRoot, layout, pnpm, environment, targetTui) {
+  const tarballs = []
+  const stagedTui = join(layout.root, 'target-tui')
+  const tuiPackage = stageTuiPackage(targetTui, stagedTui)
   await runChild(pnpm, [
     '--config.node-linker=hoisted',
     '--config.ignore-scripts=true',
