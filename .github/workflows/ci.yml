@@ -245,6 +245,20 @@ jobs:
       - name: Install dsh CLI
         run: npm install -g @deepseek-ai/dsh@0.2.0-rc.1
 
+      # `tests/composition/fish-pty-dsh-tui.spec.ts` needs the REAL global
+      # dsh-tui beside that CLI: it resolves the package the way the QA infra
+      # does, `targetTuiPackagePath(realpathSync(dsh))`, i.e.
+      # <nodeRoot>/lib/node_modules/@deepseek-harness-tui/dsh-tui — exactly where
+      # a global npm install lands (the `dsh` on PATH is a symlink from
+      # <nodeRoot>/bin into that same lib/node_modules tree). Without this
+      # package the lane's self-gate reports a SKIP that names it, which is why
+      # the composition was never exercised here. Verified locally both ways:
+      # with the package present the lane runs (5 passed), and a `dsh` whose
+      # sibling package is absent turns the same lane into 1 skipped.
+      # Same pin the `test` job uses for its dsh-tui probes.
+      - name: Install dsh TUI
+        run: npm install -g @deepseek-harness-tui/dsh-tui@0.11.2 --no-audit --no-fund
+
       # fish-shell is the only shell these profiles mount, so without the binary
       # the sandbox executor refuses to run anything: fish-rtk-coexist.spec.ts
       # fails with `spawn fish ENOENT` wrapped in SandboxUnavailableError.
