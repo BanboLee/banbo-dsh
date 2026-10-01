@@ -8,10 +8,10 @@ preset-roster based (dsh-tui, web) or host-tool based (headless) — and the
 per-agent policy is written to apply under any agent preset (standard, ptc,
 cordis, minimal, or a third-party preset). The **verified envelope is narrower
 than the design**: the real lanes cover `dsh-base`-class profiles (an isolated
-profile whose bundle layers are `@deepseek-ai/dsh-base` + this bundle). Every
-other preset/profile combination is **unverified** — the dsh-tui combination is
-being covered now — so read **Known Limitations** below for the authoritative
-scope before deploying elsewhere.
+profile whose bundle layers are `@deepseek-ai/dsh-base` + this bundle), the
+`dsh-tui` composition, and the official `minimal` preset. Every other
+preset/profile combination is **unverified**, so read **Known Limitations**
+below for the authoritative scope before deploying elsewhere.
 
 ## What this bundle does
 
@@ -120,8 +120,25 @@ scope before deploying elsewhere.
 |---|---|---|
 | `@deepseek-ai/*` dsh family | `0.2.0-rc.1` — the exact pins live in the repository root `package.json` (`pnpm.overrides`) | yes: real isolated profiles in the S0 probe runs |
 | `fish` | `3.7+` | yes on `3.7.1`; lower versions are unverified |
-| Platform | POSIX only: Linux and macOS. Windows is not supported (the `pwsh` family covers it) | Linux: real profile runs; the `fish-pty-posix` CI job runs the same real PTY lane on `ubuntu-latest` and `macos-latest` |
+| Platform | POSIX only: Linux and macOS. Windows is not supported (the `pwsh` family covers it) | Linux: the real lane with `DSH_REAL_FISH_PTY=1` in the `test` job; macOS: the `fish-pty-macos` job runs the real L2 lane, including the `workspace-write` denial outside the workspace |
 | Node.js | `>=22` (`engines.node`) | yes |
+
+## Test coverage matrix
+
+The promises above are only as good as the lanes that assert them. These are
+the lanes, what they boot, and what they cover:
+
+| Lane | Boots | Covers |
+|---|---|---|
+| `plugins/fish-shell/tests/terminal-session-real.spec.ts` | a real isolated `dsh-base` profile, through the `dsh` CLI | six tools; `open`/`send`/`read`/`close`; `terminal_signal`; a background `terminal_send` job with `job_output`/`job_kill`; the mode-switch fence; the `workspace-write` denial outside the workspace; the `read-only` semantics; owner isolation (`FOREIGN_SESSION`) |
+| `tests/composition/fish-pty-dsh-tui.spec.ts` | a real `dsh-tui` composition | the bundle group activates (no pending L2 rows); six tools visible; `open`/`send`/`read`/`close` |
+| `tests/composition/fish-pty-minimal.spec.ts` | the official `minimal` preset over `dsh-base` | two `terminals` realms (host fish group + preset `/bin/bash` persistent shell); six tools exactly once; the persistent-fish swap; `open`/`send`/`read`/`close` |
+| `tests/composition/fish-pty-bundled-row.spec.ts` | a profile patch that references `@deepseek-ai/dsh-tool-terminal` directly | resolution from inside this bundle only; the row stays `pending (waiting for service: terminals)`; no second registration; the surviving registration still drives a PTY |
+| `scripts/qa/fish-packed-offline.mjs` | a packed tarball installed into a temporary profile with `--offline` | the install succeeds and really loads: six tools visible, `listBackends()` non-empty |
+
+CI runs the real lane in the `test` job (Linux) and in `fish-pty-macos`
+(macOS), the composition lanes in the `composition` job, and the packed/offline
+lane in `fish-packed-offline`.
 
 ## Install
 
@@ -138,9 +155,10 @@ dsh plugin --profile <name> add ./plugins/fish-shell
 ```
 
 Add it to every profile that should run fish (dsh-tui, web, headless, …) —
-remembering the envelope above: only `dsh-base`-class profiles are verified
-today, every other preset/profile combination is unverified, and the dsh-tui
-combination is being covered now (see **Known Limitations**). The bundle patch
+remembering the envelope above: `dsh-base`-class profiles, the `dsh-tui`
+composition and the official `minimal` preset are verified today, every other
+preset/profile combination is unverified (see **Known Limitations**). The
+bundle patch
 (`cordis.patch.yml`) is one safe patch across surfaces: it disables the host
 bash executor and `tool-bash` rows, mounts the fish executor and the
 host-global `fish` tool, and inserts the `fish-preset-policy` row, which hides
@@ -361,16 +379,47 @@ are listed in `./THIRD-PARTY-NOTICES.md`.
   combinations), full-screen TUIs (`vim`, `htop`) and `TERM=dumb`-style
   degraded terminals are not supported by the official session API; supporting
   them would require a plugin-owned backend, which is out of scope.
-- **Cross-agent owner isolation is unverified.** Until the real lane covers it,
-  the plugin documents the behavior inherited from the official session
-  implementation and promises no isolation between agents.
-- **Unverified (do not read as supported)**: the same group shape under the
-  `minimal` preset or a dsh-tui combination; a mode switch being fenced while a
-  PTY session is active; PTY spawn under the read-only mode; the
-  `FishTerminalBackend` submitted-setup path converging on fish 3.7.1 (that
-  library is not mounted, so the L2 surface is unaffected); cross-agent owner
-  isolation; a first install in a fully offline, cold-store environment; and a
-  profile `cordis.patch.yml` referencing the bundled package name directly.
+- **Verified L2 behaviors.** Each of these was an open question when the
+  interactive surface was first documented; each now has a lane that asserts the
+  recorded behavior (the lane index is **Test coverage matrix**):
+  - **Preset compositions.** Two `terminals` realms coexist under the official
+    `minimal` preset — the host L2 group's (fish) and the preset's own
+    persistent-shell group's (`/bin/bash`) — and each of the six `terminal_*`
+    tools is visible to the preset-bound agent exactly once; the `dsh-tui`
+    composition mounts the same group and drives `open`/`send`/`read`/`close`
+    (`tests/composition/fish-pty-minimal.spec.ts`,
+    `tests/composition/fish-pty-dsh-tui.spec.ts`).
+  - **Mode switch with a live session.** The standing-policy switch is refused
+    synchronously with `cannot change sandbox mode … while persistent terminal
+    sessions are open`: the mode event is not committed, the effective mode is
+    unchanged, the live session keeps working, and the same switch succeeds once
+    the session is closed
+    (`plugins/fish-shell/tests/terminal-session-real.spec.ts`).
+  - **`read-only` mode.** `read-only` is a file-effect mode, not a capability
+    gate: the six tools stay visible and the PTY still spawns (motd `dsh>`), but
+    the resolved policy has no writable root at all, so even a write inside the
+    session workspace is denied — the workspace is not a write boundary under
+    `read-only` (same lane).
+  - **Cross-agent owner isolation.** A second agent in the same profile sees an
+    empty `terminal_list` and cannot read, write or close the first agent's
+    session: the tool error is `belongs to another agent` and the registry code
+    behind it is `FOREIGN_SESSION`, while the owner's session survives untouched
+    (same lane).
+  - **A profile patch referencing the bundled package directly.** The name
+    resolves from inside this bundle only
+    (`…/@banbolee/dsh-fish-shell/node_modules/@deepseek-ai/dsh-tool-terminal`),
+    never from the dsh installation; resolution is not activation — because the
+    group isolates `terminals`, that row stays
+    `pending (waiting for service: terminals)`, so the six tools are never
+    registered twice, and the boot reports the pending row on stderr instead of
+    swallowing it (`tests/composition/fish-pty-bundled-row.spec.ts`).
+- **Unverified (do not read as supported)**:
+  - the `FishTerminalBackend` submitted-setup path converging on fish 3.7.1:
+    that library is not mounted by the patch, so the L2 surface is unaffected,
+    and the legacy persistent path keeps its own specs;
+  - a first install in a fully offline, cold-store environment: the packed lane
+    (`scripts/qa/fish-packed-offline.mjs`) installs with `--offline`, but its
+    store was warmed by the repository install first.
 - POSIX only: the `fish` binary and the underlying process-group semantics
   are not available on Windows (the pwsh family covers Windows).
 

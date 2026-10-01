@@ -2,7 +2,7 @@
 
 [English](./README.md) | **中文**
 
-DeepSeek Harness 的 fish shell executor 与工具：用 **fish** 而不是 bash 运行命令。bundle 在设计上与 surface 无关——基于 preset roster 的（dsh-tui、web）或基于 host tool 的（headless）——per-agent policy 也按「任意 agent preset 都适用」编写（standard、ptc、cordis、minimal 或第三方 preset）。但**已验证范围比设计更窄**：真实 lane 覆盖的是 `dsh-base` 类 profile（隔离 profile 的 bundle layer 为 `@deepseek-ai/dsh-base` + 本 bundle）。其它 preset/profile 组合一律**未验证**——dsh-tui 组合正在补测——部署到别处之前请以下方 **已知限制** 为权威口径。
+DeepSeek Harness 的 fish shell executor 与工具：用 **fish** 而不是 bash 运行命令。bundle 在设计上与 surface 无关——基于 preset roster 的（dsh-tui、web）或基于 host tool 的（headless）——per-agent policy 也按「任意 agent preset 都适用」编写（standard、ptc、cordis、minimal 或第三方 preset）。但**已验证范围比设计更窄**：真实 lane 覆盖的是 `dsh-base` 类 profile（隔离 profile 的 bundle layer 为 `@deepseek-ai/dsh-base` + 本 bundle）、`dsh-tui` 组合与官方 `minimal` preset。其它 preset/profile 组合一律**未验证**，部署到别处之前请以下方 **已知限制** 为权威口径。
 
 ## 这个 bundle 做什么
 
@@ -26,8 +26,22 @@ DeepSeek Harness 的 fish shell executor 与工具：用 **fish** 而不是 bash
 |---|---|---|
 | `@deepseek-ai/*` dsh 族 | `0.2.0-rc.1` —— 精确版本钉在仓库根 `package.json`（`pnpm.overrides`） | 是：S0 探针在真实隔离 profile 里跑过 |
 | `fish` | `3.7+` | 是，实测 `3.7.1`；更低版本未验证 |
-| 平台 | 仅 POSIX：Linux 与 macOS。Windows 不支持（Windows 由 `pwsh` 系列覆盖） | Linux：真实 profile 实跑；`fish-pty-posix` CI job 在 `ubuntu-latest` 与 `macos-latest` 上跑同一条真实 PTY lane |
+| 平台 | 仅 POSIX：Linux 与 macOS。Windows 不支持（Windows 由 `pwsh` 系列覆盖） | Linux：`test` job 里 `DSH_REAL_FISH_PTY=1` 的真实 lane；macOS：`fish-pty-macos` job 跑真实 L2 lane，含 `workspace-write` 下 workspace 外写入被拒 |
 | Node.js | `>=22`（`engines.node`） | 是 |
+
+## 测试覆盖矩阵
+
+上面的承诺，只由真正断言它的 lane 兜底。下表列出每条 lane、它启动什么、覆盖什么：
+
+| Lane | 启动 | 覆盖 |
+|---|---|---|
+| `plugins/fish-shell/tests/terminal-session-real.spec.ts` | 经 `dsh` CLI 启动的真实隔离 `dsh-base` profile | 六个工具；`open`/`send`/`read`/`close`；`terminal_signal`；后台 `terminal_send` job 与 `job_output`/`job_kill`；切 mode 的 fence；`workspace-write` 下 workspace 外写入被拒；`read-only` 语义；owner 隔离（`FOREIGN_SESSION`） |
+| `tests/composition/fish-pty-dsh-tui.spec.ts` | 真实的 `dsh-tui` 组合 | bundle group 激活（没有 pending 的 L2 row）；六个工具可见；`open`/`send`/`read`/`close` |
+| `tests/composition/fish-pty-minimal.spec.ts` | `dsh-base` + 官方 `minimal` preset | 两个 `terminals` realm（host fish group + preset 的 `/bin/bash` 持久 shell）；六个工具各恰好一次；持久 fish 替换；`open`/`send`/`read`/`close` |
+| `tests/composition/fish-pty-bundled-row.spec.ts` | 直引 `@deepseek-ai/dsh-tool-terminal` 的 profile patch | 只从本 bundle 内部解析；该 row 停在 `pending (waiting for service: terminals)`；不会重复注册；存活的那份注册仍能驱动 PTY |
+| `scripts/qa/fish-packed-offline.mjs` | 用 `--offline` 装进临时 profile 的已打包 tarball | 安装成功且真的加载：六个工具可见、`listBackends()` 非空 |
+
+CI 里：真实 lane 由 `test` job（Linux）与 `fish-pty-macos`（macOS）跑，composition lane 由 `composition` job 跑，打包/离线 lane 由 `fish-packed-offline` job 跑。
 
 ## 安装
 
@@ -43,7 +57,7 @@ dsh plugin --profile <name> add @banbolee/dsh-fish-shell
 dsh plugin --profile <name> add ./plugins/fish-shell
 ```
 
-把它加到每一个需要运行 fish 的 profile（dsh-tui、web、headless……）——但要记住上面的口径：今天只有 `dsh-base` 类 profile 已验证，其它 preset/profile 组合都未验证，dsh-tui 组合正在补测（见 **已知限制**）。bundle patch（`cordis.patch.yml`）是一个跨 surface 安全的 patch：它禁用 host bash executor 与 `tool-bash` row，挂载 fish executor 与 host-global `fish` 工具，并插入 `fish-preset-policy` row——该 row 会按 agent 隐藏 preset 继承来的 `bash` 工具（restriction + 空的 `tool:bash` 提示词遮蔽，在 `minimal` 下换成 persistent fish）。它还会为交互式终端会话追加 `fish-terminal-group`（见下方 **交互式终端会话（L2）**）。patch 不再改动 preset roster。
+把它加到每一个需要运行 fish 的 profile（dsh-tui、web、headless……）——但要记住上面的口径：`dsh-base` 类 profile、`dsh-tui` 组合与官方 `minimal` preset 已验证，其它 preset/profile 组合都未验证（见 **已知限制**）。bundle patch（`cordis.patch.yml`）是一个跨 surface 安全的 patch：它禁用 host bash executor 与 `tool-bash` row，挂载 fish executor 与 host-global `fish` 工具，并插入 `fish-preset-policy` row——该 row 会按 agent 隐藏 preset 继承来的 `bash` 工具（restriction + 空的 `tool:bash` 提示词遮蔽，在 `minimal` 下换成 persistent fish）。它还会为交互式终端会话追加 `fish-terminal-group`（见下方 **交互式终端会话（L2）**）。patch 不再改动 preset roster。
 
 ### 部署副本与 symlink 链
 
@@ -108,8 +122,15 @@ prompt setup 走 `-C` 参数（与 `terminal-fish.js` 导出的 `FISH_PROMPT_SET
 - **secret：只有真 hidden-input 才是隐藏的。** 命令行、参数或 `terminal_send` 载荷对会话而言都是公开的：fish line editor 会回显收到的内容，会话也保留 scrollback，所以任何以非隐藏方式进入的内容都能被 `terminal_read` 读回。不要把 secret 作为命令参数或通过 `terminal_send` 传递；真正隐藏的读取（fish 里的 `read -s`）是唯一受支持、能让文本不出现在回显流里的方式。`stty -echo` **不是**处置方案：fish 的 line editor 会 repaint，哨兵仍留在 scrollback 里（实测）。
 - **审计是 best-effort，不是生命周期承诺。** 插件只观察模型显式 `terminal_open`/`terminal_close` 调用能暴露的东西（session id、PID、status 迁移）。它**不**覆盖宿主侧回收、超时 kill、进程自己退出、别的 agent 或 owner 的会话，以及 group 内 `terminals` realm 的内部事件（在 host 平面不可见）。这里没有完整生命周期承诺：官方 `TerminalSessionService` 不暴露 open/exit/dispose 事件，插件也不自造审计面。
 - **只支持文本交互。** 官方会话 API 不支持 `resize`、named key（方向键、具名 Ctrl 组合）、全屏 TUI（`vim`、`htop`）与 `TERM=dumb` 类降级终端；要支持它们只能自建 backend，不在范围内。
-- **跨 agent 的 owner 隔离未验证。** 在真实 lane 覆盖它之前，插件只按官方会话实现的行为描述，不承诺 agent 之间的隔离。
-- **未验证（不要当成已支持）**：minimal preset 或 dsh-tui 组合下的同形态 group；活动 PTY 存在时切 mode 被 fence 拒绝；read-only 模式下的 PTY spawn；`FishTerminalBackend` 的 submitted-setup 路径在 fish 3.7.1 上收敛（该库未被挂载，不影响 L2 surface）；跨 agent owner 隔离；完全无网的冷环境首装；以及 profile 的 `cordis.patch.yml` 直引 bundled 包名。
+- **已验证的 L2 行为。** 下列每一条在交互式 surface 首次成文时都还是未决问题；现在每一条都有 lane 断言其记录行为（lane 索引见 **测试覆盖矩阵**）：
+  - **preset 组合。** 官方 `minimal` preset 下两个 `terminals` realm 共存——host L2 group 的（fish）与 preset 自己的 persistent-shell group 的（`/bin/bash`）——六个 `terminal_*` 工具对 preset 绑定的 agent 恰好各出现一次；`dsh-tui` 组合挂载同一个 group，并跑通 `open`/`send`/`read`/`close`（`tests/composition/fish-pty-minimal.spec.ts`、`tests/composition/fish-pty-dsh-tui.spec.ts`）。
+  - **活动会话时切 mode。** 切 standing policy 会被**同步**拒绝，报 `cannot change sandbox mode … while persistent terminal sessions are open`：mode 事件未提交、生效 mode 不变、原会话仍可用；会话关闭后同一调用成功（`plugins/fish-shell/tests/terminal-session-real.spec.ts`）。
+  - **`read-only` 模式。** `read-only` 是文件效果模式，不是能力开关：六个工具仍然可见、PTY 仍能 spawn（motd `dsh>`），但解析后的 policy 完全没有 writable root，因此连 session workspace 内的写入也被拒绝——`read-only` 下 workspace 不是写边界（同一条 lane）。
+  - **跨 agent 的 owner 隔离。** 同 profile 的第二个 agent 看到空的 `terminal_list`，且读、写、关都不行：工具层报 `belongs to another agent`，背后的 registry code 是 `FOREIGN_SESSION`；owner 自己的会话毫发无损（同一条 lane）。
+  - **profile patch 直引 bundled 包名。** 该名字**只**从本 bundle 内部解析（`…/@banbolee/dsh-fish-shell/node_modules/@deepseek-ai/dsh-tool-terminal`），永远不来自 dsh 安装目录；解析不等于激活——因为 group 把 `terminals` isolate 了，该 row 停在 `pending (waiting for service: terminals)`，所以六个工具不会被注册第二次，且 boot 会把这行 pending 报到 stderr 而不是吞掉（`tests/composition/fish-pty-bundled-row.spec.ts`）。
+- **未验证（不要当成已支持）**：
+  - `FishTerminalBackend` 的 submitted-setup 路径在 fish 3.7.1 上收敛：该库没有被 patch 挂载，因此不影响 L2 surface，老持久路径继续由它自己的 spec 覆盖；
+  - 完全无网的冷环境首装：打包 lane（`scripts/qa/fish-packed-offline.mjs`）确实用 `--offline` 安装，但它的 store 是先被仓库安装预热过的。
 - 仅支持 POSIX：`fish` 二进制与底层 process-group 语义在 Windows 上不可用（Windows 由 pwsh 系列覆盖）。
 
 ## 排障
