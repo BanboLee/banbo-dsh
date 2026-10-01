@@ -44,16 +44,16 @@
  * deliberately NOT repeated here: the dsh-base real lane already covers them on
  * the same bundle.
  *
- * Known composition caveat (reported, deliberately NOT asserted around): the
- * QA-packed dsh-tui tarball cannot import its three interactive surface rows
- * (`plugin-host`, `extensions`, `oauth`) because `packBundles` rewrites
- * `bundledDependencies` to `Object.keys(dependencies)`, which drops the
- * published list's vendored `@dsh-std/*` and `@deepseek-harness-tui/dsh-auth`
- * copies; the `dsh-tui` row then stays pending on the `tui*` services and the
- * TUI degrades exactly as its own patch documents. That is a gap of the QA
- * packing path (a real install from the registry carries those packages), NOT
- * of this bundle: the terminal surface mounts and works regardless, which is
- * what this lane pins down.
+ * Interactive rows are ASSERTED, not explained away: `packBundles` packs the
+ * published `bundledDependencies` together with the dependency set (union — see
+ * `stageTuiPackage` in `scripts/qa/lib/profile.mjs`), so the QA tarball carries
+ * the vendored `@dsh-std/*`, the mathjax vendor copy and the bundled
+ * `@deepseek-harness-tui/dsh-auth` that the `plugin-host`, `extensions` and
+ * `oauth` rows import. Those three rows and the front door therefore activate;
+ * the assertions below pin their cordis fiber state and the services they own,
+ * because while the packing path overwrote that list the three rows failed
+ * their imports and the `dsh-tui` row stayed pending on the `tui*` services —
+ * a gap of the QA packing path, never of this bundle.
  *
  * Gating: this lane needs the global `dsh` CLI, a global `dsh-tui` beside it,
  * `fish` and `pnpm`. When a prerequisite is missing it does not report a silent
@@ -100,6 +100,20 @@ const FISH_BUNDLE = '@banbolee/dsh-fish-shell'
 const TUI_BUNDLE = '@deepseek-harness-tui/dsh-tui'
 const GROUP_ID = 'fish-terminal-group'
 const TUI_ROW_ID = 'dsh-tui'
+/**
+ * The interactive dsh-tui rows and the services each one owns (its patch rows):
+ * `dsh-tui-plugin-host` is the plugin-interop anchor (`ctx.tuiPluginHost`),
+ * `dsh-tui-extensions` mounts the plugin-facing UI seams, `dsh-tui-auth` owns
+ * subscription OAuth (`ctx.dshAuth`), and the front door row (`dsh-tui`)
+ * injects every one of them. Before the QA packing fix the first three could
+ * not import their vendored bundles at all.
+ */
+const INTERACTIVE_ROWS: ReadonlyArray<{ readonly id: string, readonly services: readonly string[] }> = [
+  { id: 'dsh-tui-plugin-host', services: ['tuiPluginHost'] },
+  { id: 'dsh-tui-extensions', services: ['tuiDialogs', 'tuiStatus', 'tuiShortcuts', 'tuiRenderers', 'tuiToast', 'tuiThemes'] },
+  { id: 'dsh-tui-auth', services: ['dshAuth'] },
+  { id: TUI_ROW_ID, services: [] },
+]
 const SESSION_NAME = 'dsh-tui-main'
 const SENTINEL = 'DSH_TUI_LANE_SENTINEL'
 /** The six names `@deepseek-ai/dsh-tool-terminal` registers. */
@@ -205,6 +219,8 @@ interface LoaderEntry {
   readonly options?: { readonly id?: string; readonly name?: string }
   readonly disabled?: boolean
   readonly ctx: { get(name: string): unknown }
+  /** Cordis fiber state: 2 running, 3 activation error, 0 pending (`_getState`). */
+  readonly fiber?: { readonly state?: number }
 }
 
 interface LoaderService {
@@ -593,6 +609,35 @@ describe(
       // hidden from this agent.
       expect(agentSchemas).toContain('fish')
       expect(agentSchemas).not.toContain('bash')
+    }, 60_000)
+
+    it('activates the interactive dsh-tui rows instead of leaving them pending', () => {
+      const current = requireLane()
+      const loader = service<LoaderService>(current.ctx, 'loader')
+      const rows = [...loader.entries()]
+
+      // Cordis fiber states (`_getState` in cordis/lib/index.js): 2 running,
+      // 3 activation (import) error, 0 pending. A row whose activation never
+      // completed reports either 0 or no fiber at all (verified by reverting the
+      // packing fix: `dsh-tui-plugin-host` then fails this assertion), so 2 is
+      // the only value that proves the row really came up.
+      for (const row of INTERACTIVE_ROWS) {
+        const entry = rows.find((candidate) => candidate.options?.id === row.id)
+        expect(entry, `the composed patch must mount the "${row.id}" row`).toBeDefined()
+        expect(entry?.disabled, `"${row.id}" must not be administratively disabled`).toBe(false)
+        expect(
+          entry?.fiber?.state,
+          `"${row.id}" must be running (2) — pending rows report 0 or no fiber, import failures report 3`,
+        ).toBe(2)
+      }
+
+      // The services those rows own are reachable from the composition root:
+      // a pending or import-failed row never provides them.
+      for (const row of INTERACTIVE_ROWS) {
+        for (const name of row.services) {
+          expect(current.ctx.get(name), `"${row.id}" must provide ${name}`).toBeDefined()
+        }
+      }
     }, 60_000)
 
     it('opens a real fish PTY whose motd carries the dsh prompt', async () => {
