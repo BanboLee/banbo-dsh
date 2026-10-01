@@ -110,7 +110,7 @@ function shippedFiles(): string[] {
   return entries.map(entry => entry.replace(/^package\//, ''))
 }
 
-/** The staged tarball's filename, e.g. `banbolee-dsh-fish-shell-0.7.0.tgz`. */
+/** The staged tarball's filename, e.g. `banbolee-dsh-fish-shell-0.8.0.tgz`. */
 function tarballName(): string {
   if (tarball === undefined) throw new Error('the tarball was not packed')
   return basename(tarball)

@@ -65,7 +65,7 @@ dsh plugin --profile <name> add ./plugins/fish-shell
 
 ### 发布与 provenance
 
-发布预期带上 **npm provenance**：`publishConfig` 里带 `provenance: true`，因此从支持 OIDC 的 CI（GitHub Actions）发布即可，或显式执行 `npm publish --provenance --access public`。本机发布会缺少为该次构建作证的 OIDC provider，因此维护者从工作站发版时必须为那一次发布关掉 provenance，用 `--no-provenance`。**2FA 是发版前置条件**——provenance 不能替代它，且 npm 在账户/组织侧校验，本仓库无法验证。发布前把 `CHANGELOG.md` 的 `[Unreleased]` 落成即将发布的版本号（`0.7.0` → `0.8.0`）。
+发布预期带上 **npm provenance**：`publishConfig` 里带 `provenance: true`，因此从支持 OIDC 的 CI（GitHub Actions）发布即可，或显式执行 `npm publish --provenance --access public`。本机发布会缺少为该次构建作证的 OIDC provider，因此维护者从工作站发版时必须为那一次发布关掉 provenance，用 `--no-provenance`。**2FA 是发版前置条件**——provenance 不能替代它，且 npm 在账户/组织侧校验，本仓库无法验证。发布前把 `CHANGELOG.md` 的 `[Unreleased]` 落成即将发布的版本号（本次 `0.8.0` 就是这样做的）。
 
 ## 交互式终端会话（L2）
 

@@ -195,7 +195,7 @@ has to turn provenance off for that one run with `--no-provenance`. **2FA is a
 release prerequisite** — provenance does not replace it and npm checks it on
 the account/organization side, which this repository cannot verify. Before
 publishing, turn the `[Unreleased]` section of `CHANGELOG.md` into the version
-being released (`0.7.0` → `0.8.0`).
+being released (this `0.8.0` cut did exactly that).
 
 ## Interactive terminal sessions (L2)
 
