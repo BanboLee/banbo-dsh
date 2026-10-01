@@ -1,0 +1,124 @@
+name: Release
+
+# Publishing is MANUAL ONLY: this workflow is never triggered by a push or a
+# pull request, so nothing reaches the registry without a human dispatch.
+# `dry_run` defaults to true — a dispatch packs and validates the artefact, and
+# only an explicit `dry_run: false` really publishes.
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Pack and verify without publishing; set to false to publish for real'
+        type: boolean
+        default: true
+
+# `contents: read` is all the checkout needs.
+#
+# `id-token: write` is what lets the run request the GitHub OIDC token that npm
+# provenance is signed with. It is minted per run, so there is no long-lived
+# secret behind provenance itself.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # Keep pnpm in development mode so devDependencies (vitest and the plugin
+  # bundles' @deepseek-ai family) are installed for the checks below; a
+  # NODE_ENV=production install would silently skip them.
+  NODE_ENV: development
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.3.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Nothing may reach the registry unless the deterministic suite is green.
+      # `pnpm test` never runs tsc, so the plugin tsconfigs are checked
+      # separately (AGENTS.md).
+      - name: Run the deterministic test suite
+        run: pnpm test
+
+      - name: Typecheck every plugin tsconfig
+        run: pnpm typecheck
+
+      # The bundle is PUBLISHED FROM A STAGED COPY, never from the checkout.
+      # The package ships `@deepseek-ai/dsh-tool-terminal` through
+      # `bundledDependencies`, and in the repository's isolated (symlinked)
+      # node_modules the bundled dependency's transitive deps resolve through
+      # `.pnpm`, so npm records them as `package/../../node_modules/.pnpm/...`
+      # members — a tarball whose members escape the package root (40 of them,
+      # verified locally). A hoisted install on a copy outside the workspace
+      # makes those paths resolve inside the package instead: the same staging
+      # the repository's packed-offline lane uses, and the only shape whose
+      # members all live under `package/`.
+      - name: Stage the bundle outside the workspace with the hoisted linker
+        run: |
+          set -euo pipefail
+          STAGE="$(mktemp -d)"
+          echo "STAGE=$STAGE" >> "$GITHUB_ENV"
+          cp -R plugins/fish-shell "$STAGE/pkg"
+          rm -rf "$STAGE/pkg/node_modules"
+          (cd "$STAGE/pkg" && pnpm install --prod --config.node-linker=hoisted --config.auto-install-peers=false)
+
+      # Cheap precondition for the publish below: every tarball member must live
+      # under `package/` and none may contain a `..` component. A member like
+      # `package/../../node_modules/.pnpm/...` still starts with `package/`, so
+      # both checks are needed — that shape is exactly what an isolated
+      # (symlinked) install produces, and what the staged install above buys.
+      - name: Assert no tarball member escapes the package root
+        run: |
+          set -euo pipefail
+          mkdir -p "$STAGE/check"
+          (cd "$STAGE/pkg" && npm pack --pack-destination "$STAGE/check" --provenance=false >/dev/null)
+          members="$(tar -tzf "$STAGE"/check/*.tgz)"
+          if printf '%s\n' "$members" | grep -qE '(^|/)\.\.(/|$)' || printf '%s\n' "$members" | grep -qv '^package/'; then
+            echo 'error: tarball members escape the package root:' >&2
+            printf '%s\n' "$members" | grep -E '(^|/)\.\.(/|$)' >&2
+            exit 1
+          fi
+          printf '%s\n' "$members" | grep -E '^package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json$'
+
+      # The default path: pack the bundle and print what would be uploaded
+      # (`npm publish --dry-run` lists the tarball contents) without touching
+      # the registry. Provenance is switched off here on purpose — the dry run
+      # must not depend on an OIDC exchange to be a useful smoke check.
+      - name: Verify the packed artefact (dry run)
+        if: ${{ inputs.dry_run }}
+        run: cd "$STAGE/pkg" && npm publish --dry-run --provenance=false
+
+      # The real publish, reachable only through an explicit `dry_run: false`.
+      # `publishConfig.provenance` is already true; `--provenance` is passed
+      # explicitly so the requirement is visible in the run. Provenance needs
+      # the OIDC token from `id-token: write` above (npm builds the attestation
+      # from the GITHUB_* environment), which is why a workstation publish has
+      # to use `--no-provenance` (plugins/fish-shell/README.md).
+      #
+      # Authentication is deliberately not wired to a secret here. The two
+      # supported paths are:
+      #   * npm TRUSTED PUBLISHING configured on npmjs.com for this repository
+      #     and workflow (tokenless, OIDC-based). It needs npm CLI >= 11.5.1, so
+      #     if the runner's bundled npm is older, install a newer one first.
+      #   * a granular access token passed as `NODE_AUTH_TOKEN`
+      #     (`# env:` / `#   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}`).
+      # 2FA on the npm account or organization is a publish prerequisite: npm
+      # checks it registry-side, this repository cannot verify it, and provenance
+      # does not replace it.
+      - name: Publish @banbolee/dsh-fish-shell
+        if: ${{ !inputs.dry_run }}
+        run: cd "$STAGE/pkg" && npm publish --provenance --access public
