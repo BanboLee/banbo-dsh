@@ -27,7 +27,23 @@
  *   7. `terminal_close` empties `terminal_list` and the PTY pid is gone;
  *   8. a second boot under the standing `workspace-write` policy (the mode
  *      `dsh-base` reads from `DSH_PERMISSION_MODE`) still spawns the PTY, still
- *      writes inside the session workspace, and denies a write outside it.
+ *      writes inside the session workspace, and denies a write outside it;
+ *   9. §9-2: a standing-policy switch through the permission-preset service —
+ *      the same write path the `/permission` command uses — is REFUSED while
+ *      this owner holds a live session; the refusal commits no `sandbox/mode`
+ *      event and the original session keeps answering. The fence is the one in
+ *      `@deepseek-ai/dsh-terminal-bash`; the control that proves the refusal is
+ *      that fence (and not a dead entry point) runs on the workspace-write lane
+ *      below, where the same service switches the same way once its session is
+ *      closed, and succeeds;
+ *  10. §9-6: a SECOND real agent in the same profile cannot read, send to, or
+ *      close the first agent's session (`FOREIGN_SESSION`), sees an empty
+ *      terminal list, and the first agent is untouched;
+ *  11. §9-3: a third boot under the standing `read-only` policy keeps all six
+ *      `terminal_*` tools visible and records what the sandbox actually does
+ *      there — whether the PTY spawns and what happens to a write inside the
+ *      session workspace (the assertion text is the recorded semantics, not an
+ *      assumption).
  *
  * The fish version is asserted only as "present and `\d+\.\d+\.\d+`": CI
  * runners ship a different fish than a developer machine (4.0.0 vs 3.7.1) and
@@ -62,6 +78,12 @@ const BUNDLE_NAME = '@banbolee/dsh-fish-shell'
 const GROUP_ID = 'fish-terminal-group'
 const MAIN_SESSION = 'real-main'
 const CONFINED_SESSION = 'real-confined'
+const READ_ONLY_SESSION = 'real-readonly'
+/** A second real agent inside the SAME profile, for the owner-isolation lane. */
+const FOREIGN_AGENT_SESSION = 'real-agent-b'
+/** The three standing file-effect modes `dsh-base` reads from `DSH_PERMISSION_MODE`. */
+type SandboxMode = 'danger-full-access' | 'workspace-write' | 'read-only'
+
 /** The six names `@deepseek-ai/dsh-tool-terminal` registers (S0 gate1 log, line 18). */
 const TERMINAL_TOOL_NAMES = [
   'terminal_open',
@@ -139,6 +161,7 @@ interface TerminalsService {
   listBackends(): readonly string[]
   readonly backends?: ReadonlyMap<string, TerminalBackendLike>
   list(owner: unknown): readonly SessionSnapshot[]
+  read(owner: unknown, sessionId: string, request?: unknown): unknown
   kill(owner: unknown, sessionId: string, reason?: string): Promise<boolean>
   hasOwnerActivity(owner: unknown): boolean
 }
@@ -172,6 +195,24 @@ interface RealAgent {
   readonly session: { readonly id: string }
 }
 
+/**
+ * `ctx.permissionPresets` (`@deepseek-ai/dsh-permission-presets`): the preset
+ * switch the `/permission` command handler and the settings UI drive. `set`
+ * writes `permission/preset` and then the changed knobs through their canonical
+ * setters — `setSandboxMode(session, mode)` → `session.append('sandbox/mode')`.
+ */
+interface PermissionPresetService {
+  readonly names: readonly string[]
+  set(session: unknown, name: string): void
+}
+
+/** `ctx.sandboxPolicy` (`@deepseek-ai/dsh-sandbox-policy`), the effective-mode reader. */
+interface SandboxPolicyLike {
+  readonly defaultMode: string
+  resolve(request?: { readonly session?: unknown }): { readonly mode: string }
+  overrideOf(session: unknown): string | undefined
+}
+
 interface RealBootContext {
   readonly fiber: { dispose(): Promise<void> }
   get(name: string): unknown
@@ -203,7 +244,7 @@ interface BootInputs {
   readonly appBoot: AppBootModule
   readonly installAnchor: string
   readonly dshHome: string
-  readonly mode: 'danger-full-access' | 'workspace-write'
+  readonly mode: SandboxMode
   readonly sessionName: string
   readonly adapterPrefix: string
 }
@@ -214,6 +255,9 @@ let bootInputs: BootInputs | undefined
 let dshRuntime: DshRuntime | undefined
 let mainLane: RealLane | undefined
 let confinedLane: RealLane | undefined
+let readOnlyLane: RealLane | undefined
+/** The second real agent of the owner-isolation lane (§9-6). */
+let foreignAgent: RealAgent | undefined
 let mainSession: { readonly sessionId: string; readonly pid: number } | undefined
 const openedSessions: Array<{ readonly lane: RealLane; readonly sessionId: string; readonly pid: number }> = []
 const outsideWritePaths: string[] = []
@@ -358,26 +402,75 @@ async function bootLane(input: BootInputs): Promise<RealLane> {
   }
 }
 
+function requireDshRuntime(): DshRuntime {
+  if (dshRuntime === undefined) throw new Error('the dsh runtime modules were not loaded (see beforeAll output)')
+  return dshRuntime
+}
+
+/**
+ * Create one additional REAL agent in an already-booted lane's profile, through
+ * the same `agentLoop` service the lane's own agent came from. Used by the
+ * owner-isolation lane: the second agent must be registered with `ctx.agents`
+ * for `dsh-terminal`'s `isLiveOwner` check to be meaningful.
+ */
+async function createAgentInLane(lane: RealLane, sessionName: string, adapterPrefix: string): Promise<RealAgent> {
+  const runtime = requireDshRuntime()
+  const agentLoop = service<AgentLoopService>(lane.ctx, 'agentLoop')
+  return agentLoop.create(
+    runtime.SessionId(sessionName),
+    { provider: adapterPrefix, model: adapterPrefix },
+    { cwd: workspaceRoot },
+  )
+}
+
+/** Execute one tool as `agent` and hand back the raw result, errors included. */
+async function executeTool(
+  lane: RealLane,
+  agent: RealAgent,
+  name: string,
+  args: unknown,
+  signalTimeoutMs = 120_000,
+): Promise<ToolResult> {
+  callCounter += 1
+  return lane.tools.execute({
+    callId: `${agent.id}-${callCounter}`,
+    name,
+    arguments: args,
+    signal: AbortSignal.timeout(signalTimeoutMs),
+    agent,
+  })
+}
+
+/** The failure detail a `ToolResult` carries, whatever form it took. */
+function errorText(result: ToolResult): string {
+  return result.error?.message
+    ?? result.content?.map((block) => block.text ?? '').join('')
+    ?? 'no detail'
+}
+
+/** {@link callTool}, driven as one specific agent instead of the lane's own. */
+async function callToolAs<T>(
+  lane: RealLane,
+  agent: RealAgent,
+  name: string,
+  args: unknown,
+  signalTimeoutMs = 120_000,
+): Promise<T> {
+  const result = await executeTool(lane, agent, name, args, signalTimeoutMs)
+  if (result.isError) {
+    throw new Error(`${name} failed in the "${lane.name}" lane for agent "${agent.id}": ${errorText(result)}`)
+  }
+  return result.value as T
+}
+
 async function callTool<T>(
   lane: RealLane,
   name: string,
   args: unknown,
   signalTimeoutMs = 120_000,
 ): Promise<T> {
-  callCounter += 1
-  const result = await lane.tools.execute({
-    callId: `${lane.name}-${callCounter}`,
-    name,
-    arguments: args,
-    signal: AbortSignal.timeout(signalTimeoutMs),
-    agent: lane.agent,
-  })
-  if (result.isError) {
-    const detail = result.error?.message
-      ?? result.content?.map((block) => block.text ?? '').join('')
-      ?? 'no detail'
-    throw new Error(`${name} failed in the "${lane.name}" lane: ${detail}`)
-  }
+  const result = await executeTool(lane, lane.agent, name, args, signalTimeoutMs)
+  if (result.isError) throw new Error(`${name} failed in the "${lane.name}" lane: ${errorText(result)}`)
   return result.value as T
 }
 
@@ -496,7 +589,7 @@ beforeAll(async () => {
 }, 600_000)
 
 afterAll(async () => {
-  for (const lane of [mainLane, confinedLane]) {
+  for (const lane of [mainLane, confinedLane, readOnlyLane]) {
     if (lane === undefined) continue
     try {
       for (const session of lane.terminals.list(lane.agent)) {
@@ -517,6 +610,8 @@ afterAll(async () => {
   }
   mainLane = undefined
   confinedLane = undefined
+  readOnlyLane = undefined
+  foreignAgent = undefined
   bootInputs = undefined
   dshRuntime = undefined
   mainSession = undefined
@@ -687,6 +782,108 @@ realDescribe('real L2 terminal sessions in an isolated DSH profile', () => {
     expect(settled.status).toBe('killed')
   }, 180_000)
 
+  it('refuses a standing-policy switch while a live session is open (§9-2)', async () => {
+    const lane = requireMainLane()
+    const session = requireMainSession()
+    const presets = service<PermissionPresetService>(lane.ctx, 'permissionPresets')
+    const policy = service<SandboxPolicyLike>(lane.ctx, 'sandboxPolicy')
+
+    expect(lane.standingMode).toBe('danger-full-access')
+    expect(presets.names).toContain('read-only')
+    const currentMode = policy.overrideOf(lane.agent.session) ?? policy.defaultMode
+    expect(currentMode).toBe('danger-full-access')
+    expect(policy.resolve({ session: lane.agent.session }).mode).toBe(currentMode)
+
+    // The entry point under test is the real preset switch: `/permission
+    // read-only` → `permissionPresets.apply` → `setSandboxMode(session, mode)`
+    // → `session.append('sandbox/mode')`. `@deepseek-ai/dsh-terminal-bash`
+    // registers an `internal/dispatch` listener for exactly that commit and
+    // throws while THIS owner has an open session or a spawn in progress, so
+    // the call must be refused synchronously — not silently dropped.
+    let rejection: unknown
+    try {
+      presets.set(lane.agent.session, 'read-only')
+    } catch (error) {
+      rejection = error
+    }
+    expect(rejection, 'the policy switch must be refused, not accepted').toBeInstanceOf(Error)
+    expect((rejection as Error).message).toMatch(
+      new RegExp(`cannot change sandbox mode from "${currentMode}" to "read-only" while persistent terminal sessions are open`),
+    )
+
+    // The refusal is not cosmetic: the fence throws BEFORE the event commits,
+    // so the effective mode is still the standing one. (NOT asserted here: the
+    // `permission/preset` identity event is appended BEFORE the knob writes, so
+    // the rejected switch does leave that one event behind — the fence guards
+    // the mode, not the whole preset transaction.)
+    expect(policy.resolve({ session: lane.agent.session }).mode).toBe(currentMode)
+    expect(policy.overrideOf(lane.agent.session)).toBe(currentMode)
+
+    // …and the live session itself was not disturbed by the rejected switch.
+    const survived = await callTool<{ viewport: string; sessionStatus: { kind: string } }>(lane, 'terminal_send', {
+      sessionId: session.sessionId,
+      text: 'echo FENCE_SURVIVED',
+    })
+    expect(survived.viewport).toContain('FENCE_SURVIVED')
+    expect(survived.sessionStatus.kind).toBe('running')
+  }, 120_000)
+
+  it("keeps a second agent out of the first agent's session (§9-6)", async () => {
+    const lane = requireMainLane()
+    const session = requireMainSession()
+    const inputs = bootInputs
+    if (inputs === undefined) throw new Error('the lane did not finish its setup')
+    foreignAgent ??= await createAgentInLane(lane, FOREIGN_AGENT_SESSION, inputs.adapterPrefix)
+    const intruder = foreignAgent
+    expect(intruder.id).not.toBe(lane.agent.id)
+
+    // The registry is owner-scoped: B sees an empty list while A's session is
+    // published, and every operation on A's id is refused at the exact-owner
+    // check (`expectOwned` in `@deepseek-ai/dsh-terminal`: `PTY session <id>
+    // belongs to another agent`, `TerminalError` code `FOREIGN_SESSION`; the
+    // tool surface reports the message because a TerminalError is not a
+    // `HarnessError`, so `dsh-tools` carries no `error.info.code`).
+    const listed = await callToolAs<readonly SessionSnapshot[]>(lane, intruder, 'terminal_list', {})
+    expect(listed).toEqual([])
+
+    const read = await executeTool(lane, intruder, 'terminal_read', { sessionId: session.sessionId })
+    expect(read.isError).toBe(true)
+    expect(errorText(read)).toMatch(/belongs to another agent/)
+
+    // The stable code behind that message is `FOREIGN_SESSION`; the registry
+    // throws it (not a `HarnessError`), so assert it where it is carried.
+    let foreignError: unknown
+    try {
+      lane.terminals.read(intruder, session.sessionId)
+    } catch (error) {
+      foreignError = error
+    }
+    expect((foreignError as { code?: string } | undefined)?.code).toBe('FOREIGN_SESSION')
+
+    const sent = await executeTool(lane, intruder, 'terminal_send', {
+      sessionId: session.sessionId,
+      text: 'echo INTRUDER_WROTE_HERE',
+    })
+    expect(sent.isError).toBe(true)
+    expect(errorText(sent)).toMatch(/belongs to another agent/)
+
+    const closed = await executeTool(lane, intruder, 'terminal_close', { sessionId: session.sessionId })
+    expect(closed.isError).toBe(true)
+    expect(errorText(closed)).toMatch(/belongs to another agent/)
+
+    // A's session survived all three attempts: same id, still listed for A,
+    // still running, still owned by A.
+    expect(lane.terminals.list(intruder)).toEqual([])
+    expect(lane.terminals.list(lane.agent).map((entry) => entry.sessionId)).toContain(session.sessionId)
+    expect(lane.terminals.hasOwnerActivity(lane.agent)).toBe(true)
+    const mine = await callTool<{ viewport: string; sessionStatus: { kind: string } }>(lane, 'terminal_send', {
+      sessionId: session.sessionId,
+      text: 'echo OWNER_STILL_HERE',
+    })
+    expect(mine.viewport).toContain('OWNER_STILL_HERE')
+    expect(mine.sessionStatus.kind).toBe('running')
+  }, 120_000)
+
   it('closes the session, then lists nothing and leaves no process behind', async () => {
     const lane = requireMainLane()
     const session = requireMainSession()
@@ -758,6 +955,77 @@ realDescribe('real L2 terminal sessions in an isolated DSH profile', () => {
     })
     expect(outside.viewport).toMatch(OUTSIDE_WRITE_DENIAL)
     expect(outside.viewport).toMatch(/ETC_EXIT=[1-9]/)
+    expect(existsSync(outsidePath)).toBe(false)
+
+    const closed = await callTool<{ outcome: string }>(lane, 'terminal_close', { sessionId: opened.sessionId })
+    expect(closed.outcome).toBe('closed')
+    expect(await waitForProcessGone(opened.pid, 15_000)).toBe(true)
+    const index = openedSessions.findIndex((entry) => entry.sessionId === opened.sessionId)
+    if (index >= 0) openedSessions.splice(index, 1)
+
+    // Fence control (§9-2): the SAME preset switch on the SAME lane succeeds
+    // once no session holds it, so the refusal the main lane records is the
+    // terminal fence and not a broken entry point or a no-op switch.
+    const presets = service<PermissionPresetService>(lane.ctx, 'permissionPresets')
+    const policy = service<SandboxPolicyLike>(lane.ctx, 'sandboxPolicy')
+    expect(policy.resolve({ session: lane.agent.session }).mode).toBe('workspace-write')
+    expect(() => presets.set(lane.agent.session, 'read-only')).not.toThrow()
+    expect(policy.resolve({ session: lane.agent.session }).mode).toBe('read-only')
+  }, 300_000)
+
+  it('records the read-only standing-policy behavior of the same backend (§9-3)', async () => {
+    const inputs = bootInputs
+    if (inputs === undefined) throw new Error('the lane did not finish its setup')
+    readOnlyLane ??= await bootLane({
+      ...inputs,
+      mode: 'read-only',
+      sessionName: READ_ONLY_SESSION,
+      adapterPrefix: 'real-readonly-mock',
+    })
+    const lane = readOnlyLane
+    expect(lane.standingMode).toBe('read-only')
+    expect(service<SandboxPolicyLike>(lane.ctx, 'sandboxPolicy').defaultMode).toBe('read-only')
+
+    // The tool surface does not shrink with the standing mode.
+    const agentSchemas = lane.tools.schemas(lane.agent).map((schema) => schema.name)
+    for (const name of TERMINAL_TOOL_NAMES) expect(agentSchemas, `read-only agent schema ${name}`).toContain(name)
+
+    // Recorded semantics (1): `read-only` is a FILE-EFFECT mode, not a
+    // capability gate — the PTY spawns and the shell answers exactly like it
+    // does under the other two modes.
+    const opened = await callTool<{
+      sessionId: string
+      pid?: number
+      motd: string
+      status: { kind: string }
+    }>(lane, 'terminal_open', { type: 'shell', name: READ_ONLY_SESSION, cwd: workspaceRoot })
+    expect(opened.motd).toContain('dsh>')
+    expect(opened.status.kind).toBe('running')
+    if (opened.pid === undefined) throw new Error('the read-only terminal_open reported no PTY pid')
+    trackSession(lane, opened.sessionId, opened.pid)
+
+    // Recorded semantics (2): every write is denied, including one INSIDE the
+    // session workspace — under `read-only` the resolved policy has no writable
+    // root at all, so the workspace is not a write boundary here.
+    const insidePath = join(workspaceRoot, 'readonly-inside.txt')
+    const inside = await callTool<{ viewport: string }>(lane, 'terminal_send', {
+      sessionId: opened.sessionId,
+      text: 'echo inside > ./readonly-inside.txt; echo READONLY_INSIDE_EXIT=$status',
+    })
+    expect(inside.viewport).toMatch(OUTSIDE_WRITE_DENIAL)
+    expect(inside.viewport).toMatch(/READONLY_INSIDE_EXIT=[1-9]/)
+    expect(existsSync(insidePath)).toBe(false)
+
+    // Recorded semantics (3): outside the workspace is denied the same way
+    // (same runner, same denial dialect as the workspace-write lane above).
+    const outsidePath = `/etc/dsh-fish-terminal-readonly-${opened.pid}.txt`
+    outsideWritePaths.push(outsidePath)
+    const outside = await callTool<{ viewport: string }>(lane, 'terminal_send', {
+      sessionId: opened.sessionId,
+      text: `echo out > ${outsidePath}; echo READONLY_ETC_EXIT=$status`,
+    })
+    expect(outside.viewport).toMatch(OUTSIDE_WRITE_DENIAL)
+    expect(outside.viewport).toMatch(/READONLY_ETC_EXIT=[1-9]/)
     expect(existsSync(outsidePath)).toBe(false)
 
     const closed = await callTool<{ outcome: string }>(lane, 'terminal_close', { sessionId: opened.sessionId })
