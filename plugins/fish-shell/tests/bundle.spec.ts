@@ -80,7 +80,7 @@ describe('@banbolee/dsh-fish-shell bundle patch', () => {
     const children = configRows(group)
     expect(children.map(row => [row.id, row.name])).toEqual([
       ['pty', '@deepseek-ai/dsh-terminal'],
-      ['terminal-fish-pty', '@deepseek-ai/dsh-terminal-bash'],
+      ['terminal-fish-pty', '@banbolee/dsh-fish-shell/terminal'],
       ['terminal-tools', '@deepseek-ai/dsh-tool-terminal'],
       ['fish-terminal-tools', '@banbolee/dsh-fish-shell/terminal-tools'],
     ])
@@ -90,9 +90,15 @@ describe('@banbolee/dsh-fish-shell bundle patch', () => {
     const hostIds = patchRows(source).map(row => row.id)
     expect(hostIds.indexOf('fish-terminal-group')).toBeGreaterThan(hostIds.indexOf('fish-preset-policy'))
 
-    // The official backend is driven with fish argv; the prompt setup rides in
-    // the trailing `-C` and must stay byte-identical to the exported constant
-    // (the patch is YAML, so it cannot import it).
+    // The backend row mounts this bundle's `terminal.js` — the official
+    // `BashTerminalBackend` plus the harness home contract in the PTY child
+    // environment (the official row exposes no `env` field, and its
+    // `childEnvironment()` is module-private). It is driven with fish argv; the
+    // prompt setup rides in the trailing `-C` and must stay byte-identical to
+    // the exported constant (the patch is YAML, so it cannot import it). The
+    // home facts are NOT configured here: the row must not be able to bypass
+    // the injection, and the backend type must stay the schema default
+    // (`shell`), which the real lane asserts through `listBackends()`.
     const backend = children.find(row => row.id === 'terminal-fish-pty')
     const backendConfig = configObject(backend)
     expect(backendConfig['shellPath']).toBe('fish')
@@ -101,6 +107,8 @@ describe('@banbolee/dsh-fish-shell bundle patch', () => {
     expect(shellArgs).toHaveLength(4)
     expect(shellArgs[3]).toBe(FISH_PROMPT_SETUP)
     expect(backendConfig['timeoutMs']).toBe(300000)
+    expect(backendConfig['backendType']).toBeUndefined()
+    expect(backendConfig['env']).toBeUndefined()
   })
 
   it('still disables the host bash executor/tool and mounts fish-shell + tool-fish', () => {

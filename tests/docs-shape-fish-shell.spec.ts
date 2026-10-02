@@ -11,8 +11,9 @@
  * mitigation" finding, the best-effort audit scope, either troubleshooting
  * error code, each L2 behavior the new lanes record as verified, the lane index
  * behind those claims, either of the two claims the `Unverified` bullet still
- * owes the user, or the nested-`dsh` `DSH_HOME` entry together with the
- * workaround command and the missing `env` field that forces it.
+ * owes the user, or the nested-`dsh` entry together with the harness home
+ * contract it now documents, the demoted legacy workaround command and the
+ * maintenance note behind the subclass.
  *
  * Structural equality between the two files is `tests/docs-bilingual.spec.ts`'s
  * job; this spec asserts the content that only the fish-shell READMEs carry.
@@ -59,6 +60,7 @@ const GROUP_ROWS = [
   'isolate: { terminals: true }',
   '@deepseek-ai/dsh-terminal',
   '@deepseek-ai/dsh-terminal-bash',
+  '@banbolee/dsh-fish-shell/terminal',
   '@deepseek-ai/dsh-tool-terminal',
   '@banbolee/dsh-fish-shell/terminal-tools',
 ] as const
@@ -154,20 +156,23 @@ function tableRow(text: string, path: string): string {
 }
 
 /**
- * The nested-`dsh` troubleshooting entry: one heading per language plus the
- * workaround command both files must carry verbatim.
+ * The nested-`dsh` troubleshooting entry: one heading per language, the
+ * resolved posture (an interactive session carries the harness home contract,
+ * taken from the same `ctx.shellEnv` registry the one-shot `fish` tool reads),
+ * the legacy workaround that only older bundles and official-row deployments
+ * still need, and the maintenance note that binds the subclass to its upstream
+ * reason.
  *
- * A nested `dsh` inside an L2 session inherits no `DSH_HOME` (the PTY child
- * environment gets the injected session facts but not the harness home), so the
- * inner launcher falls back to `~/.dsh` and can boot an older profile/plugin
- * set. The measured workaround is the only working posture — the official
- * `@deepseek-ai/dsh-terminal-bash` row exposes no `env` config field, so an
- * `env:` written on the row is silently ignored — which is why the command
- * itself is pinned, not just described.
+ * The entry used to say the opposite — that a session gets no `DSH_HOME` and
+ * the only fix is to pass one — because the official
+ * `@deepseek-ai/dsh-terminal-bash` row exposes no `env` config field. The row is
+ * now this bundle's `terminal.js`, so the measured workaround is DEMOTED, not
+ * deleted: it stays verbatim (a translated command is a broken instruction) for
+ * the deployments that still run the official row.
  */
 const NESTED_DSH_ENTRY = {
-  en: '### Nested `dsh` inside an interactive session has no `DSH_HOME`',
-  zh: '### 交互式会话里嵌套的 `dsh` 拿不到 `DSH_HOME`',
+  en: '### Nested `dsh` inside an interactive session',
+  zh: '### 交互式会话里嵌套的 `dsh`',
   command:
     'env -u DSH_SESSION_ID -u DSH_PTY_SESSION_ID -u DSH_SHELL -u DSH_PERMISSION_MODE DSH_HOME=/path/to/dsh-home dsh --profile <profile>',
 } as const
@@ -386,26 +391,34 @@ describe('@banbolee/dsh-fish-shell README shape — troubleshooting and the sync
     expect(ROOT_ZH).toContain('scripts/sync-to-profile.sh <profile>')
   })
 
-  it('documents the nested-dsh DSH_HOME gap, its workaround and the missing env field', () => {
-    for (const [label, text, heading, noConfigFix, missingField, ignored] of [
-      ['README.md', EN, NESTED_DSH_ENTRY.en, 'no config-only fix', '`env` config field', /silently ignored/u],
-      ['README.zh.md', ZH, NESTED_DSH_ENTRY.zh, '没有只改配置的解法', '`env` 配置字段', /被静默忽略/u],
+  it('documents the nested-dsh home contract, its legacy workaround and the maintenance note', () => {
+    for (const [label, text, heading, legacy, maintenance] of [
+      ['README.md', EN, NESTED_DSH_ENTRY.en, 'Older bundles', 'Maintenance note'],
+      ['README.zh.md', ZH, NESTED_DSH_ENTRY.zh, '老版本 bundle', '维护注记'],
     ] as const) {
-      const entry = window(text, heading, 0, 1400)
+      const entry = window(text, heading, 0, 3200)
       expect(entry, `${label} is missing the nested-dsh entry`).toContain(heading)
-      // The workaround, verbatim: a translated command is a broken instruction.
-      expect(entry, `${label}: the entry must carry the tested command`).toContain(NESTED_DSH_ENTRY.command)
-      // Symptom and cause live in the same entry: the default home the inner
-      // launcher falls back to, and the injected session fact it does get.
-      expect(entry, `${label}: the entry must name the fallback home`).toContain('~/.dsh')
-      expect(entry, `${label}: the entry must name the injected session facts`).toContain('DSH_SESSION_ID')
-      expect(entry, `${label}: the entry must not just describe the command`).toContain('DSH_HOME')
-      // The refusal of a config-only fix has to bind to its reason: the row
-      // exposes no `env` field, and writing one changes nothing.
-      expect(window(text, noConfigFix, 0, 320), `${label}: "no config-only fix" must name the missing field`).toContain(
-        missingField,
-      )
-      expect(window(text, noConfigFix, 0, 320), `${label}: the ignored env field must be called out`).toMatch(ignored)
+      // The CURRENT posture has to be stated, not just the old bug: the session
+      // carries the home contract, its values come from the one-shot registry,
+      // and `terminal.js` is the row that injects them.
+      expect(entry, `${label}: the entry must name the variable the session now carries`).toContain('DSH_HOME')
+      expect(entry, `${label}: the entry must name the registry the values come from`).toContain('ctx.shellEnv')
+      expect(entry, `${label}: the entry must name the module that owns the row`).toContain('terminal.js')
+      // The legacy symptom stays documented: the home the old path fell back to.
+      expect(entry, `${label}: the entry must name the legacy fallback home`).toContain('~/.dsh')
+      // The workaround stays VERBATIM (a translated command is a broken
+      // instruction) and is explicitly scoped to the deployments that need it.
+      expect(entry, `${label}: the entry must carry the legacy command`).toContain(NESTED_DSH_ENTRY.command)
+      expect(entry, `${label}: the workaround must be scoped to older/official rows`).toContain(legacy)
+      // The maintenance note binds the subclass to its upstream reason: an
+      // official `env` field would delete `terminal.js` again. It is pinned
+      // INSIDE the entry — the same marker also appears in the L2 section, so a
+      // whole-file lookup would let a renamed note here be satisfied elsewhere.
+      expect(entry, `${label}: the entry must carry the maintenance note`).toContain(maintenance)
+      expect(
+        near(entry, [maintenance, '`env`', 'terminal.js'], 400),
+        `${label}: the maintenance note must name the missing official field and the module it retires`,
+      ).not.toBe('')
     }
   })
 })

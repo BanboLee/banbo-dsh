@@ -57,8 +57,19 @@
 # entry-local to the group (mounting it at the host plane would leave the entry
 # pending in profiles whose host plane has no `terminals` service). Inside it:
 #   - `pty`               the official terminal registry;
-#   - `terminal-fish-pty` the OFFICIAL bash backend driven with fish argv. The
-#     prompt setup rides in `-C` (startup submits nothing) so the motd stays
+#   - `terminal-fish-pty` this bundle's `terminal` module: the OFFICIAL
+#     `@deepseek-ai/dsh-terminal-bash` backend, driven with fish argv, PLUS the
+#     harness home contract (`DSH_HOME`, `DSH_PROFILE`, `DSH_PROFILE_DIR`) in
+#     the PTY child environment — the same facts the one-shot `fish` tool gets
+#     from `ctx.shellEnv`, so a nested `dsh` resolves the real harness home
+#     instead of `~/.dsh`. The row used to mount the official package directly;
+#     it cannot any more because that row has no `env` config field and its
+#     `childEnvironment()` is module-private, so owning the row is the only way
+#     to add the contract without editing or patching the official module.
+#     Everything else is still the official class (see `terminal.js`): the
+#     backend type stays `shell`, argv confinement and the sandbox-mode fence
+#     stay official, and readiness still comes from `session.initialize()`.
+#     The prompt setup rides in `-C` (startup submits nothing) so the motd stays
 #     clean — feeding the same setup through PTY input gets it echoed back by
 #     the fish line editor. The string below is FISH_PROMPT_SETUP from
 #     `terminal-fish.js` verbatim: the `\x1b` / `\x07` escapes must reach fish
@@ -84,7 +95,7 @@
           name: '@deepseek-ai/dsh-terminal'
 
         - id: terminal-fish-pty
-          name: '@deepseek-ai/dsh-terminal-bash'
+          name: '@banbolee/dsh-fish-shell/terminal'
           config:
             shellPath: fish
             shellArgs: ["--no-config","-i","-C","function fish_greeting; end; function fish_prompt; printf '\\x1b]133;D;%s\\x07' $status; echo -n 'dsh> '; end; function fish_right_prompt; end;"]

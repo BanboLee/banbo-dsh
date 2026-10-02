@@ -109,8 +109,9 @@ below for the authoritative scope before deploying elsewhere.
 - **Interactive terminal sessions** (`terminal-tools.js`, exported as
   `@banbolee/dsh-fish-shell/terminal-tools`): the `terminalTools: 'allow' |
   'deny'` switch for the interactive (L2) surface, whose patch group mounts the
-  official `@deepseek-ai/dsh-terminal` registry, the official
-  `@deepseek-ai/dsh-terminal-bash` backend driven with fish argv, and the
+  official `@deepseek-ai/dsh-terminal` registry, this bundle's `terminal.js`
+  (the official `@deepseek-ai/dsh-terminal-bash` backend driven with fish argv,
+  plus the harness home contract in the PTY child environment), and the
   official `@deepseek-ai/dsh-tool-terminal` (six `terminal_*` tools). See
   **Interactive terminal sessions (L2)** below.
 
@@ -130,7 +131,7 @@ the lanes, what they boot, and what they cover:
 
 | Lane | Boots | Covers |
 |---|---|---|
-| `plugins/fish-shell/tests/terminal-session-real.spec.ts` | a real isolated `dsh-base` profile, through the `dsh` CLI | six tools; `open`/`send`/`read`/`close`; `terminal_signal`; a background `terminal_send` job with `job_output`/`job_kill`; the mode-switch fence; the `workspace-write` denial outside the workspace; the `read-only` semantics; owner isolation (`FOREIGN_SESSION`) |
+| `plugins/fish-shell/tests/terminal-session-real.spec.ts` | a real isolated `dsh-base` profile, through the `dsh` CLI | six tools; `open`/`send`/`read`/`close`; `terminal_signal`; a background `terminal_send` job with `job_output`/`job_kill`; the mode-switch fence; the `workspace-write` denial outside the workspace; the `read-only` semantics; owner isolation (`FOREIGN_SESSION`); the harness home contract (the session's `$DSH_HOME` is the profile's own home, a nested `dsh --profile <profile> --dump-config` composes that profile, and the same command under a foreign home fails) |
 | `tests/composition/fish-pty-dsh-tui.spec.ts` | a real `dsh-tui` composition | the bundle group activates (no pending L2 rows); six tools visible; `open`/`send`/`read`/`close` |
 | `tests/composition/fish-pty-minimal.spec.ts` | the official `minimal` preset over `dsh-base` | two `terminals` realms (host fish group + preset `/bin/bash` persistent shell); six tools exactly once; the persistent-fish swap; `open`/`send`/`read`/`close` |
 | `tests/composition/fish-pty-bundled-row.spec.ts` | a profile patch that references `@deepseek-ai/dsh-tool-terminal` directly | resolution from inside this bundle only; the row stays `pending (waiting for service: terminals)`; no second registration; the surviving registration still drives a PTY |
@@ -202,8 +203,12 @@ being released (this `0.8.0` cut did exactly that).
 Next to the one-shot `fish` tool, the bundle mounts an interactive terminal
 surface: a real fish PTY the model drives with `terminal_open`,
 `terminal_send`, `terminal_read`, `terminal_signal`, `terminal_close` and
-`terminal_list`. It reuses the official terminal stack — the plugin builds no
-backend of its own.
+`terminal_list`. It reuses the official terminal stack: the backend row mounts
+`terminal.js`, a subclass of the official `BashTerminalBackend` whose only
+difference is the harness home contract in the child environment (**The harness
+home contract** below). `spawn()` is inherited, so argv confinement, the
+sandbox-mode fence and `session.initialize()` readiness are the official
+code.
 
 The patch appends one `insert` group, `fish-terminal-group`, at the end of
 `cordis.patch.yml`:
@@ -211,7 +216,7 @@ The patch appends one `insert` group, `fish-terminal-group`, at the end of
 | Row id | Package | Config |
 |---|---|---|
 | `pty` | `@deepseek-ai/dsh-terminal` | — |
-| `terminal-fish-pty` | `@deepseek-ai/dsh-terminal-bash` | `shellPath: fish`, `shellArgs: ["--no-config","-i","-C", <FISH_PROMPT_SETUP>]`, `timeoutMs: 300000` |
+| `terminal-fish-pty` | `@banbolee/dsh-fish-shell/terminal` | `shellPath: fish`, `shellArgs: ["--no-config","-i","-C", <FISH_PROMPT_SETUP>]`, `timeoutMs: 300000` |
 | `terminal-tools` | `@deepseek-ai/dsh-tool-terminal` | — |
 | `fish-terminal-tools` | `@banbolee/dsh-fish-shell/terminal-tools` | `terminalTools: allow` |
 
@@ -226,6 +231,30 @@ The prompt setup travels in the `-C` argument (the same `FISH_PROMPT_SETUP`
 string that `terminal-fish.js` exports): startup submits nothing, so the motd
 stays clean, whereas feeding the same setup through PTY input gets it echoed
 back by the fish line editor.
+
+**The harness home contract.** `terminal.js` exists for exactly one reason: a
+PTY child's environment is the backend overlay plus `scrubbedParentEnv()`,
+which drops every inherited `DSH_*` name, so a `dsh` nested inside an
+interactive session used to resolve the default `~/.dsh` while the one-shot
+`fish` tool ran on the real harness home. The subclass adds `DSH_HOME` — and
+`DSH_PROFILE` / `DSH_PROFILE_DIR` when the context carries them — from the SAME
+registry the one-shot tool reads, `ctx.shellEnv.collect()`, through the official
+constructor's public `spawnTerminal` seam (the layer the subprocess provider
+applies after the ambient scrub). The snapshot is taken at spawn time because
+the three home facts are execution-independent: `collect` only reads the
+execution to add `DSH_SESSION_ID`, so the session facts (`DSH_SHELL`,
+`DSH_SESSION_ID`, `DSH_PTY_SESSION_ID`) stay the official overlay's own values.
+Nothing else differs: the config surface is the official schema re-exported
+verbatim (`Config`), so `backendType` keeps its `shell` default, which is what
+`listBackends()` reports and `terminal_open { type: 'shell' }` opens. When the
+registry is not mounted at all (a custom composition outside `dsh-base`), the
+same values come from their public owners — `resolveDshHome()` and
+`ctx.get('profileContext')`, which are the registry's own sources — and a
+contributor that throws on the spawn-time execution degrades to that fallback
+instead of failing the spawn. **Maintenance note:** the row is ours only
+because the official row exposes no `env` config field; if
+`@deepseek-ai/dsh-terminal-bash` grows one, the row goes back to the official
+package and `terminal.js` is deleted.
 
 `fish-terminal-tools` is the only entry this plugin adds for the surface: the
 `terminalTools` switch implemented in `terminal-tools.js`. Its default is
@@ -449,22 +478,35 @@ once with a networked install (or run the same `dsh plugin ... add` without
 plugin's own runtime dependency travels inside the plugin tarball, so this is a
 store-state problem, not a missing bundled file.
 
-### Nested `dsh` inside an interactive session has no `DSH_HOME`
+### Nested `dsh` inside an interactive session
 
-An interactive session's child environment carries the facts the official PTY
-backend injects (`DSH_SHELL=1`, `DSH_SESSION_ID`, `DSH_PTY_SESSION_ID`) plus
-`HOME`, `PATH` and `TERM=dumb`, but never `DSH_HOME`: the trusted `DSH_*`
-snapshot a one-shot `fish` call runs with is per-call, and the subprocess base
-drops every inherited `DSH_*` name. A nested `dsh --profile <profile>` therefore
-resolves its home the default way, `~/.dsh`, which can hold profile and plugin
-state from an older release — a stale plugin there can fail the nested boot or
-disable its rows. There is no config-only fix: the official
-`@deepseek-ai/dsh-terminal-bash@0.2.0-rc.1` row has no `env` config field, so an
-`env:` written on the `terminal-fish-pty` row is accepted by the schema and
-silently ignored. Pass the home explicitly instead — replace
-`/path/to/dsh-home` with the Harness home the outer session was launched with
-(a one-shot `fish` call prints it: `echo $DSH_HOME`):
+As of this bundle the session carries the harness home contract: its child
+environment gets `DSH_HOME` (plus `DSH_PROFILE` / `DSH_PROFILE_DIR` when the
+profile context has them) from the same `ctx.shellEnv` registry the one-shot
+`fish` tool reads, so the two surfaces cannot drift — **The harness home
+contract** above says where and why. The real lane asserts the outcome: inside a
+session `echo $DSH_HOME` prints the profile's own home, and
+`dsh --profile <profile> --dump-config` composes that profile's tree, while the
+same command under a foreign `DSH_HOME` fails. A nested `dsh` therefore starts
+on the same home and the same plugin set as the session it was opened in.
+
+Older bundles — and any deployment whose `terminal-fish-pty` row is still the
+official `@deepseek-ai/dsh-terminal-bash` — have no such contract, and there was
+no config-only fix for them: that row exposes no `env` config field, so an
+`env:` written on it was accepted by the schema and silently ignored, and the
+backend's `childEnvironment()` is module-private. A nested `dsh` there resolved
+`~/.dsh`, which can hold profile and plugin state from an older release — a
+stale plugin there can fail the nested boot or disable its rows. Pass the home
+explicitly — replace `/path/to/dsh-home` with the Harness home the outer session
+was launched with (a one-shot `fish` call prints it: `echo $DSH_HOME`):
 
 ```
 env -u DSH_SESSION_ID -u DSH_PTY_SESSION_ID -u DSH_SHELL -u DSH_PERMISSION_MODE DSH_HOME=/path/to/dsh-home dsh --profile <profile>
 ```
+
+**Maintenance note.** Owning the row (`terminal.js`) is the only reason the
+contract can be added without editing the official package; if
+`@deepseek-ai/dsh-terminal-bash` grows an `env` config field (or the registry
+forwards the home facts itself), the row goes back to the official package,
+`terminal.js` is deleted, and only the first paragraph of this entry remains —
+the real lane keeps its assertions either way.

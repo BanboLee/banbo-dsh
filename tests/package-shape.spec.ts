@@ -77,7 +77,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
   {
     directory: 'plugins/fish-shell',
     packageName: '@banbolee/dsh-fish-shell',
-    files: ['index.js', 'local.js', 'tool.js', 'policy.js', 'terminal-fish.js', 'persistent.js', 'job-kind.d.ts', 'terminal-tools.js', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG.md'],
+    files: ['index.js', 'local.js', 'tool.js', 'policy.js', 'terminal.js', 'terminal-fish.js', 'persistent.js', 'job-kind.d.ts', 'terminal-tools.js', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG.md'],
     dependencies: {
       '@deepseek-ai/dsh-tool-terminal': '0.2.0-rc.1',
     },

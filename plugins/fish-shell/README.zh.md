@@ -18,7 +18,7 @@ DeepSeek Harness 的 fish shell executor 与工具：用 **fish** 而不是 bash
 - **Per-agent fish policy**（`policy.js`，导出为 `@banbolee/dsh-fish-shell/policy`）：一个以 host 方式挂载的 Cordis plugin，让每个 agent 都看到 fish 而不是 bash，**无论它跑在哪个 agent preset 下**。bundle patch 会禁用基础 bash executor（`bash-sandbox`）与 host bash 工具（`tool-bash`），挂载 fish executor 与 host-global `fish` 工具，并且不改动 preset——它不再修改 roster 默认值、不再注入 preset root，也不再往 `$DSH_HOME/.agent-presets/` 下写副本。preset 仍会注册自己的 `bash` 同名工具（standard/minimal 就会），而在 `agent/created` 时（以及每次 `tools/change`，即 `/preset` 重新组合之后），policy 会通过 `agent.ctx.tools.restrict({ deny: ['bash'] })` 按 agent 隐藏这个继承来的 bash 工具，并用一个空的 agent 作用域小节遮蔽 preset 静态的 `tool:bash` 提示词指引。agent 最终只剩下唯一一个 shell 工具：`fish`。在 `minimal` 下——它常驻的 bash 是持久 PTY 形态（参数只带 `command`，输出 schema 是普通字符串）——policy 会先在 agent 作用域注册一个持久 `fish` 工具（遮蔽 one-shot fish），然后隐藏 bash，因此 minimal session 在 fish 下保持持久语义。
 - **持久 fish terminal 后端**（`terminal-fish.js`，导出为 `@banbolee/dsh-fish-shell/terminal-fish`）：一个库——**不**由 bundle patch 挂载——提供持久工具使用的 `fish` PTY 后端。它继承官方 `BashTerminalBackend`，启动 `fish --no-config -i`（可通过配置覆盖）并配上受控提示符——该提示符遵循 harness readiness 契约（OSC `133;D;<status>` + `dsh> `）——并通过同一套 sandbox policy 施加限制；官方 sandbox-mode fence 被复制进来（官方模块没有导出它；这份副本为自管理用途提供了一个可注入的 owner-activity 检查）。patch 刻意没有 `fish-terminal` host row：`terminals` service 是 `minimal` preset isolate realm 的 entry-local 资源，在 host 平面（headless / dsh-tui / composition 测试 profile）不可见，因此这样一行会永远停留在 pending。`apply` 会被导出，供直接装配与测试使用（或供显式挂载该 registry 的 composition 使用）。
 - **持久 fish 工具**（`persistent.js`，导出为 `@banbolee/dsh-fish-shell/persistent`）：官方 `dsh-tool-bash-persistent` 模式的 fish 版本——每个 agent 一个缓存的 PTY shell，其 cwd、变量与函数在多次调用之间存活，并支持 marker 包裹的命令、串行执行、deadline/timeout 重置与 scrollback 读取。它刻意不导出 Cordis `apply`：`policy.js` 会在 agent 边界为 persistent-bash preset 调用 `registerPersistentFish(ctx, agentCtx)`。PTY 是**自管理**的：工具自己持有一个 `FishTerminalBackend` 实例并直接驱动它的 session（`backend.spawn(...)`、`session.startSend/read/status/close`），而不经过 `terminals` registry——agent 作用域的工具解析不到它（该 registry 只存在于 minimal preset 的 entry-local realm 内）。命令的引号处理使用 fish 单引号转义，并用带单个字符串参数的 `eval`（fish 4 没有 `$'...'` ANSI-C 引号语法，也没有 `eval --`），已用真实 fish 4.0.0 验证。
-- **交互式终端会话**（`terminal-tools.js`，导出为 `@banbolee/dsh-fish-shell/terminal-tools`）：交互式（L2）surface 的 `terminalTools: 'allow' | 'deny'` 开关；它的 patch group 挂载官方 `@deepseek-ai/dsh-terminal` registry、用 fish argv 驱动的官方 `@deepseek-ai/dsh-terminal-bash` 后端，以及官方 `@deepseek-ai/dsh-tool-terminal`（六个 `terminal_*` 工具）。见下方 **交互式终端会话（L2）**。
+- **交互式终端会话**（`terminal-tools.js`，导出为 `@banbolee/dsh-fish-shell/terminal-tools`）：交互式（L2）surface 的 `terminalTools: 'allow' | 'deny'` 开关；它的 patch group 挂载官方 `@deepseek-ai/dsh-terminal` registry、本 bundle 的 `terminal.js`（用 fish argv 驱动的官方 `@deepseek-ai/dsh-terminal-bash` 后端，外加 PTY 子进程环境里的 harness home 契约），以及官方 `@deepseek-ai/dsh-tool-terminal`（六个 `terminal_*` 工具）。见下方 **交互式终端会话（L2）**。
 
 ## 支持矩阵
 
@@ -35,7 +35,7 @@ DeepSeek Harness 的 fish shell executor 与工具：用 **fish** 而不是 bash
 
 | Lane | 启动 | 覆盖 |
 |---|---|---|
-| `plugins/fish-shell/tests/terminal-session-real.spec.ts` | 经 `dsh` CLI 启动的真实隔离 `dsh-base` profile | 六个工具；`open`/`send`/`read`/`close`；`terminal_signal`；后台 `terminal_send` job 与 `job_output`/`job_kill`；切 mode 的 fence；`workspace-write` 下 workspace 外写入被拒；`read-only` 语义；owner 隔离（`FOREIGN_SESSION`） |
+| `plugins/fish-shell/tests/terminal-session-real.spec.ts` | 经 `dsh` CLI 启动的真实隔离 `dsh-base` profile | 六个工具；`open`/`send`/`read`/`close`；`terminal_signal`；后台 `terminal_send` job 与 `job_output`/`job_kill`；切 mode 的 fence；`workspace-write` 下 workspace 外写入被拒；`read-only` 语义；owner 隔离（`FOREIGN_SESSION`）；harness home 契约（会话内 `$DSH_HOME` 就是本 profile 的 home，嵌套 `dsh --profile <profile> --dump-config` 组合出的正是该 profile，而同一个命令换到陌生 home 下会失败） |
 | `tests/composition/fish-pty-dsh-tui.spec.ts` | 真实的 `dsh-tui` 组合 | bundle group 激活（没有 pending 的 L2 row）；六个工具可见；`open`/`send`/`read`/`close` |
 | `tests/composition/fish-pty-minimal.spec.ts` | `dsh-base` + 官方 `minimal` preset | 两个 `terminals` realm（host fish group + preset 的 `/bin/bash` 持久 shell）；六个工具各恰好一次；持久 fish 替换；`open`/`send`/`read`/`close` |
 | `tests/composition/fish-pty-bundled-row.spec.ts` | 直引 `@deepseek-ai/dsh-tool-terminal` 的 profile patch | 只从本 bundle 内部解析；该 row 停在 `pending (waiting for service: terminals)`；不会重复注册；存活的那份注册仍能驱动 PTY |
@@ -69,20 +69,22 @@ dsh plugin --profile <name> add ./plugins/fish-shell
 
 ## 交互式终端会话（L2）
 
-除了一次性的 `fish` 工具，bundle 还挂载了一个交互式终端 surface：一个真实 fish PTY，模型用 `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close` 与 `terminal_list` 来驱动它。它复用官方终端栈——插件不自建任何 backend。
+除了一次性的 `fish` 工具，bundle 还挂载了一个交互式终端 surface：一个真实 fish PTY，模型用 `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close` 与 `terminal_list` 来驱动它。它复用官方终端栈：后端 row 挂载的是 `terminal.js`——官方 `BashTerminalBackend` 的子类，与官方唯一的差别就是子进程环境里的 harness home 契约（见下方 **harness home 契约**）；`spawn()` 完全继承，因此 argv 约束、sandbox-mode fence 与 `session.initialize()` 就绪语义都是官方代码。
 
 patch 在 `cordis.patch.yml` 末尾追加了一个 `insert` group，id 为 `fish-terminal-group`：
 
 | Row id | 包 | 配置 |
 |---|---|---|
 | `pty` | `@deepseek-ai/dsh-terminal` | — |
-| `terminal-fish-pty` | `@deepseek-ai/dsh-terminal-bash` | `shellPath: fish`、`shellArgs: ["--no-config","-i","-C", <FISH_PROMPT_SETUP>]`、`timeoutMs: 300000` |
+| `terminal-fish-pty` | `@banbolee/dsh-fish-shell/terminal` | `shellPath: fish`、`shellArgs: ["--no-config","-i","-C", <FISH_PROMPT_SETUP>]`、`timeoutMs: 300000` |
 | `terminal-tools` | `@deepseek-ai/dsh-tool-terminal` | — |
 | `fish-terminal-tools` | `@banbolee/dsh-fish-shell/terminal-tools` | `terminalTools: allow` |
 
 group 行是 `cordis:group`，带 `group: true` 与 `isolate: { terminals: true }`：`terminals` service 必须在 group 内自足，因为挂在 host 平面的 row 会在所有 host 平面没有 `terminals` service 的 profile 里永远 pending。`tools` 刻意**不**隔离，因此 `terminal-tools` 注册的六个 `terminal_*` 工具会进入宿主 tools 注册表、对 agent 可见。
 
 prompt setup 走 `-C` 参数（与 `terminal-fish.js` 导出的 `FISH_PROMPT_SETUP` 是同一个字符串）：启动时不提交任何输入，所以 motd 保持干净；而把同一份 setup 从 PTY 输入喂进去，会被 fish line editor 回显出来。
+
+**harness home 契约。** `terminal.js` 存在的唯一理由：PTY 子进程的环境是后端 overlay 加上 `scrubbedParentEnv()`，而后者会丢掉所有继承来的 `DSH_*` 名，所以过去在交互式会话里嵌套的 `dsh` 会把 home 解析成默认的 `~/.dsh`，而一次性 `fish` 工具用的却是真实的 harness home。该子类通过官方 constructor 的公开 `spawnTerminal` 缝（即 subprocess provider 在 ambient scrub **之后**才应用的那一层）补上 `DSH_HOME`，并在 context 能提供时补上 `DSH_PROFILE` / `DSH_PROFILE_DIR`，取值来自与一次性工具**同一个** registry：`ctx.shellEnv.collect()`。快照可以在 spawn 时取，是因为这三个 home 事实与执行无关——`collect` 只在加 `DSH_SESSION_ID` 时才读 execution——因此 `DSH_SHELL`、`DSH_SESSION_ID`、`DSH_PTY_SESSION_ID` 仍是官方 overlay 自己的值。除此之外没有任何差别：配置面就是原样 re-export 的官方 schema（`Config`），所以 `backendType` 保持默认 `shell`，也就是 `listBackends()` 报出的类型、`terminal_open { type: 'shell' }` 打开的类型。若 registry 完全没挂载（`dsh-base` 之外的自定义组合），同样这三个值会退到它们的公开来源——`resolveDshHome()` 与 `ctx.get('profileContext')`，即 registry 自己用的来源；某个 contributor 在 spawn 时的（部分）execution 上抛错也会走这条兜底，而不会让 spawn 失败。**维护注记：** 这一 row 属于我们，只是因为官方 row 没有 `env` 配置字段；一旦 `@deepseek-ai/dsh-terminal-bash` 支持了它，row 就回到官方包、`terminal.js` 会被删除。
 
 `fish-terminal-tools` 是本插件为该 surface 新增的唯一入口：`terminal-tools.js` 里实现的 `terminalTools` 开关。它默认 `allow`（什么都不做，与部署中的其它工具一致）；`deny` 会按 agent 收回这六个工具——见 **安全模型**。
 
@@ -143,10 +145,14 @@ bundled 的工具包没有进安装产物，或它被当成 peer（profile 平�
 
 离线安装打在了冷 pnpm store 上：`--offline` 下 pnpm 拒绝为它没有缓存的 tarball 走网络。先用一次联网安装把 store 预热（或首次安装时不带 `--offline` 跑同一条 `dsh plugin ... add`），然后再跑离线命令。插件自身的运行时依赖是随插件 tarball 一起走的，所以这是 store 状态问题，不是 bundled 文件缺失。
 
-### 交互式会话里嵌套的 `dsh` 拿不到 `DSH_HOME`
+### 交互式会话里嵌套的 `dsh`
 
-交互式会话的子进程环境只有官方 PTY backend 注入的事实（`DSH_SHELL=1`、`DSH_SESSION_ID`、`DSH_PTY_SESSION_ID`）以及 `HOME`、`PATH` 和 `TERM=dumb`，**没有** `DSH_HOME`：one-shot `fish` 调用所带的受信 `DSH_*` 快照是按次生成的，而子进程基环境会丢掉所有继承来的 `DSH_*` 名。因此嵌套的 `dsh --profile <profile>` 会按默认规则把 home 解析成 `~/.dsh`，那里可能存着旧版本的 profile 与插件状态——残留的旧插件会让嵌套启动失败，或让它的 row 被禁用。没有只改配置的解法：官方 `@deepseek-ai/dsh-terminal-bash@0.2.0-rc.1` 的 row 没有 `env` 配置字段，所以写在 `terminal-fish-pty` 行上的 `env:` 会被 schema 收下、然后被静默忽略。正确做法是显式传入 home——把 `/path/to/dsh-home` 换成外层会话启动时使用的 Harness home（用一次 `fish` 调用即可打印：`echo $DSH_HOME`）：
+从本 bundle 起，会话会自动带上 harness home 契约：它的子进程环境里有 `DSH_HOME`（当 profile context 能提供时还有 `DSH_PROFILE` / `DSH_PROFILE_DIR`），取值来自与一次性 `fish` 工具同一个 `ctx.shellEnv` registry，因此两个 surface 不可能漂移——具体位置与理由见上方 **harness home 契约**。真实 lane 断言了这一结果：会话里 `echo $DSH_HOME` 打印的就是本 profile 的 home，`dsh --profile <profile> --dump-config` 组合出该 profile 的树，而同一个命令换到陌生 `DSH_HOME` 下会失败。因此在会话里嵌套启动的 `dsh` 会与打开它的会话跑在同一个 home、同一套插件上。
+
+老版本 bundle——以及任何 `terminal-fish-pty` row 仍指向官方 `@deepseek-ai/dsh-terminal-bash` 的部署——没有这份契约，而且对它们来说没有只改配置的解法：那个 row 没有 `env` 配置字段，写在它上面的 `env:` 会被 schema 收下、然后被静默忽略；后端的 `childEnvironment()` 也是 module-private 的。那里的嵌套 `dsh` 会把 home 解析成 `~/.dsh`，那里可能存着旧版本的 profile 与插件状态——残留的旧插件会让嵌套启动失败，或让它的 row 被禁用。正确做法是显式传入 home——把 `/path/to/dsh-home` 换成外层会话启动时使用的 Harness home（用一次 `fish` 调用即可打印：`echo $DSH_HOME`）：
 
 ```
 env -u DSH_SESSION_ID -u DSH_PTY_SESSION_ID -u DSH_SHELL -u DSH_PERMISSION_MODE DSH_HOME=/path/to/dsh-home dsh --profile <profile>
 ```
+
+**维护注记。** 自己拥有这个 row（`terminal.js`）是我们能在不改官方包的前提下加上契约的唯一原因；一旦 `@deepseek-ai/dsh-terminal-bash` 支持了 `env` 配置字段（或 registry 自己转发 home 事实），row 就回到官方包、`terminal.js` 会被删除，本节只剩第一段——真实 lane 的断言在两种实现下都保留。

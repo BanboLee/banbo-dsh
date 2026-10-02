@@ -2,8 +2,10 @@
  * REAL dsh-tui composition lane for the fish-shell L2 interactive terminal.
  *
  * `.omo/plans/fish-shell-tty-v3.md` §5.2 adds the `fish-terminal-group` isolate
- * group (official `@deepseek-ai/dsh-terminal` + `dsh-terminal-bash` with a fish
- * argv + `dsh-tool-terminal` + this bundle's `terminal-tools` switch) and §10's
+ * group (official `@deepseek-ai/dsh-terminal` + this bundle's `terminal.js`, the
+ * official `dsh-terminal-bash` backend with a fish argv and the harness home
+ * contract + `dsh-tool-terminal` + this bundle's `terminal-tools` switch) and
+ * §10's
  * v1 gate 1 requires the six `terminal_*` tools and the whole
  * `open → send → read → close` chain to work **in a real profile including the
  * dsh-tui combination**. The user's real deployment IS dsh-tui, so the existing
@@ -35,8 +37,9 @@
  * the bundle layer + the dsh-tui layer are both in the composition, the
  * `fish-terminal-group` row mounted, `terminals` is isolated into that group
  * while all six `terminal_*` tools are visible to the real agent (registry,
- * agent-scoped registry, host and agent schemas), the backend is the official
- * `dsh-terminal-bash` configured with `shellPath: fish`, `terminal_open` gets a
+ * agent-scoped registry, host and agent schemas), the backend is this bundle's
+ * `terminal.js` — the official `dsh-terminal-bash` class — configured with
+ * `shellPath: fish`, `terminal_open` gets a
  * live fish PTY whose motd carries `dsh>`, `terminal_send` settles with the
  * command output in its viewport and a non-empty `waitReason`, `terminal_read`
  * reads the same scrollback back, and `terminal_close` empties `terminal_list`

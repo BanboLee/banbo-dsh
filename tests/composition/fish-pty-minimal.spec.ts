@@ -725,9 +725,9 @@ describe(
       expect(current.presets.defaultId).toBe(PRESET_ID)
       expect(current.presets.composedPreset(current.agent.ctx)).toBe(PRESET_ID)
 
-      // Two `terminals` registries, two realms: the L2 group's is the official
-      // backend driven with fish argv, the minimal preset's own persistent-shell
-      // machinery keeps the plain bash one.
+      // Two `terminals` registries, two realms: the L2 group's is this bundle's
+      // `terminal.js` (the official class) driven with fish argv, the minimal
+      // preset's own persistent-shell machinery keeps the plain bash one.
       const presetTerminals = current.presets.serviceFor(current.agent, 'terminals') as TerminalsService | undefined
       expect(presetTerminals, "the minimal preset's isolate realm must publish its own terminals").toBeDefined()
       expect(presetTerminals).not.toBe(current.terminals)

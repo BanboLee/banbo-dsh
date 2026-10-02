@@ -14,8 +14,10 @@
  *      `terminal_*` tools land in the shared tools registry, so a real agent
  *      sees all six through `tools.get(name, agent)`, its own agent-scoped
  *      registry, and its schemas;
- *   2. the group's backend is the OFFICIAL `dsh-terminal-bash` configured with
- *      `shellPath: fish` (`listBackends()` reports `shell`, not `fish`);
+ *   2. the group's backend is this bundle's `terminal` module — the OFFICIAL
+ *      `dsh-terminal-bash` backend configured with `shellPath: fish` plus the
+ *      harness home contract in the child environment (`listBackends()` reports
+ *      `shell`, not `fish`);
  *   3. `terminal_open` returns a live fish PTY whose motd carries `dsh>`;
  *   4. `terminal_send` settles with the command output in its viewport and a
  *      non-empty `waitReason`, and `terminal_read` reads the same scrollback;
@@ -43,7 +45,13 @@
  *      `terminal_*` tools visible and records what the sandbox actually does
  *      there — whether the PTY spawns and what happens to a write inside the
  *      session workspace (the assertion text is the recorded semantics, not an
- *      assumption).
+ *      assumption);
+ *  12. the harness home contract: `$DSH_HOME` inside the session is THIS
+ *      profile's isolated home, a nested `dsh --profile <this profile>
+ *      --dump-config` composes this profile's tree from it, and the same
+ *      command under a foreign home fails — the positive and the control
+ *      together prove the nested launcher resolves the home the session was
+ *      booted with.
  *
  * The fish version is asserted only as "present and `\d+\.\d+\.\d+`": CI
  * runners ship a different fish than a developer machine (4.0.0 vs 3.7.1) and
@@ -712,6 +720,40 @@ realDescribe('real L2 terminal sessions in an isolated DSH profile', () => {
 
     const listed = await callTool<readonly SessionSnapshot[]>(lane, 'terminal_list', {})
     expect(listed.map((entry) => entry.sessionId)).toContain(session.sessionId)
+  }, 120_000)
+
+  it('boots the session with the harness home contract, so a nested dsh resolves the same home', async () => {
+    const lane = requireMainLane()
+    const session = requireMainSession()
+    const dshHome = isolated?.dshHome
+    if (dshHome === undefined) throw new Error('the isolated profile home is not available')
+
+    // One send, four facts: the home the session carries, the nested launcher's
+    // status on it, whether the composed tree is THIS profile (the isolated one
+    // lives under this temp home, so no other home can produce its rows), and
+    // the control that the same command fails under a foreign home. The
+    // equality assertion below covers both failure shapes the bug had: an unset
+    // `DSH_HOME` (empty) and the default `~/.dsh` fallback.
+    //
+    // `--dump-config` is the cheap nested command: it composes the profile tree
+    // and exits without booting a session or a TUI.
+    const sent = await callTool<{ viewport: string; waitReason: string }>(lane, 'terminal_send', {
+      sessionId: session.sessionId,
+      text: [
+        'echo HOME_CONTRACT=$DSH_HOME',
+        `dsh --profile ${PROFILE_NAME} --dump-config >/dev/null 2>&1; echo NESTED_STATUS=$status`,
+        `dsh --profile ${PROFILE_NAME} --dump-config 2>&1 | string match -q '*dsh-fish-shell*'; echo NESTED_SAME_PROFILE=$status`,
+        `env DSH_HOME=/nonexistent-dsh-home dsh --profile ${PROFILE_NAME} --dump-config >/dev/null 2>&1; echo FOREIGN_HOME_STATUS=$status`,
+      ].join('; '),
+    })
+    expect(sent.waitReason.length).toBeGreaterThan(0)
+
+    expect(sent.viewport).toContain(`HOME_CONTRACT=${dshHome}`)
+    expect(sent.viewport).toContain('NESTED_STATUS=0')
+    expect(sent.viewport).toContain('NESTED_SAME_PROFILE=0')
+    // The control: without the inherited home the profile does not exist, so a
+    // zero here would mean the positive assertions above passed for free.
+    expect(sent.viewport).not.toContain('FOREIGN_HOME_STATUS=0')
   }, 120_000)
 
   it('delivers SIGINT to the foreground process group of a live session', async () => {
