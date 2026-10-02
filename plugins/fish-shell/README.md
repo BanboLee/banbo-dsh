@@ -448,3 +448,23 @@ once with a networked install (or run the same `dsh plugin ... add` without
 `--offline` for the first install), then re-run the offline command. The
 plugin's own runtime dependency travels inside the plugin tarball, so this is a
 store-state problem, not a missing bundled file.
+
+### Nested `dsh` inside an interactive session has no `DSH_HOME`
+
+An interactive session's child environment carries the facts the official PTY
+backend injects (`DSH_SHELL=1`, `DSH_SESSION_ID`, `DSH_PTY_SESSION_ID`) plus
+`HOME`, `PATH` and `TERM=dumb`, but never `DSH_HOME`: the trusted `DSH_*`
+snapshot a one-shot `fish` call runs with is per-call, and the subprocess base
+drops every inherited `DSH_*` name. A nested `dsh --profile <profile>` therefore
+resolves its home the default way, `~/.dsh`, which can hold profile and plugin
+state from an older release — a stale plugin there can fail the nested boot or
+disable its rows. There is no config-only fix: the official
+`@deepseek-ai/dsh-terminal-bash@0.2.0-rc.1` row has no `env` config field, so an
+`env:` written on the `terminal-fish-pty` row is accepted by the schema and
+silently ignored. Pass the home explicitly instead — replace
+`/path/to/dsh-home` with the Harness home the outer session was launched with
+(a one-shot `fish` call prints it: `echo $DSH_HOME`):
+
+```
+env -u DSH_SESSION_ID -u DSH_PTY_SESSION_ID -u DSH_SHELL -u DSH_PERMISSION_MODE DSH_HOME=/path/to/dsh-home dsh --profile <profile>
+```

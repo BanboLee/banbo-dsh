@@ -142,3 +142,11 @@ bundled 的工具包没有进安装产物，或它被当成 peer（profile 平�
 ### `ERR_PNPM_NO_OFFLINE_TARBALL`
 
 离线安装打在了冷 pnpm store 上：`--offline` 下 pnpm 拒绝为它没有缓存的 tarball 走网络。先用一次联网安装把 store 预热（或首次安装时不带 `--offline` 跑同一条 `dsh plugin ... add`），然后再跑离线命令。插件自身的运行时依赖是随插件 tarball 一起走的，所以这是 store 状态问题，不是 bundled 文件缺失。
+
+### 交互式会话里嵌套的 `dsh` 拿不到 `DSH_HOME`
+
+交互式会话的子进程环境只有官方 PTY backend 注入的事实（`DSH_SHELL=1`、`DSH_SESSION_ID`、`DSH_PTY_SESSION_ID`）以及 `HOME`、`PATH` 和 `TERM=dumb`，**没有** `DSH_HOME`：one-shot `fish` 调用所带的受信 `DSH_*` 快照是按次生成的，而子进程基环境会丢掉所有继承来的 `DSH_*` 名。因此嵌套的 `dsh --profile <profile>` 会按默认规则把 home 解析成 `~/.dsh`，那里可能存着旧版本的 profile 与插件状态——残留的旧插件会让嵌套启动失败，或让它的 row 被禁用。没有只改配置的解法：官方 `@deepseek-ai/dsh-terminal-bash@0.2.0-rc.1` 的 row 没有 `env` 配置字段，所以写在 `terminal-fish-pty` 行上的 `env:` 会被 schema 收下、然后被静默忽略。正确做法是显式传入 home——把 `/path/to/dsh-home` 换成外层会话启动时使用的 Harness home（用一次 `fish` 调用即可打印：`echo $DSH_HOME`）：
+
+```
+env -u DSH_SESSION_ID -u DSH_PTY_SESSION_ID -u DSH_SHELL -u DSH_PERMISSION_MODE DSH_HOME=/path/to/dsh-home dsh --profile <profile>
+```

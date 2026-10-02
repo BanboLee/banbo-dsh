@@ -10,8 +10,9 @@
  * names, the "no secret on the command line" boundary, the "stty -echo is not a
  * mitigation" finding, the best-effort audit scope, either troubleshooting
  * error code, each L2 behavior the new lanes record as verified, the lane index
- * behind those claims, or either of the two claims the `Unverified` bullet still
- * owes the user.
+ * behind those claims, either of the two claims the `Unverified` bullet still
+ * owes the user, or the nested-`dsh` `DSH_HOME` entry together with the
+ * workaround command and the missing `env` field that forces it.
  *
  * Structural equality between the two files is `tests/docs-bilingual.spec.ts`'s
  * job; this spec asserts the content that only the fish-shell READMEs carry.
@@ -151,6 +152,25 @@ const COVERAGE_LANES = [
 function tableRow(text: string, path: string): string {
   return text.split('\n').find((line) => line.startsWith('|') && line.includes(path)) ?? ''
 }
+
+/**
+ * The nested-`dsh` troubleshooting entry: one heading per language plus the
+ * workaround command both files must carry verbatim.
+ *
+ * A nested `dsh` inside an L2 session inherits no `DSH_HOME` (the PTY child
+ * environment gets the injected session facts but not the harness home), so the
+ * inner launcher falls back to `~/.dsh` and can boot an older profile/plugin
+ * set. The measured workaround is the only working posture — the official
+ * `@deepseek-ai/dsh-terminal-bash` row exposes no `env` config field, so an
+ * `env:` written on the row is silently ignored — which is why the command
+ * itself is pinned, not just described.
+ */
+const NESTED_DSH_ENTRY = {
+  en: '### Nested `dsh` inside an interactive session has no `DSH_HOME`',
+  zh: '### 交互式会话里嵌套的 `dsh` 拿不到 `DSH_HOME`',
+  command:
+    'env -u DSH_SESSION_ID -u DSH_PTY_SESSION_ID -u DSH_SHELL -u DSH_PERMISSION_MODE DSH_HOME=/path/to/dsh-home dsh --profile <profile>',
+} as const
 
 describe('@banbolee/dsh-fish-shell README shape — the four L2 sections', () => {
   it('carries every required section heading, per language', () => {
@@ -364,5 +384,28 @@ describe('@banbolee/dsh-fish-shell README shape — troubleshooting and the sync
     // The root READMEs document the same new usage in both languages.
     expect(ROOT_EN).toContain('scripts/sync-to-profile.sh <profile>')
     expect(ROOT_ZH).toContain('scripts/sync-to-profile.sh <profile>')
+  })
+
+  it('documents the nested-dsh DSH_HOME gap, its workaround and the missing env field', () => {
+    for (const [label, text, heading, noConfigFix, missingField, ignored] of [
+      ['README.md', EN, NESTED_DSH_ENTRY.en, 'no config-only fix', '`env` config field', /silently ignored/u],
+      ['README.zh.md', ZH, NESTED_DSH_ENTRY.zh, '没有只改配置的解法', '`env` 配置字段', /被静默忽略/u],
+    ] as const) {
+      const entry = window(text, heading, 0, 1400)
+      expect(entry, `${label} is missing the nested-dsh entry`).toContain(heading)
+      // The workaround, verbatim: a translated command is a broken instruction.
+      expect(entry, `${label}: the entry must carry the tested command`).toContain(NESTED_DSH_ENTRY.command)
+      // Symptom and cause live in the same entry: the default home the inner
+      // launcher falls back to, and the injected session fact it does get.
+      expect(entry, `${label}: the entry must name the fallback home`).toContain('~/.dsh')
+      expect(entry, `${label}: the entry must name the injected session facts`).toContain('DSH_SESSION_ID')
+      expect(entry, `${label}: the entry must not just describe the command`).toContain('DSH_HOME')
+      // The refusal of a config-only fix has to bind to its reason: the row
+      // exposes no `env` field, and writing one changes nothing.
+      expect(window(text, noConfigFix, 0, 320), `${label}: "no config-only fix" must name the missing field`).toContain(
+        missingField,
+      )
+      expect(window(text, noConfigFix, 0, 320), `${label}: the ignored env field must be called out`).toMatch(ignored)
+    }
   })
 })
