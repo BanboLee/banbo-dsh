@@ -47,16 +47,19 @@
  * (e.g. a plugin resolving its caller from `$DSH_SESSION_ID`), or a nested-boot
  * failure traced to the inherited value.
  *
- * Fallback: ONLY when the registry is not mounted at all (`ctx.get('shellEnv')`
- * is `undefined` — a custom composition outside `dsh-base`) are the same three
- * facts read from their public owners instead: `resolveDshHome()` and
- * `ctx.get('profileContext')`, which are the registry's own sources — so the
+ * Fallback, and its exact boundary: the overlay always comes from exactly ONE
+ * source. When the registry is NOT mounted at all (`ctx.get('shellEnv')` is
+ * `undefined` — a custom composition outside `dsh-base`), the three facts are
+ * read from their public owners: `resolveDshHome()` and
+ * `ctx.get('profileContext')`, which are the registry's own sources, so the
  * values are byte-identical unless a profile configures `dshHome` on its
- * `shell-env` row, which only the registry path can see. When the service IS
- * mounted, a throwing `collect()` PROPAGATES instead: the one-shot shell path
- * collects fail-loud too, and swallowing that error would silently resolve a
- * DIFFERENT home (the ambient `DSH_HOME`) than the one the registry recorded —
- * the exact failure this module exists to remove.
+ * `shell-env` row — that row is visible to the registry path only. When the
+ * service IS mounted (even if its snapshot declares fewer than three keys) the
+ * registry is the only source: nothing is merged in per key, and a throwing
+ * `collect()` PROPAGATES, because the one-shot shell path collects fail-loud
+ * too and swallowing that error would silently resolve a DIFFERENT home (the
+ * ambient `DSH_HOME`) than the one the registry recorded — the exact failure
+ * this module exists to remove.
  *
  * The config surface is the official one in behaviour, not only in shape: the
  * `apply` below runs the official `resolveConfig`/`validateConfig` semantics
@@ -183,22 +186,26 @@ export function validateTerminalConfig(config) {
  */
 
 /**
- * The registry's snapshot of the home contract, when the registry is mounted.
+ * The registry's snapshot of the home contract, or `undefined` when the
+ * registry is NOT mounted (`ctx.get('shellEnv') === undefined`, i.e. a custom
+ * composition outside `dsh-base`). The distinction is load-bearing: a mounted
+ * registry is the ONLY source, so a key its snapshot omits stays omitted
+ * instead of being filled in from another source.
  *
  * `collect` is called with an empty execution on purpose: of the three keys
  * this module forwards, none depends on the execution (only `DSH_SESSION_ID`
  * does, and that one stays the PTY overlay's own value). A throwing `collect`
- * is NOT swallowed: once the registry is mounted it is the only source that can
- * see a configured `dshHome`, and quietly falling back would resolve a
+ * is NOT swallowed either: once the registry is mounted it is the only source
+ * that can see a configured `dshHome`, and quietly falling back would resolve a
  * different home — exactly the drift this module removes. It fails loud here
  * for the same reason the one-shot path (`dsh-tool-bash`) does.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the backend's plugin context.
- * @returns {Record<string, string>} the home facts the registry owns; `{}` only when the service is not mounted.
+ * @returns {Record<string, string> | undefined} the home facts the registry declares, or `undefined` when it is not mounted.
  */
 function registryHomeContract(ctx) {
   /** @type {import('@deepseek-ai/dsh-shell-env').ShellEnvRegistry | undefined} */
   const registry = ctx.get('shellEnv')
-  if (registry === undefined) return {}
+  if (registry === undefined) return undefined
   const snapshot = registry.collect(
     /** @type {import('@deepseek-ai/dsh-tools').ToolExecution} */ ({}),
   )
@@ -212,25 +219,32 @@ function registryHomeContract(ctx) {
 }
 
 /**
- * The harness home contract for one PTY child: `DSH_HOME` always, plus the
- * profile facts when this context can name them. Values come from the
- * `ctx.shellEnv` registry (the one-shot shell tools' own source); the public
- * `dsh-home-paths` / `profileContext` fallback is used ONLY when that service is
- * not mounted, and a `collect` error is propagated rather than swallowed — see
- * the module doc for both rules.
+ * The harness home contract for one PTY child, from exactly ONE source:
+ *
+ *   - the mounted `ctx.shellEnv` registry (the one-shot shell tools' own
+ *     source) — its declared facts verbatim, including the case where it
+ *     declares fewer than three (the official registry always declares
+ *     `DSH_HOME`, and declares the profile pair whenever a `profileContext`
+ *     exists, so an incomplete snapshot means a foreign implementation: the
+ *     honest reading is then "this environment does not carry that fact", not
+ *     "borrow it from somewhere else");
+ *   - only when that service is NOT mounted, the public owners
+ *     `dsh-home-paths` / `profileContext`, which are the registry's own sources.
+ *
+ * A `collect` error propagates rather than switching sources — see the module
+ * doc for both rules.
  * @param {import('@deepseek-ai/cordis').Context} ctx - the backend's plugin context.
  * @returns {Record<string, string>} the environment overlay to merge into the child environment.
  */
 export function harnessHomeEnvironment(ctx) {
   const fromRegistry = registryHomeContract(ctx)
+  if (fromRegistry !== undefined) return fromRegistry
   /** @type {ProfileFacts} */
   const profile = ctx.get('profileContext')
   /** @type {Record<string, string>} */
-  const environment = { [DSH_HOME_ENV]: fromRegistry[DSH_HOME_ENV] ?? resolveDshHome() }
-  const profileName = fromRegistry[DSH_PROFILE_KEY] ?? profile?.name
-  const profileDir = fromRegistry[DSH_PROFILE_DIR_KEY] ?? profile?.dir
-  if (profileName !== undefined) environment[DSH_PROFILE_KEY] = profileName
-  if (profileDir !== undefined) environment[DSH_PROFILE_DIR_KEY] = profileDir
+  const environment = { [DSH_HOME_ENV]: resolveDshHome() }
+  if (profile?.name !== undefined) environment[DSH_PROFILE_KEY] = profile.name
+  if (profile?.dir !== undefined) environment[DSH_PROFILE_DIR_KEY] = profile.dir
   return environment
 }
 

@@ -10,9 +10,11 @@
  *     making the registry and the fallback sources disagree and demanding the
  *     registry's values;
  *   - the fallback (`resolveDshHome()` + `ctx.get('profileContext')`) is used
- *     ONLY when the `shellEnv` service is not mounted; once it is, a `collect`
- *     error PROPAGATES (the one-shot path collects fail-loud too, and a
- *     swallowed error would quietly spawn on the ambient `DSH_HOME`);
+ *     ONLY when the `shellEnv` service is not mounted. Once it is, that
+ *     registry is the ONLY source — exactly the facts it declares, with no
+ *     per-key borrowing from the ambient env or the profile context — and a
+ *     `collect` error PROPAGATES (the one-shot path collects fail-loud too, and
+ *     a swallowed error would quietly spawn on the ambient `DSH_HOME`);
  *   - the injection happens through the official constructor's `spawnTerminal`
  *     seam and lands in `spec.env` — the layer the subprocess provider applies
  *     after `scrubbedParentEnv()`. The end-to-end case drives the inherited
@@ -119,17 +121,31 @@ describe('harnessHomeEnvironment — the public-facts fallback', () => {
     }
   })
 
-  it('falls back for the keys a registry snapshot does not carry', () => {
+  it('is the only source when mounted: keys its snapshot omits are NOT borrowed', () => {
     const ctx = new Context()
-    ctx.provide('shellEnv', registry(() => ({})) as never)
-    ctx.provide('profileContext', { name: 'fallback-profile', dir: '/fallback-profile-dir' } as never)
-    vi.stubEnv('DSH_HOME', '/stub-home')
+    // A registry declaring only the home, a `profileContext` that COULD supply
+    // the missing pair, and an ambient home that COULD supply the rest: none of
+    // them may leak in, because the mounted registry is the only source.
+    ctx.provide('shellEnv', registry(() => ({ DSH_HOME: '/registry-home' })) as never)
+    ctx.provide('profileContext', { name: 'context-profile', dir: '/context-profile-dir' } as never)
+    vi.stubEnv('DSH_HOME', '/ambient-home')
     try {
-      expect(harnessHomeEnvironment(ctx)).toEqual({
-        DSH_HOME: '/stub-home',
-        DSH_PROFILE: 'fallback-profile',
-        DSH_PROFILE_DIR: '/fallback-profile-dir',
-      })
+      expect(harnessHomeEnvironment(ctx)).toEqual({ DSH_HOME: '/registry-home' })
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it('is the only source when mounted: an empty snapshot exports nothing, not the ambient home', () => {
+    const ctx = new Context()
+    // The official registry ALWAYS declares DSH_HOME (its constructor resolves
+    // one), so an empty snapshot means a foreign implementation; its silence is
+    // respected instead of being filled in from another source.
+    ctx.provide('shellEnv', registry(() => ({})) as never)
+    ctx.provide('profileContext', { name: 'context-profile', dir: '/context-profile-dir' } as never)
+    vi.stubEnv('DSH_HOME', '/ambient-home')
+    try {
+      expect(harnessHomeEnvironment(ctx)).toEqual({})
     } finally {
       vi.unstubAllEnvs()
     }

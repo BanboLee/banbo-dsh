@@ -246,12 +246,15 @@ execution to add `DSH_SESSION_ID`, so the session facts (`DSH_SHELL`,
 `DSH_SESSION_ID`, `DSH_PTY_SESSION_ID`) stay the official overlay's own values.
 Nothing else differs: the config surface is the official schema re-exported
 verbatim (`Config`), so `backendType` keeps its `shell` default, which is what
-`listBackends()` reports and `terminal_open { type: 'shell' }` opens. When the
-registry is not mounted at all (a custom composition outside `dsh-base`), the
-same values come from their public owners — `resolveDshHome()` and
-`ctx.get('profileContext')`, which are the registry's own sources — and a
-contributor that throws on the spawn-time execution degrades to that fallback
-instead of failing the spawn. **Maintenance note:** the row is ours only
+`listBackends()` reports and `terminal_open { type: 'shell' }` opens. The
+overlay has exactly ONE source per mounted state: when the registry is not
+mounted at all (a custom composition outside `dsh-base`) the same facts come
+from their public owners — `resolveDshHome()` and `ctx.get('profileContext')`,
+which are the registry's own sources — while a mounted registry is
+authoritative, so a `collect` error propagates (like the one-shot path) instead
+of silently resolving another home, and a key its snapshot does not declare
+stays undeclared instead of being borrowed from the ambient environment.
+**Maintenance note:** the row is ours only
 because the official row exposes no `env` config field; if
 `@deepseek-ai/dsh-terminal-bash` grows one, the row goes back to the official
 package and `terminal.js` is deleted.
