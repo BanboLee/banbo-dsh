@@ -419,6 +419,13 @@ describe('@banbolee/dsh-fish-shell README shape — troubleshooting and the sync
         near(entry, [maintenance, '`env`', 'terminal.js'], 400),
         `${label}: the maintenance note must name the missing official field and the module it retires`,
       ).not.toBe('')
+      // Retiring the subclass is a two-file act: the note has to send its
+      // successor to the docs-shape contract that hardcodes this entry, or the
+      // next maintainer "deletes terminal.js" and turns that spec red blind.
+      expect(
+        near(entry, [maintenance, 'NESTED_DSH_ENTRY', 'docs-shape-fish-shell.spec.ts'], 1200),
+        `${label}: the retirement note must send the successor to the docs-shape contract`,
+      ).not.toBe('')
     }
   })
 })

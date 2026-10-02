@@ -155,4 +155,4 @@ bundled 的工具包没有进安装产物，或它被当成 peer（profile 平�
 env -u DSH_SESSION_ID -u DSH_PTY_SESSION_ID -u DSH_SHELL -u DSH_PERMISSION_MODE DSH_HOME=/path/to/dsh-home dsh --profile <profile>
 ```
 
-**维护注记。** 自己拥有这个 row（`terminal.js`）是我们能在不改官方包的前提下加上契约的唯一原因；一旦 `@deepseek-ai/dsh-terminal-bash` 支持了 `env` 配置字段（或 registry 自己转发 home 事实），row 就回到官方包、`terminal.js` 会被删除，本节只剩第一段——真实 lane 的断言在两种实现下都保留。
+**维护注记。** 自己拥有这个 row（`terminal.js`）是我们能在不改官方包的前提下加上契约的唯一原因；一旦 `@deepseek-ai/dsh-terminal-bash` 支持了 `env` 配置字段（或 registry 自己转发 home 事实），row 就回到官方包、`terminal.js` 会被删除，本节只剩第一段——真实 lane 的断言在两种实现下都保留。那次退休同样要更新 `tests/docs-shape-fish-shell.spec.ts` 里硬编码的 `NESTED_DSH_ENTRY` 契约，因为它点名了这个模块。

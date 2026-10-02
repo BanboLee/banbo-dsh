@@ -90,6 +90,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
       '@deepseek-ai/dsh-home-paths': '^0.2.0-rc.1',
       '@deepseek-ai/dsh-jobs': '^0.2.0-rc.1',
       '@deepseek-ai/dsh-llm': '^0.2.0-rc.1',
+      '@deepseek-ai/dsh-pwsh-local': '^0.2.0-rc.1',
       '@deepseek-ai/dsh-sandbox': '^0.2.0-rc.1',
       '@deepseek-ai/dsh-sandbox-policy': '^0.2.0-rc.1',
       '@deepseek-ai/dsh-scope': '^0.2.0-rc.1',

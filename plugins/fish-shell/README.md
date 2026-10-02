@@ -509,4 +509,6 @@ contract can be added without editing the official package; if
 `@deepseek-ai/dsh-terminal-bash` grows an `env` config field (or the registry
 forwards the home facts itself), the row goes back to the official package,
 `terminal.js` is deleted, and only the first paragraph of this entry remains —
-the real lane keeps its assertions either way.
+the real lane keeps its assertions either way. That retirement also has to
+update the `NESTED_DSH_ENTRY` contract in
+`tests/docs-shape-fish-shell.spec.ts`, which names this module.

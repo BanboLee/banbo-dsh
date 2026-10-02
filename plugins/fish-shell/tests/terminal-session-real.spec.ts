@@ -48,10 +48,10 @@
  *      assumption);
  *  12. the harness home contract: `$DSH_HOME` inside the session is THIS
  *      profile's isolated home, a nested `dsh --profile <this profile>
- *      --dump-config` composes this profile's tree from it, and the same
- *      command under a foreign home fails — the positive and the control
- *      together prove the nested launcher resolves the home the session was
- *      booted with.
+ *      --dump-config` composes THIS profile's tree (a positive COUNT of rows
+ *      naming this bundle, not just a zero exit status), and the same command
+ *      under a foreign home fails — the content count plus the control prove
+ *      the nested launcher resolves the home the session was booted with.
  *
  * The fish version is asserted only as "present and `\d+\.\d+\.\d+`": CI
  * runners ship a different fish than a developer machine (4.0.0 vs 3.7.1) and
@@ -729,10 +729,13 @@ realDescribe('real L2 terminal sessions in an isolated DSH profile', () => {
     if (dshHome === undefined) throw new Error('the isolated profile home is not available')
 
     // One send, four facts: the home the session carries, the nested launcher's
-    // status on it, whether the composed tree is THIS profile (the isolated one
-    // lives under this temp home, so no other home can produce its rows), and
-    // the control that the same command fails under a foreign home. The
-    // equality assertion below covers both failure shapes the bug had: an unset
+    // status on it, HOW MANY of its composed rows name this bundle (the
+    // isolated profile lives under this temp home, so no other home can produce
+    // its rows), and the control that the same command fails under a foreign
+    // home. The row COUNT is the part with independent teeth: a status-only
+    // command can satisfy an exit-status assertion, but only a real
+    // `--dump-config` of THIS profile yields `dsh-fish-shell` rows. The equality
+    // assertion below covers both failure shapes the bug had: an unset
     // `DSH_HOME` (empty) and the default `~/.dsh` fallback.
     //
     // `--dump-config` is the cheap nested command: it composes the profile tree
@@ -742,7 +745,7 @@ realDescribe('real L2 terminal sessions in an isolated DSH profile', () => {
       text: [
         'echo HOME_CONTRACT=$DSH_HOME',
         `dsh --profile ${PROFILE_NAME} --dump-config >/dev/null 2>&1; echo NESTED_STATUS=$status`,
-        `dsh --profile ${PROFILE_NAME} --dump-config 2>&1 | string match -q '*dsh-fish-shell*'; echo NESTED_SAME_PROFILE=$status`,
+        `set -l dump (dsh --profile ${PROFILE_NAME} --dump-config 2>&1 | string match '*dsh-fish-shell*'); echo NESTED_ROWS=(count $dump)`,
         `env DSH_HOME=/nonexistent-dsh-home dsh --profile ${PROFILE_NAME} --dump-config >/dev/null 2>&1; echo FOREIGN_HOME_STATUS=$status`,
       ].join('; '),
     })
@@ -750,7 +753,8 @@ realDescribe('real L2 terminal sessions in an isolated DSH profile', () => {
 
     expect(sent.viewport).toContain(`HOME_CONTRACT=${dshHome}`)
     expect(sent.viewport).toContain('NESTED_STATUS=0')
-    expect(sent.viewport).toContain('NESTED_SAME_PROFILE=0')
+    // Positive and content-bearing: the dump really carries THIS profile's rows.
+    expect(sent.viewport).toMatch(/NESTED_ROWS=[1-9]\d*/)
     // The control: without the inherited home the profile does not exist, so a
     // zero here would mean the positive assertions above passed for free.
     expect(sent.viewport).not.toContain('FOREIGN_HOME_STATUS=0')

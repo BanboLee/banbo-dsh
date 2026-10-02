@@ -9,9 +9,10 @@
  *     (`ctx.shellEnv.collect()`), so the two surfaces cannot drift — asserted by
  *     making the registry and the fallback sources disagree and demanding the
  *     registry's values;
- *   - the fallback (`resolveDshHome()` + `ctx.get('profileContext')`) is only
- *     reached when the registry is unavailable or a contributor throws on the
- *     spawn-time partial execution, and it never fails a spawn;
+ *   - the fallback (`resolveDshHome()` + `ctx.get('profileContext')`) is used
+ *     ONLY when the `shellEnv` service is not mounted; once it is, a `collect`
+ *     error PROPAGATES (the one-shot path collects fail-loud too, and a
+ *     swallowed error would quietly spawn on the ambient `DSH_HOME`);
  *   - the injection happens through the official constructor's `spawnTerminal`
  *     seam and lands in `spec.env` — the layer the subprocess provider applies
  *     after `scrubbedParentEnv()`. The end-to-end case drives the inherited
@@ -19,14 +20,17 @@
  *     configured argv reaches the provider unchanged, `terminalType` stays
  *     `dumb`, no confinement runs under `danger-full-access`, and the session
  *     factory receives the resolved official config;
- *   - the config surface and the inject list ARE the official ones, so the row
- *     keeps the official defaults (`backendType: 'shell'`) and activation
- *     semantics.
+ *   - the config surface and the inject list ARE the official ones — the same
+ *     schema object, the same inject list, and the same EFFECTIVE config: the
+ *     parity block below drives the official `apply` and this one with the same
+ *     inputs and compares the registered config byte for byte, plus the
+ *     validation outcome (error text included) for invalid inputs.
  */
 
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import {
+  apply as officialApply,
   BashTerminalBackend,
   Config as OfficialConfig,
   inject as officialInject,
@@ -44,7 +48,12 @@ import {
 /** The base class's resolved config shape, as the backend stores it. */
 interface BackendInternals {
   readonly type: string
-  readonly config: { readonly backendType: string, readonly rows: number, readonly shellPath: string }
+  readonly config: {
+    readonly backendType: string
+    readonly rows: number
+    readonly shellPath: string
+    readonly shellArgs: readonly string[]
+  }
 }
 
 /** A `ctx.shellEnv` double whose `collect` returns exactly `snapshot`. */
@@ -99,6 +108,7 @@ describe('harnessHomeEnvironment — the public-facts fallback', () => {
     vi.stubEnv('DSH_HOME', '/stub-home')
     try {
       // No `shellEnv` service at all: a custom composition outside dsh-base.
+      // This is the ONLY case the public-facts fallback exists for.
       expect(harnessHomeEnvironment(ctx)).toEqual({
         DSH_HOME: '/stub-home',
         DSH_PROFILE: 'fallback-profile',
@@ -125,7 +135,7 @@ describe('harnessHomeEnvironment — the public-facts fallback', () => {
     }
   })
 
-  it('survives a contributor that throws on the spawn-time partial execution', () => {
+  it('propagates a collect error instead of resolving another home (fail loud, like the one-shot path)', () => {
     const ctx = new Context()
     ctx.provide('shellEnv', {
       collect: () => {
@@ -133,15 +143,11 @@ describe('harnessHomeEnvironment — the public-facts fallback', () => {
       },
     } as never)
     ctx.provide('profileContext', { name: 'fallback-profile', dir: '/fallback-profile-dir' } as never)
-    vi.stubEnv('DSH_HOME', '/stub-home')
+    // An ambient home that differs from the registry's would be exactly the
+    // drift a swallowed error would reintroduce.
+    vi.stubEnv('DSH_HOME', '/ambient-wrong')
     try {
-      // A third-party contributor must not be able to take every PTY spawn
-      // down: the home facts do not depend on its contribution.
-      expect(harnessHomeEnvironment(ctx)).toEqual({
-        DSH_HOME: '/stub-home',
-        DSH_PROFILE: 'fallback-profile',
-        DSH_PROFILE_DIR: '/fallback-profile-dir',
-      })
+      expect(() => harnessHomeEnvironment(ctx)).toThrow('contributor needs a full tool execution')
     } finally {
       vi.unstubAllEnvs()
     }
@@ -195,8 +201,9 @@ interface BackendHarness {
  * doubled: `ctx.subprocess.spawnTerminal` (our injection point) and the session
  * factory. Everything else the inherited `spawn()` needs is provided as the
  * minimal service double the official fence/argv path reads.
+ * @param {{ collect?: () => Record<string, string> }} [options] - override the mounted registry's `collect`.
  */
-function mountBackend(): BackendHarness {
+function mountBackend(options: { collect?: () => Record<string, string> } = {}): BackendHarness {
   const ctx = new Context()
   const spawned: SubprocessTerminalSpawnSpec[] = []
   const initializations: number[] = []
@@ -208,7 +215,8 @@ function mountBackend(): BackendHarness {
     }),
     close: vi.fn(async () => {}),
   }
-  ctx.provide('shellEnv', registry(() => ({ DSH_HOME: '/registry-home', DSH_PROFILE: 'p', DSH_PROFILE_DIR: '/p' })) as never)
+  const defaultCollect = () => ({ DSH_HOME: '/registry-home', DSH_PROFILE: 'p', DSH_PROFILE_DIR: '/p' })
+  ctx.provide('shellEnv', registry(options.collect ?? defaultCollect) as never)
   ctx.provide('sandboxPolicy', { defaultMode: 'danger-full-access', resolve: () => ({ mode: 'danger-full-access', workspaceRoot: '/ws' }) } as never)
   ctx.provide('sandbox', { confine: vi.fn() } as never)
   ctx.provide('terminals', { hasOwnerActivity: () => false } as never)
@@ -287,6 +295,23 @@ describe('HarnessHomeTerminalBackend over the inherited official spawn()', () =>
     expect(internals.config.shellPath).toBe('fish')
     expect(internals.config.rows).toBe(40)
   })
+
+  it('fails the spawn when the mounted registry throws (never a silent ambient home)', async () => {
+    const harness = mountBackend({
+      collect: () => {
+        throw new Error('collect boom')
+      },
+    })
+    vi.stubEnv('DSH_HOME', '/ambient-wrong')
+    try {
+      await expect(harness.backend.spawn(ownerSpec(harness.ctx) as never)).rejects.toThrow('collect boom')
+      // The throw happens inside the `spawnTerminal` seam, before any PTY is
+      // allocated: nothing to clean up, and no session on the wrong home.
+      expect(harness.spawned).toHaveLength(0)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
 })
 
 describe('terminal.js config surface and activation', () => {
@@ -314,5 +339,110 @@ describe('terminal.js config surface and activation', () => {
     const internals = registered[0] as BackendInternals
     expect(internals.type).toBe('shell')
     expect(internals.config.rows).toBe(40)
+  })
+
+  it('materializes the official dialect defaults for an empty config (never undefined/[])', () => {
+    const ctx = new Context()
+    const registered: unknown[] = []
+    ctx.provide('terminals', { registerBackend: (backend: unknown) => registered.push(backend) } as never)
+
+    apply(ctx, {})
+
+    const internals = registered[0] as BackendInternals
+    expect(internals.config.shellPath).toBe('/bin/bash')
+    expect(internals.config.shellArgs).toEqual(['--noprofile', '--norc', '-i'])
+  })
+
+  it('rejects an invalid duration exactly as the official backend does', () => {
+    const ctx = new Context()
+    ctx.provide('terminals', { registerBackend: () => {} } as never)
+
+    // The reviewer-visible case: without the validation step this row used to
+    // register successfully with `timeoutMs: 0`.
+    expect(() => apply(ctx, { timeoutMs: 0 })).toThrow('terminal-bash: timeoutMs must be a positive safe integer')
+  })
+})
+
+/**
+ * Parity with the official `apply`. The official package exports no
+ * `resolveConfig`/`validateConfig`, so the official side is driven through its
+ * own public `apply` with a throwaway `terminals` registry that records the
+ * backend it registers — from there the effective config is read directly.
+ * Both sides therefore take the same path the loader takes, and any upstream
+ * drift (defaults, validation order, error text) turns these cases red.
+ *
+ * The loader step is explicit in the harness: cordis resolves the plugin's
+ * exported `Config` schema BEFORE calling `apply`, and the official `apply`
+ * depends on that (`resolveConfig` does not materialize `backendType`; a raw
+ * `{}` reaches its validator with `backendType: undefined`). Feeding both
+ * `apply`s `Config(input)` compares them at their real entry point.
+ */
+const PARITY_CONFIGS = [
+  ['the schema defaults', {}],
+  ['an empty shellPath and shellArgs (dialect defaults, not empty strings)', { shellPath: '', shellArgs: [] }],
+  ['the bundle patch row config', { shellPath: 'fish', shellArgs: ['--no-config', '-i', '-C', 'setup'], timeoutMs: 300000 }],
+  ['a pwsh dialect', { shellDialect: 'pwsh' }],
+  ['a backendType override', { backendType: 'fish', shellPath: 'fish' }],
+] as const
+
+const INVALID_CONFIGS = [
+  ['a zero duration', { timeoutMs: 0 }],
+  ['an empty backendType', { backendType: '' }],
+  ['a negative tail grace', { promptTailGraceMs: -1 }],
+  ['maxReadBytes above scrollbackMaxBytes', { maxReadBytes: 1024, scrollbackMaxBytes: 512 }],
+  ['a handoff grace below one poll', { handoffGraceMs: 10, pollIntervalMs: 50 }],
+] as const
+
+interface CapturedBackend {
+  readonly type: string
+  readonly config: unknown
+}
+
+/** The backend the OFFICIAL `apply` registers for the loader-resolved `config`. */
+function officialApplyCapture(config: unknown): CapturedBackend {
+  const registered: CapturedBackend[] = []
+  const ctx = { terminals: { registerBackend: (backend: CapturedBackend) => registered.push(backend) } }
+  officialApply(ctx as never, Config(config as never) as never)
+  const backend = registered[0]
+  if (backend === undefined) throw new Error('the official apply registered no backend')
+  return backend
+}
+
+/** The backend THIS module's `apply` registers for the loader-resolved `config`. */
+function ourApplyCapture(config: unknown): CapturedBackend {
+  const ctx = new Context()
+  const registered: CapturedBackend[] = []
+  ctx.provide('terminals', { registerBackend: (backend: unknown) => registered.push(backend as CapturedBackend) } as never)
+  apply(ctx, Config(config as never) as never)
+  const backend = registered[0]
+  if (backend === undefined) throw new Error('terminal.js apply registered no backend')
+  return backend
+}
+
+/** The thrown message, or `undefined` when `run` did not throw. */
+function captureError(run: () => unknown): string | undefined {
+  try {
+    run()
+    return undefined
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
+  }
+}
+
+describe('terminal.js is in config parity with the official apply', () => {
+  it.each(PARITY_CONFIGS)('registers a byte-identical effective config for %s', (_label, input) => {
+    const official = officialApplyCapture(input)
+    const ours = ourApplyCapture(input)
+    expect(ours.type).toBe(official.type)
+    expect(ours.config).toEqual(official.config)
+  })
+
+  it.each(INVALID_CONFIGS)('fails %s exactly as the official validator fails it', (_label, input) => {
+    const officialError = captureError(() => officialApplyCapture(input))
+    const ourError = captureError(() => ourApplyCapture(input))
+    // Guard the fixture itself: a case the OFFICIAL apply accepts would make
+    // the parity claim vacuous.
+    expect(officialError, 'the fixture must be invalid for the official apply too').not.toBeUndefined()
+    expect(ourError).toBe(officialError)
   })
 })
