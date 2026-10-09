@@ -110,6 +110,13 @@ const TUI_ROW_ID = 'dsh-tui'
  * subscription OAuth (`ctx.dshAuth`), and the front door row (`dsh-tui`)
  * injects every one of them. Before the QA packing fix the first three could
  * not import their vendored bundles at all.
+ *
+ * This map is the SEAM CONTRACT of the coexistence claim, not a snapshot of one
+ * release: which rows exist is read from the installed package (see
+ * {@link declaredDshTuiRows}), and a rename is reported with the id named so
+ * the claim gets re-validated instead of silently narrowing. The services
+ * themselves cannot be derived from a patch file, which is why the seam rows
+ * stay documented here.
  */
 const INTERACTIVE_ROWS: ReadonlyArray<{ readonly id: string, readonly services: readonly string[] }> = [
   { id: 'dsh-tui-plugin-host', services: ['tuiPluginHost'] },
@@ -162,6 +169,43 @@ const missingPrerequisites = [
   ...(fishBinary === undefined ? [`the \`fish\` shell on PATH — ${FISH_HINT}`] : []),
   ...(pnpmBinary === undefined ? ['`pnpm` on PATH (the pack and profile-install steps run through it)'] : []),
 ]
+
+/**
+ * The `dsh-tui*` rows the INSTALLED package declares in its own bundle patch
+ * (`dsh.bundle.patch`), read at run time.
+ *
+ * The lane used to assert a hardcoded four-row list taken from dsh-tui 0.11.2:
+ * that is a version snapshot, and it reported an upstream rename as this
+ * bundle's defect while still missing every row a later release added (the
+ * release installed here declares nineteen, five of them disabled on purpose).
+ * The invariant that actually matters is version-independent: whatever THIS
+ * patch declares — minus the rows it disables — has to come up.
+ *
+ * The ids are read with a regex rather than a YAML parser on purpose: `yaml` is
+ * a devDependency of `plugins/fish-shell`, not of the repository root, and the
+ * row-id line shape (`- id: <name>`) is all this needs. A format change cannot
+ * pass silently: an empty result fails the non-vacuity guard in the test.
+ */
+function declaredDshTuiRows(packageDir: string | undefined): readonly string[] {
+  if (packageDir === undefined) return []
+  let manifest: { readonly dsh?: { readonly bundle?: { readonly patch?: string } } }
+  try {
+    manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as typeof manifest
+  } catch {
+    return []
+  }
+  const patch = join(packageDir, manifest.dsh?.bundle?.patch ?? 'cordis.patch.yml')
+  if (!existsSync(patch)) return []
+  const ids = new Set<string>()
+  for (const match of readFileSync(patch, 'utf8').matchAll(/^\s*-\s*id:\s*(dsh-tui\S*)\s*$/gmu)) {
+    const id = match[1]
+    if (id !== undefined) ids.add(id)
+  }
+  return [...ids].sort()
+}
+
+/** The rows the installed dsh-tui patch declares (empty only when it is absent). */
+const DECLARED_TUI_ROWS: readonly string[] = declaredDshTuiRows(tuiPackage)
 /**
  * A missing prerequisite is a SKIP with its reason spelled out, never a silent
  * pass — but `RUN_REAL_FISH_TUI=1` turns the same condition into a fail-loud
@@ -614,29 +658,47 @@ describe(
       expect(agentSchemas).not.toContain('bash')
     }, 60_000)
 
-    it('activates the interactive dsh-tui rows instead of leaving them pending', () => {
+    it('activates every dsh-tui row the installed package declares, instead of leaving them pending', () => {
       const current = requireLane()
       const loader = service<LoaderService>(current.ctx, 'loader')
       const rows = [...loader.entries()]
+
+      // Non-vacuity guard for the derived set: an unparsed or empty row list
+      // would make the invariant below pass without checking anything.
+      expect(
+        DECLARED_TUI_ROWS.length,
+        `the installed ${TUI_BUNDLE} must declare its bundle rows in its own patch`,
+      ).toBeGreaterThan(0)
 
       // Cordis fiber states (`_getState` in cordis/lib/index.js): 2 running,
       // 3 activation (import) error, 0 pending. A row whose activation never
       // completed reports either 0 or no fiber at all (verified by reverting the
       // packing fix: `dsh-tui-plugin-host` then fails this assertion), so 2 is
-      // the only value that proves the row really came up.
-      for (const row of INTERACTIVE_ROWS) {
-        const entry = rows.find((candidate) => candidate.options?.id === row.id)
-        expect(entry, `the composed patch must mount the "${row.id}" row`).toBeDefined()
-        expect(entry?.disabled, `"${row.id}" must not be administratively disabled`).toBe(false)
+      // the only value that proves the row really came up. The rows the patch
+      // disables on purpose (`disabled: !!js …`) are not expected to run — the
+      // installed 0.14.0 declares nineteen rows and disables five of them.
+      let running = 0
+      for (const id of DECLARED_TUI_ROWS) {
+        const entry = rows.find((candidate) => candidate.options?.id === id)
+        expect(entry, `the composed patch must mount the "${id}" row`).toBeDefined()
+        if (entry?.disabled === true) continue
         expect(
           entry?.fiber?.state,
-          `"${row.id}" must be running (2) — pending rows report 0 or no fiber, import failures report 3`,
+          `"${id}" must be running (2) — pending rows report 0 or no fiber, import failures report 3`,
         ).toBe(2)
+        running += 1
       }
+      expect(running, 'the derived row set must contain at least one live row').toBeGreaterThan(0)
 
-      // The services those rows own are reachable from the composition root:
-      // a pending or import-failed row never provides them.
+      // The seams this bundle's coexistence claim rests on. Their services
+      // cannot be derived from a patch file, so the map above stays documented —
+      // and a rename upstream fails HERE, with the id named, instead of
+      // silently shrinking the checked set.
       for (const row of INTERACTIVE_ROWS) {
+        expect(
+          DECLARED_TUI_ROWS,
+          `the installed ${TUI_BUNDLE} no longer declares the "${row.id}" seam row; re-derive INTERACTIVE_ROWS and re-validate the coexistence claim`,
+        ).toContain(row.id)
         for (const name of row.services) {
           expect(current.ctx.get(name), `"${row.id}" must provide ${name}`).toBeDefined()
         }

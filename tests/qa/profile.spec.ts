@@ -93,25 +93,27 @@ const TUI_PACKAGE = '@deepseek-harness-tui/dsh-tui'
 const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.11.2`'
 
 /**
- * The vendored bundles the PUBLISHED `@deepseek-harness-tui/dsh-tui` manifest
- * curates in its own `bundledDependencies` (dsh-tui 0.11.2): the `@dsh-std/*`
- * set, the mathjax renderer vendor copy and the bundled subscription-auth
- * package. The QA staging has to keep every one of them inside the tarball —
- * when it does not, the `plugin-host` / `extensions` / `oauth` rows cannot
- * import them, their rows record activation errors and the main `dsh-tui` row
- * stays pending on the services they own while the QA lanes still look green.
+ * The vendored bundles the PUBLISHED manifest curates in its own
+ * `bundledDependencies` — read from the INSTALLED manifest at run time.
+ *
+ * This used to be a hardcoded nine-name list snapshotted from dsh-tui 0.11.2
+ * (`@dsh-std/command`, `@dsh-std/connection`, `@dsh-std/core`,
+ * `@dsh-std/manifest`, `@dsh-std/messages`, `@dsh-std/presentation`,
+ * `@dsh-std/storage`, `@dsh-tui-vendor/mathjax-tex-svg`,
+ * `@deepseek-harness-tui/dsh-auth`). That snapshot was never a contract:
+ * dsh-tui 0.14.0 dropped `dsh-auth` from its published list, so the lane went
+ * red on any machine that follows the real install while proving nothing extra
+ * — the invariant the packing path owes is "whatever THIS manifest declares as
+ * a published bundle survives the staging", not "0.11.2's list is still true".
+ *
+ * The QA-specific reason the published half matters at all is unchanged: when a
+ * vendored bundle is dropped, the `plugin-host` / `extensions` / `oauth` rows
+ * cannot import it, those rows record activation errors, the main `dsh-tui` row
+ * stays pending on the services they own, and the QA lanes still look green.
  */
-const PUBLISHED_VENDORED_BUNDLES = [
-  '@dsh-std/command',
-  '@dsh-std/connection',
-  '@dsh-std/core',
-  '@dsh-std/manifest',
-  '@dsh-std/messages',
-  '@dsh-std/presentation',
-  '@dsh-std/storage',
-  '@dsh-tui-vendor/mathjax-tex-svg',
-  '@deepseek-harness-tui/dsh-auth',
-] as const
+function publishedBundles(manifest: TuiManifest | undefined): readonly string[] {
+  return manifest?.bundledDependencies ?? []
+}
 
 interface TuiManifest {
   readonly name?: string
@@ -248,22 +250,37 @@ describe(`QA packing of the global ${TUI_PACKAGE} installation`, () => {
     if (source === undefined || packed === undefined) throw new Error('the staged dsh-tui tarball was not packed')
 
     const packagedBundles = [...(packed.bundledDependencies ?? [])].sort()
+    const published = publishedBundles(source)
+    const dependencies = Object.keys(source.dependencies ?? {})
 
     // Union, not overwrite: the published list is what makes the vendored rows
     // importable, and the dependency list is what makes the tarball
     // self-contained. Either half alone ships a broken or non-installable tgz.
     expect(packagedBundles).toEqual([...expectedBundledUnion(source)].sort())
 
-    // And the published half is really there, not merely re-declared.
-    for (const name of PUBLISHED_VENDORED_BUNDLES) {
-      expect(packagedBundles, `${name} must stay in the packed bundledDependencies`).toContain(name)
-    }
+    // The two halves as explicit superset invariants, both derived from the
+    // source manifest: the packer may add to either set, but it must never drop
+    // one. (The installed 0.14.0 manifest declares eight published bundles and
+    // 30 dependencies, so neither assertion is vacuous; a future manifest that
+    // declares fewer simply narrows the set that has to survive.)
+    expect(packagedBundles, "the publisher's bundledDependencies must survive the staging")
+      .toEqual(expect.arrayContaining([...published]))
+    expect(packagedBundles, 'the regular dependency set must survive the staging')
+      .toEqual(expect.arrayContaining(dependencies))
+
+    // That the published half is really IN the artefact, not merely
+    // re-declared, is the next test. The dependency half is checked by
+    // declaration only: an installer may legitimately skip a dependency for
+    // platform reasons, and a bundled dependency that declared a missing file
+    // would fail the QA installs loudly anyway.
   })
 
   it('ships every vendored bundle as a real file inside the tarball', (ctx) => {
     if (tuiUnrunnable !== undefined) ctx.skip(tuiUnrunnable)
 
-    for (const name of PUBLISHED_VENDORED_BUNDLES) {
+    // Derived from the installed manifest, so the check follows the release the
+    // machine actually runs instead of one version's list.
+    for (const name of publishedBundles(tuiSourceManifest)) {
       const entry = `package/node_modules/${name}/package.json`
       expect(tuiTarballEntries, `${entry} must be listed in the tarball`).toContain(entry)
 
