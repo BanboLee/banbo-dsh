@@ -18,11 +18,12 @@
  *        rows (`dsh --profile dsh-tui --dump-config`).
  *   G5 — the real dsh-tui profile STARTS, and it starts healthy: the PTY case
  *        reaches its prompt and exits cleanly (`run-dsh-tui-pty.mjs`, evidence
- *        `g5-pty.json`) AND the profile's interactive rows really activate —
- *        `dsh-tui-plugin-host`, `dsh-tui-extensions`, `dsh-tui-auth` and the
- *        front door `dsh-tui` reach cordis fiber state 2 and provide the
- *        services they own. A composition that renders a prompt while those
- *        rows failed their imports or stayed pending is degraded, not started.
+ *        `g5-pty.json`) AND the profile's interactive rows really activate — the
+ *        rows the INSTALLED package's own bundle patch declares (minus the ones
+ *        it disables on purpose) reach cordis fiber state 2 and provide the seam
+ *        services this repository maps for them. A composition that renders a
+ *        prompt while those rows failed their imports or stayed pending is
+ *        degraded, not started.
  *   G6 — the mandatory Plan-ID real-run set completes truthfully
  *        (`run-dsh-tui-real.mjs` → evidence `g6-results.json`, enforced by
  *        `assertCompleteResults` in `scripts/qa/lib/plan.mjs`).
@@ -84,12 +85,19 @@ const ACTIVATION_TIMEOUT_MS = 15_000
 const ACTIVATION_POLL_MS = 250
 
 /**
- * The four interactive dsh-tui rows and the services each one owns (its patch
- * rows): `dsh-tui-plugin-host` is the plugin-interop anchor, `dsh-tui-extensions`
+ * The seam CONTRACT of the G5 activation claim: the dsh-tui rows this
+ * repository knows how to check, and the services each one owns (its patch
+ * rows). `dsh-tui-plugin-host` is the plugin-interop anchor, `dsh-tui-extensions`
  * mounts the plugin-facing UI seams, `dsh-tui-auth` owns subscription OAuth, and
  * the front door `dsh-tui` injects every one of them.
+ *
+ * The ROW SET is deliberately not pinned here: which rows exist is read from the
+ * installed package's own bundle patch ({@link expectedActivationRows}), so an
+ * upstream rename surfaces as a failure that NAMES the seam row instead of a
+ * silently narrower check. The services cannot be derived from a patch file,
+ * which is why they stay mapped here.
  */
-export const INTERACTIVE_ROWS = [
+export const INTERACTIVE_SEAMS = [
   { id: 'dsh-tui-plugin-host', services: ['tuiPluginHost'] },
   { id: 'dsh-tui-extensions', services: ['tuiDialogs', 'tuiStatus', 'tuiShortcuts', 'tuiRenderers', 'tuiToast', 'tuiThemes'] },
   { id: 'dsh-tui-auth', services: ['dshAuth'] },
@@ -98,21 +106,100 @@ export const INTERACTIVE_ROWS = [
 export const GATE_NAMES = ['G4', 'G5', 'G6']
 
 /**
- * Judge one activation snapshot. Pure: the probe only collects `{ rows }`, the
- * verdict (and the offending row names, states and missing services) lives here
- * so it can be unit-tested — and mutated — without a QA environment.
+ * The `dsh-tui*` row ids a bundle patch declares, in patch order.
+ *
+ * The ids are read with a regex rather than a YAML parser on purpose: this
+ * script runs with no repository dependencies (it may be launched against a QA
+ * root from anywhere), and the row-id line shape (`- id: <name>`) is all the
+ * expectation set needs. A format change cannot pass silently: an empty result
+ * fails the non-vacuity guard in `activationVerdict`.
+ */
+export function declaredRowIds(patchText) {
+  if (typeof patchText !== 'string') return []
+  const ids = []
+  for (const match of patchText.matchAll(/^\s*-\s*id:\s*(dsh-tui\S*)\s*$/gmu)) {
+    const id = match[1]
+    if (id !== undefined && !ids.includes(id)) ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * The G5 expectation set for one installed release: every row its own patch
+ * declares, with the seam services this repository maps for it — plus one
+ * failure per seam row that release no longer declares, so a rename is reported
+ * by name instead of shrinking the checked set.
+ */
+export function expectedActivationRows(patchText) {
+  const declared = declaredRowIds(patchText)
+  const rows = declared.map((id) => {
+    const seam = INTERACTIVE_SEAMS.find((candidate) => candidate.id === id)
+    return {
+      id,
+      // `required` marks the seam rows: a row the installed patch declares but
+      // this repository has no claim about may legitimately be disabled by that
+      // patch (`disabled: !!js …`), a seam row may not.
+      required: seam !== undefined,
+      services: seam?.services ?? [],
+    }
+  })
+  const failures = INTERACTIVE_SEAMS
+    .filter((seam) => !declared.includes(seam.id))
+    .map((seam) => ({
+      id: seam.id,
+      reason: `the installed dsh-tui no longer declares the "${seam.id}" seam row; re-derive INTERACTIVE_SEAMS and re-validate the G5 activation claim`,
+    }))
+  return { rows, failures }
+}
+
+/**
+ * The installed dsh-tui package's own bundle patch (`dsh.bundle.patch`), read
+ * from the package the profile actually runs. `undefined` when it cannot be
+ * read: the expectation set then reads as "nothing declared", which the verdict
+ * reports as a failure instead of passing.
+ */
+function readInstalledTuiPatch(dshBin) {
+  try {
+    const target = targetTuiPackagePath(realpathSync(dshBin))
+    const manifest = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8'))
+    const patch = join(target, manifest?.dsh?.bundle?.patch ?? 'cordis.patch.yml')
+    return existsSync(patch) ? readFileSync(patch, 'utf8') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Judge one activation snapshot. Pure: the probe collects `{ rows, expectedRows,
+ * expectedFailures }` — the expectation set is derived from the installed
+ * release, never from a version snapshot — and the verdict (with the offending
+ * row names, states and missing services) lives here so it can be unit-tested —
+ * and mutated — without a QA environment.
  */
 export function activationVerdict(snapshot) {
   const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : []
-  const failures = []
-  for (const expected of INTERACTIVE_ROWS) {
+  const expectedRows = Array.isArray(snapshot?.expectedRows) ? snapshot.expectedRows : []
+  const failures = [...(Array.isArray(snapshot?.expectedFailures) ? snapshot.expectedFailures : [])]
+  if (expectedRows.length === 0) {
+    // Fail loud: an empty expectation set would otherwise pass by checking
+    // nothing. The probe always supplies the rows the installed patch declares.
+    failures.push({
+      id: null,
+      reason: 'the activation snapshot carries no expected rows: the probe must derive them from the installed bundle patch',
+    })
+  }
+  for (const expected of expectedRows) {
     const row = rows.find((candidate) => candidate.id === expected.id)
     if (row === undefined) {
       failures.push({ id: expected.id, reason: 'row is not mounted in the booted profile' })
       continue
     }
     if (row.disabled === true) {
-      failures.push({ id: expected.id, fiberState: row.fiberState ?? null, reason: 'row is administratively disabled' })
+      // A declared row the installed patch disables on purpose is not an
+      // offence; a SEAM row it disables is, because that is the claim.
+      if (expected.required === true) {
+        failures.push({ id: expected.id, fiberState: row.fiberState ?? null, reason: 'seam row is administratively disabled' })
+      }
       continue
     }
     if (row.fiberState !== RUNNING_FIBER_STATE) {
@@ -243,10 +330,10 @@ function hasService(ctx, name) {
   }
 }
 
-function snapshotInteractiveRows(ctx) {
+function snapshotInteractiveRows(ctx, expectedRows) {
   const loader = ctx.get('loader')
   const entries = loader === undefined || loader === null ? [] : [...loader.entries()]
-  return INTERACTIVE_ROWS.map((row) => {
+  return expectedRows.map((row) => {
     const entry = entries.find((candidate) => candidate.options?.id === row.id)
     return {
       id: row.id,
@@ -260,12 +347,13 @@ function snapshotInteractiveRows(ctx) {
 
 /**
  * Boot the installed dsh-tui profile in-process — the same harness the
- * composition lane uses — and collect the interactive rows' fiber states and
- * services. The rows are polled until they settle: an import failure or a
- * pending row never reaches fiber state 2, so the deadline only costs time on
- * real failures.
+ * composition lane uses — and collect the rows its own patch declares, with
+ * their fiber states and seam services. The rows are polled until they settle:
+ * an import failure or a pending row never reaches fiber state 2, so the
+ * deadline only costs time on real failures.
  */
 async function probeInteractiveRows({ dshBin, dshHome, profileName }) {
+  const expectations = expectedActivationRows(readInstalledTuiPatch(dshBin))
   const { appBoot, installAnchor } = await loadAppBoot(dshBin)
   const profile = appBoot.loadProfile('dsh', profileName, installAnchor, dshHome)
   const prepare = await openProfileModuleResolution(appBoot, { installAnchor, profile, home: dshHome })
@@ -278,9 +366,15 @@ async function probeInteractiveRows({ dshBin, dshHome, profileName }) {
   try {
     const deadline = Date.now() + ACTIVATION_TIMEOUT_MS
     for (;;) {
-      const rows = snapshotInteractiveRows(ctx)
-      const verdict = activationVerdict({ rows })
-      if (verdict.passed || Date.now() >= deadline) return { ...verdict, rows }
+      const rows = snapshotInteractiveRows(ctx, expectations.rows)
+      const verdict = activationVerdict({
+        rows,
+        expectedRows: expectations.rows,
+        expectedFailures: expectations.failures,
+      })
+      if (verdict.passed || Date.now() >= deadline) {
+        return { ...verdict, rows, expectedRows: expectations.rows.map((row) => row.id) }
+      }
       await delay(ACTIVATION_POLL_MS)
     }
   } finally {

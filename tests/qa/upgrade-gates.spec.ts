@@ -30,18 +30,28 @@ import {
 } from '../../scripts/qa/lib/profile.mjs'
 import {
   GATE_NAMES,
-  INTERACTIVE_ROWS,
+  INTERACTIVE_SEAMS,
   RUNNING_FIBER_STATE,
   activationVerdict,
+  declaredRowIds,
   exitCodeFor,
+  expectedActivationRows,
   probeInstalledProfileActivation,
   runGates,
 } from '../../scripts/qa/run-dsh-tui-upgrade.mjs'
 
-/** A healthy activation snapshot: every interactive row running with its services. */
+/** The expectation set the probe derives for one installed release. */
+const EXPECTED_ROWS = INTERACTIVE_SEAMS.map((seam) => ({
+  id: seam.id,
+  required: true,
+  services: [...seam.services],
+}))
+
+/** A healthy activation snapshot: every expected row running with its services. */
 function runningSnapshot() {
   return {
-    rows: INTERACTIVE_ROWS.map((row) => ({
+    expectedRows: EXPECTED_ROWS,
+    rows: EXPECTED_ROWS.map((row) => ({
       id: row.id,
       mounted: true,
       disabled: false,
@@ -55,6 +65,7 @@ function runningSnapshot() {
 function mutatedSnapshot(id: string, mutation: Record<string, unknown>) {
   const snapshot = runningSnapshot()
   return {
+    ...snapshot,
     rows: snapshot.rows.map((row) => (row.id === id ? { ...row, ...mutation } : row)),
   }
 }
@@ -132,14 +143,127 @@ describe('upgrade gate verdicts', () => {
 
   it('fails an interactive row that is not mounted at all', () => {
     // Given: a snapshot in which one row never made it into the loader.
-    const snapshot = { rows: runningSnapshot().rows.filter((row) => row.id !== 'dsh-tui-auth') }
+    const snapshot = runningSnapshot()
+    const verdict = activationVerdict({
+      ...snapshot,
+      rows: snapshot.rows.filter((row) => row.id !== 'dsh-tui-auth'),
+    })
 
-    // When: the activation verdict is derived.
-    const verdict = activationVerdict(snapshot)
-
-    // Then: the absent row is reported instead of silently ignored.
+    // Then: the absent seam row is reported instead of silently ignored.
     expect(verdict.passed).toBe(false)
     expect(verdict.failures).toEqual([expect.objectContaining({ id: 'dsh-tui-auth' })])
+  })
+
+  it('derives the expected rows from the patch text, not from a version snapshot', () => {
+    // Given: a patch shaped like a real dsh-tui bundle patch — rows nested under
+    // an insert, a foreign row among them.
+    const patch = [
+      '- insert:',
+      '    - id: dsh-base-thing',
+      '      name: something-else',
+      '    - id: dsh-tui-plugin-host',
+      '      name: host',
+      '    - id: dsh-tui-extensions',
+      '      name: extensions',
+      '    - id: dsh-tui-auth',
+      '      name: auth',
+      '    - id: dsh-tui',
+      '      name: front-door',
+    ].join('\n')
+
+    // When: the expectation set is derived.
+    expect(declaredRowIds(patch)).toEqual([
+      'dsh-tui-plugin-host',
+      'dsh-tui-extensions',
+      'dsh-tui-auth',
+      'dsh-tui',
+    ])
+    const expectations = expectedActivationRows(patch)
+
+    // Then: exactly the declared rows are expected, with the seam services
+    // mapped onto the rows this repository knows, and no seam failure.
+    expect(expectations.rows).toEqual(EXPECTED_ROWS)
+    expect(expectations.failures).toEqual([])
+  })
+
+  it('checks a row the installed release added, without inventing seam services for it', () => {
+    // Given: a release that keeps every seam row and adds one of its own.
+    const patch = [
+      ...EXPECTED_ROWS.map((row) => `- id: ${row.id}`),
+      '- id: dsh-tui-brand-new',
+    ].join('\n')
+
+    // When: the expectation set is derived.
+    const expectations = expectedActivationRows(patch)
+
+    // Then: the new row is CHECKED (not ignored) and carries no seam services.
+    expect(expectations.rows).toEqual([...EXPECTED_ROWS, { id: 'dsh-tui-brand-new', required: false, services: [] }])
+    expect(expectations.failures).toEqual([])
+  })
+
+  it('fails the seam row by name when the installed release renamed it away', () => {
+    // Given: a release whose auth seam became `dsh-tui-oauth`.
+    const patch = [
+      '- id: dsh-tui-plugin-host',
+      '- id: dsh-tui-extensions',
+      '- id: dsh-tui-oauth',
+      '- id: dsh-tui',
+    ].join('\n')
+
+    // When: the verdict is derived from that expectation set.
+    const expectations = expectedActivationRows(patch)
+    const verdict = activationVerdict({
+      rows: expectations.rows.map((row) => ({
+        id: row.id,
+        mounted: true,
+        disabled: false,
+        fiberState: RUNNING_FIBER_STATE,
+        servicesPresent: [...row.services],
+      })),
+      expectedRows: expectations.rows,
+      expectedFailures: expectations.failures,
+    })
+
+    // Then: the renamed seam is NAMED instead of the checked set silently
+    // shrinking to the rows that still match.
+    expect(expectations.failures).toEqual([expect.objectContaining({ id: 'dsh-tui-auth' })])
+    expect(verdict.passed).toBe(false)
+    expect(verdict.failures.map((failure: { id: string | null }) => failure.id)).toContain('dsh-tui-auth')
+  })
+
+  it('skips the rows the installed release disables on purpose', () => {
+    // Given: a declared row the patch disables (0.14.0 disables five of them),
+    // alongside the complete seam set.
+    const patch = [...EXPECTED_ROWS.map((row) => `- id: ${row.id}`), '- id: dsh-tui-storage'].join('\n')
+    const expectations = expectedActivationRows(patch)
+
+    // When: the disabled row never reaches a fiber state.
+    const verdict = activationVerdict({
+      rows: expectations.rows.map((row) => ({
+        id: row.id,
+        mounted: true,
+        disabled: row.id === 'dsh-tui-storage',
+        fiberState: row.id === 'dsh-tui-storage' ? null : RUNNING_FIBER_STATE,
+        servicesPresent: [...row.services],
+      })),
+      expectedRows: expectations.rows,
+      expectedFailures: expectations.failures,
+    })
+
+    // Then: a row the patch itself disabled is not an offence.
+    expect(verdict.failures).toEqual([])
+    expect(verdict.passed).toBe(true)
+  })
+
+  it('fails loud when a snapshot carries no expected rows instead of passing vacuously', () => {
+    // Given: a probe snapshot without the derived expectation set.
+    const verdict = activationVerdict({ rows: [] })
+
+    // Then: the missing expectation set is itself a failure, never a pass.
+    expect(verdict.passed).toBe(false)
+    expect(verdict.failures).toEqual([
+      expect.objectContaining({ id: null, reason: expect.stringContaining('no expected rows') }),
+    ])
   })
 
   it('passes every gate when all five steps produce their evidence', async () => {
@@ -366,16 +490,37 @@ describe(`the G5 activation probe on a QA-packed ${TUI_BUNDLE} profile`, () => {
       layout: layout as never,
       environment: environment as never,
       dshBin: dshBinary as string,
-    })
+    }) as {
+      readonly passed: boolean
+      readonly failures: readonly unknown[]
+      readonly rows: ReadonlyArray<{
+        readonly id: string
+        readonly disabled: boolean
+        readonly fiberState: number | null
+        readonly servicesPresent: readonly string[]
+      }>
+      readonly expectedRows: readonly string[]
+    }
 
-    // Then: no row offends — the four rows are running and own their services,
-    // which is exactly what the gate derives its verdict from.
+    // Then: no row offends — the expectation set is the row list the installed
+    // release declares, every one of those rows is running, and the seam rows
+    // own the services this repository maps for them.
     expect(verdict.failures, JSON.stringify(verdict.failures)).toEqual([])
     expect(verdict.passed).toBe(true)
+    expect(verdict.expectedRows.length, 'the installed patch must declare rows').toBeGreaterThan(0)
     const byId = new Map(verdict.rows.map((row) => [row.id, row]))
-    for (const expected of INTERACTIVE_ROWS) {
-      expect(byId.get(expected.id)?.fiberState, `${expected.id} fiber state`).toBe(RUNNING_FIBER_STATE)
-      expect(byId.get(expected.id)?.servicesPresent, `${expected.id} services`).toEqual([...expected.services])
+    // Every row the installed patch declares — minus the ones it disables on
+    // purpose (0.14.0 disables five of nineteen) — has to be running.
+    let live = 0
+    for (const row of verdict.rows) {
+      if (row.disabled === true) continue
+      expect(row.fiberState, `${row.id} fiber state`).toBe(RUNNING_FIBER_STATE)
+      live += 1
+    }
+    expect(live, 'the derived set must contain live rows').toBeGreaterThanOrEqual(INTERACTIVE_SEAMS.length)
+    for (const seam of INTERACTIVE_SEAMS) {
+      expect(verdict.expectedRows, `the installed release must declare ${seam.id}`).toContain(seam.id)
+      expect(byId.get(seam.id)?.servicesPresent, `${seam.id} services`).toEqual([...seam.services])
     }
   }, 120_000)
 })
