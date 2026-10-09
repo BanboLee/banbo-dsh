@@ -67,6 +67,15 @@ jobs:
       # makes those paths resolve inside the package instead: the same staging
       # the repository's packed-offline lane uses, and the only shape whose
       # members all live under `package/`.
+      #
+      # `--config.package-import-method=copy` is load-bearing, not a tweak:
+      # pnpm's default import method materializes store files as HARDLINKS, and
+      # when the staged tree keeps them the packing step writes hardlink members
+      # (`hrw-r--r-- … link to …`) that npmjs REJECTS with
+      # `415 Unsupported Media Type … Hard link is not allowed` (hit during the
+      # 0.8.0 publish: schemastery/LICENSE and cosmokit/LICENSE were two links to
+      # one inode). Copying keeps the staged tree hardlink-free, and the guard
+      # below asserts that it stayed that way.
       - name: Stage the bundle outside the workspace with the hoisted linker
         run: |
           set -euo pipefail
@@ -74,14 +83,21 @@ jobs:
           echo "STAGE=$STAGE" >> "$GITHUB_ENV"
           cp -R plugins/fish-shell "$STAGE/pkg"
           rm -rf "$STAGE/pkg/node_modules"
-          (cd "$STAGE/pkg" && pnpm install --prod --config.node-linker=hoisted --config.auto-install-peers=false)
+          (cd "$STAGE/pkg" && pnpm install --prod --config.node-linker=hoisted --config.package-import-method=copy --config.auto-install-peers=false)
 
-      # Cheap precondition for the publish below: every tarball member must live
-      # under `package/` and none may contain a `..` component. A member like
-      # `package/../../node_modules/.pnpm/...` still starts with `package/`, so
-      # both checks are needed — that shape is exactly what an isolated
-      # (symlinked) install produces, and what the staged install above buys.
-      - name: Assert no tarball member escapes the package root
+      # Cheap precondition for the publish below, and the only place the
+      # REGISTRY's structural rules are checked (nothing here can be found by
+      # `npm publish --dry-run`: a dry run never uploads, so the registry never
+      # applies them — that is exactly how the 415 below reached a real publish):
+      #   * every member lives under `package/` and none contains a `..`
+      #     component — a member like `package/../../node_modules/.pnpm/...`
+      #     still starts with `package/`, so both checks are needed;
+      #   * no member is a HARDLINK (npmjs 415 "Hard link is not allowed");
+      #   * a symlink member, if one ever appears, resolves inside `package/`:
+      #     an absolute target or any `..` component is rejected (npm tarballs
+      #     carry no symlinks at all, so the conservative rule costs nothing and
+      #     a permissive one would be the wrong default on a publish gate).
+      - name: Assert the tarball is publishable (no escaping members, no hardlinks)
         run: |
           set -euo pipefail
           mkdir -p "$STAGE/check"
@@ -91,6 +107,22 @@ jobs:
             echo 'error: tarball members escape the package root:' >&2
             printf '%s\n' "$members" | grep -E '(^|/)\.\.(/|$)' >&2
             exit 1
+          fi
+          listing="$(tar -tvzf "$STAGE"/check/*.tgz)"
+          hardlinks="$(printf '%s\n' "$listing" | grep -E '^h' || true)"
+          if [ -n "$hardlinks" ]; then
+            echo 'error: tarball contains hardlink members; npmjs rejects them with 415 Hard link is not allowed:' >&2
+            printf '%s\n' "$hardlinks" >&2
+            exit 1
+          fi
+          symlink_targets="$(printf '%s\n' "$listing" | grep -E '^l' | sed -E 's/^.* -> //' || true)"
+          if [ -n "$symlink_targets" ]; then
+            escaping_links="$(printf '%s\n' "$symlink_targets" | grep -E '^/|(^|/)\.\.(/|$)' || true)"
+            if [ -n "$escaping_links" ]; then
+              echo 'error: symlink members must resolve inside the package root (absolute target or `..` component):' >&2
+              printf '%s\n' "$escaping_links" >&2
+              exit 1
+            fi
           fi
           printf '%s\n' "$members" | grep -E '^package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json$'
 

@@ -31,6 +31,7 @@ const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const scratch = mkdtempSync(join(tmpdir(), 'banbo-fish-packed-'))
 const staged = join(scratch, 'staged')
 const packs = join(scratch, 'packs')
+const publishPacks = join(scratch, 'publish')
 const extracted = join(scratch, 'extracted')
 
 /** Why this lane cannot run here; set only when the staged install failed. */
@@ -38,6 +39,9 @@ let unpackable: string | undefined
 /** The packed tarball and its entry list (`package/...` paths). */
 let tarball: string | undefined
 let entries: string[] | undefined
+/** The PUBLISH-shape artefact: names (`tar -tzf`) and link types (`tar -tvzf`). */
+let publishNames: string[] | undefined
+let publishListing: string[] | undefined
 
 afterAll(() => {
   rmSync(scratch, { recursive: true, force: true })
@@ -118,12 +122,25 @@ function tarballName(): string {
 
 beforeAll(async () => {
   mkdirSync(packs, { recursive: true })
+  mkdirSync(publishPacks, { recursive: true })
   cpSync(pluginRoot, staged, {
     recursive: true,
     filter: entry => basename(entry) !== 'node_modules' && basename(entry) !== 'tests',
   })
   try {
-    await runPnpm(['install', '--prod', '--config.node-linker=hoisted', '--config.auto-install-peers=false'], staged)
+    // `--config.package-import-method=copy` is part of the PUBLISH shape, not
+    // a convenience: pnpm's store materializes files as hardlinks, and when the
+    // staged tree keeps them, the packing step writes hardlink members
+    // (`hrw-r--r-- … link to …`) that npmjs rejects with
+    // `415 Unsupported Media Type … Hard link is not allowed` (measured during
+    // the 0.8.0 publish; the release workflow stages the same way).
+    await runPnpm([
+      'install',
+      '--prod',
+      '--config.node-linker=hoisted',
+      '--config.package-import-method=copy',
+      '--config.auto-install-peers=false',
+    ], staged)
   } catch (error) {
     unpackable = `pnpm install --prod --config.node-linker=hoisted could not populate the staged copy `
       + `(no registry access or empty pnpm store?): ${describeFailure(error)}`
@@ -146,7 +163,54 @@ beforeAll(async () => {
   entries = execFileSync('tar', ['-tzf', tarballPath], { encoding: 'utf8' }).trim().split('\n')
   mkdirSync(extracted, { recursive: true })
   execFileSync('tar', ['-xzf', tarballPath, '-C', extracted])
+
+  // The PUBLISH shape is the one `npm pack`/`npm publish` produces, and it is
+  // packed separately: `pnpm pack` re-materializes every file, so hardlinked
+  // store entries come out as ordinary members and the defect this guard exists
+  // for (the registry's 415 on hardlink members) would stay invisible.
+  const publishArtefact = packWithNpm()
+  publishNames = execFileSync('tar', ['-tzf', publishArtefact], { encoding: 'utf8' }).trim().split('\n')
+  publishListing = execFileSync('tar', ['-tvzf', publishArtefact], { encoding: 'utf8' }).trim().split('\n')
 }, 600_000)
+
+/**
+ * Pack the staged copy with `npm pack` — the packer the publish uses — and
+ * return the artefact. A failure here is a defect in the publish path (or an
+ * npm that refuses the staged tree), so it fails loud with the child's output.
+ */
+function packWithNpm(): string {
+  try {
+    execFileSync('npm', ['pack', '--pack-destination', publishPacks, '--provenance=false'], {
+      cwd: staged,
+      env: childEnv(),
+      encoding: 'utf8',
+      timeout: 300_000,
+    })
+  } catch (error) {
+    throw new Error(`npm pack (the publish packer) failed on the staged copy: ${describeFailure(error)}`)
+  }
+  const artefacts = readdirSync(publishPacks).filter(name => name.endsWith('.tgz'))
+  const artefact = artefacts.length === 1 ? artefacts[0] : undefined
+  if (artefact === undefined) {
+    throw new Error(`expected exactly one npm pack artefact in ${publishPacks}, found ${artefacts.length}`)
+  }
+  return join(publishPacks, artefact)
+}
+
+/** The `tar -tvzf` lines that describe a HARDLINK member (`hrw-r--r-- … link to …`). */
+function hardlinkMembers(listing: readonly string[]): string[] {
+  return listing.filter(line => line.startsWith('h'))
+}
+
+/** The targets of the `tar -tvzf` lines that describe a SYMLINK member (`lrwxrwxrwx … -> …`). */
+function symlinkTargets(listing: readonly string[]): string[] {
+  return listing
+    .filter(line => line.startsWith('l'))
+    .map((line) => {
+      const arrow = line.indexOf(' -> ')
+      return arrow === -1 ? line : line.slice(arrow + ' -> '.length)
+    })
+}
 
 describe('packed fish-shell tarball', () => {
   it('ships every `files` whitelist entry and nothing else at the top level', (ctx) => {
@@ -167,6 +231,38 @@ describe('packed fish-shell tarball', () => {
     // deliberately not in `files`; every other top-level entry must be wanted.
     const allowed = new Set([...files, 'package.json'])
     expect(shipped.filter(file => !file.includes('/')).filter(file => !allowed.has(file))).toEqual([])
+  })
+
+  it('ships a publishable archive: no hardlink members and no member outside the package root', (ctx) => {
+    if (unpackable !== undefined) ctx.skip(unpackable)
+    if (publishListing === undefined || publishNames === undefined) {
+      throw new Error('the npm-pack publish artefact was not produced')
+    }
+
+    // Why this is asserted on the npm-packed artefact and with a hard rule:
+    // pnpm materializes its store as HARDLINKS, and when the staged tree keeps
+    // them the packer writes hardlink members (`hrw-r--r-- … link to …`) that
+    // npmjs rejects with `415 Unsupported Media Type … Hard link is not
+    // allowed` (measured during the 0.8.0 publish). `npm publish --dry-run`
+    // CANNOT catch this — a dry run never uploads — so the shape is asserted
+    // here, where the release workflow's `pnpm test` step runs before it
+    // publishes. The staged install uses `--config.package-import-method=copy`
+    // for exactly this reason.
+    expect(hardlinkMembers(publishListing), 'the registry rejects hardlink members (415)').toEqual([])
+
+    // Symlinks are not expected in an npm tarball at all; if one shows up it
+    // must resolve inside the package root — an absolute target or a `..`
+    // component is rejected rather than resolved (the conservative rule costs
+    // nothing on an artefact that carries no links, and a permissive one would
+    // be the wrong default on a publish gate).
+    expect(
+      symlinkTargets(publishListing).filter(target => target.startsWith('/') || /(^|\/)\.\.(\/|$)/u.test(target)),
+      'a symlink member must resolve inside the package root',
+    ).toEqual([])
+
+    // The publish shape must also keep every member under `package/` (the
+    // release workflow asserts the same thing on its own pack).
+    expect(publishNames.filter(name => !name.startsWith('package/'))).toEqual([])
   })
 
   it('bundles the pinned terminal tool as real files inside the tarball', (ctx) => {

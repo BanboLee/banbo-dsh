@@ -67,6 +67,8 @@ dsh plugin --profile <name> add ./plugins/fish-shell
 
 发布预期带上 **npm provenance**：`publishConfig` 里带 `provenance: true`，因此从支持 OIDC 的 CI（GitHub Actions）发布即可，或显式执行 `npm publish --provenance --access public`。本机发布会缺少为该次构建作证的 OIDC provider，因此维护者从工作站发版时必须为那一次发布关掉 provenance，用 `--no-provenance`。**2FA 是发版前置条件**——provenance 不能替代它，且 npm 在账户/组织侧校验，本仓库无法验证。发布前把 `CHANGELOG.md` 的 `[Unreleased]` 落成即将发布的版本号（本次 `0.8.0` 就是这样做的）。
 
+发布形态必须从用 `--config.package-import-method=copy` 装出来的暂存目录打包：pnpm 默认的 import method 会把 store 里的文件硬链接过来，而 npmjs 会以 `415 Unsupported Media Type — Hard link is not allowed` 拒绝带硬链接成员的 tarball。`npm publish --dry-run` 抓不到这件事（dry run 不上传），因此发布 workflow 显式断言该形态，`plugins/fish-shell/tests/packed-files.spec.ts` 也对自己的 `npm pack` 产物做同一断言。
+
 ## 交互式终端会话（L2）
 
 除了一次性的 `fish` 工具，bundle 还挂载了一个交互式终端 surface：一个真实 fish PTY，模型用 `terminal_open`、`terminal_send`、`terminal_read`、`terminal_signal`、`terminal_close` 与 `terminal_list` 来驱动它。它复用官方终端栈：后端 row 挂载的是 `terminal.js`——官方 `BashTerminalBackend` 的子类，与官方唯一的差别就是子进程环境里的 harness home 契约（见下方 **harness home 契约**）；`spawn()` 完全继承，因此 argv 约束、sandbox-mode fence 与 `session.initialize()` 就绪语义都是官方代码。

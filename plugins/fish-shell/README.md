@@ -198,6 +198,14 @@ the account/organization side, which this repository cannot verify. Before
 publishing, turn the `[Unreleased]` section of `CHANGELOG.md` into the version
 being released (this `0.8.0` cut did exactly that).
 
+The published artefact has to be packed from a staged tree installed with
+`--config.package-import-method=copy`: pnpm's default import method hardlinks
+store files, and npmjs rejects a tarball carrying hardlink members with
+`415 Unsupported Media Type — Hard link is not allowed`. `npm publish --dry-run`
+cannot catch that (a dry run never uploads), so the release workflow asserts the
+shape explicitly and `plugins/fish-shell/tests/packed-files.spec.ts` asserts the
+same on its own `npm pack` artefact.
+
 ## Interactive terminal sessions (L2)
 
 Next to the one-shot `fish` tool, the bundle mounts an interactive terminal

@@ -391,6 +391,21 @@ describe('@banbolee/dsh-fish-shell README shape — troubleshooting and the sync
     expect(ROOT_ZH).toContain('scripts/sync-to-profile.sh <profile>')
   })
 
+  it('states the publish-shape rule: copy import, or the registry 415 on hardlinks', () => {
+    for (const [label, text, rejected] of [
+      ['README.md', EN, /415/u],
+      ['README.zh.md', ZH, /415/u],
+    ] as const) {
+      expect(text, `${label} must name the publish-shape install flag`).toContain('--config.package-import-method=copy')
+      // The rule has to carry its reason and its escape hatch: the registry
+      // 415, and that a dry run cannot reproduce it (no upload).
+      const rule = window(text, '--config.package-import-method=copy', 0, 700)
+      expect(rule, `${label}: the rule must name the registry rejection`).toMatch(rejected)
+      expect(rule, `${label}: the rule must name the error`).toContain('Hard link is not allowed')
+      expect(rule, `${label}: the rule must say a dry run cannot catch it`).toMatch(/--dry-run/u)
+    }
+  })
+
   it('documents the nested-dsh home contract, its legacy workaround and the maintenance note', () => {
     for (const [label, text, heading, legacy, maintenance] of [
       ['README.md', EN, NESTED_DSH_ENTRY.en, 'Older bundles', 'Maintenance note'],
