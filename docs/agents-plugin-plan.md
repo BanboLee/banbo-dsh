@@ -585,7 +585,7 @@ prompts/
 主 Agent persona 额外必须写团队协议：
 
 1. 先理解任务，再决定自己做、单个委派、batch 并行或复用 continuable；
-2. 需要同一专家继续上下文时，先 `list_agents` 找 idle continuable child，再 `send_message`，不要重复新建；
+2. **默认复用（四态），例外要理由**：新建同角色 child 前先 `list_agents` 查一眼（四态见 §5.4 的 D12）——有 idle 的 continuable 同角色 child（多个时选上下文最接近这次任务的那个）就用 `send_message` 追加，**不要重复委派**；同角色 child 还在跑**且新活属于同一件事**时不新建也不干等，等唤醒后用一次 `send_message` 追加；**与它无关**时才可另起一个；压根没有就直接新建。新建是例外，只要存在同角色 child 而仍要新建，就必须说得出命中的例外；
 3. `delegate_batch` 只用于相互独立、可并行的任务，**其中的 item 一律以 one-shot 执行、不支持保留会话**；deadline 到期后基于 partial result 继续，不把 `cancel_requested` / `cleanup_deferred` / timeout 当 completed；需要保留对话的委派一律用单个 `agent_<id>`；
 4. 合并多 Agent 结果时按 childId 去重 direct message 与 settlement notice，不重复行动；
 5. 并发超限时减少 batch、复用已有 child 或向用户解释下一步，不静默排队。
@@ -600,19 +600,32 @@ prompts/
 | **D2 本职定义** | 你的本职是子 Agent 做不了的事：跨结果判断、取舍、与用户沟通、给出最终结论 | 同上 |
 | **D3 后台门槛** | `run_in_background: true` 的**唯一**理由是"我接下来要做的事与它完全无关"；**"我自己也把它做一遍"不算并行的理由** | §16.9 现象 ② |
 | **D4 后台必须收割** | 用后台就必须在结束本轮前拿到结论，或明确说明为什么没拿到 | 同上 |
-| **D5 禁止盯梢** | `list_agents` 只在"要复用某个 child 的上下文"时查一次，**不是进度轮询工具** | §16.9 现象 ③ |
+| **D5 禁止盯梢** | `list_agents` 在**新建同角色 child 前先查一眼**（这是复用规则的硬前置），其余时候只在"要复用某个 child 的上下文"时查一次，**不是进度轮询工具** | §16.9 现象 ③；§16.16 |
 | **D6 `ready` 语义** | `ready` 只说明对方本轮已结束——**可能成功、也可能失败或被中断**；**没收到结论就算没完成**：去要结果、重新委派，或明确说明没拿到。**不许静默跳过** | §16.9 现象 ④ |
 | **D7 中断门槛** | 只有它明显跑偏、在重复无效操作、你已从别处拿到足够结论，或用户/父 Agent 要求停止时才中断；`interrupt_agent` 只是请求，**不当作硬杀** | §16.9 现象 ⑤ |
 | **D8 时长不是理由** | **"跑得久"本身不是理由**：审查类任务通常需要**数分钟到十几分钟**，这是正常的 | 同上 |
 | **D9 先问后断** | 中断前先 `send_message` 要一份"基于你已有证据的结论"，**并等它回复**；确认不需要了再中断。**发完消息等几秒、它还没回就中断，不算问过** | 同上 |
 | **D10 中断要交代** | 中断之后必须说明哪部分没查完 | 同上 |
 | **D11 不喂结论** | 委派给 `agent_review` 时**不要把自己的结论写进 prompt**；让它从原始材料（diff、文件、命令输出）独立判断；要验证假设就写成**待验证的问题**，而不是"我已确认 X"。喂结论只会换来一个橡皮图章 | §16.9 现象 ⑥ |
+| **D12 默认复用（四态），例外要理由** | **新建同角色 child 前先用 `list_agents` 查一眼**：**idle** 的 continuable 同角色 child → 复用（多个候选时**选上下文最接近这次任务的那个**）；**正在跑且新活属于同一件事**（同一份工作、同一 MR、同一模块，或上一轮的延续）→ **不新建**，并成一件、等唤醒后用**一次** `send_message` 追加；**正在跑但与新活无关** → 允许新建；**压根没有** → 直接新建。只要存在同角色 child（idle 或 running）而仍要另起一个，就必须说得出理由——**四种例外**：**任务无关**（新活与那个 child 的工作无关）、**上下文拖累**（上下文太长或被污染）、**需要隔离**（要一个不带着旧上下文的干净 child）、**上一轮没交出结论**（失败 / 被中断 / 超时——这种 child 的上下文不可信；按 D6 仍要**重新委派**，只是不必复用那个）。同款四态措辞渲染进 `agent_<id>` 具名工具描述（见 §16.16） | §16.16 |
 
-**适用范围**：D1–D10 对**所有** 6 份可委派 persona 生效（措辞按主/子调整：主 Agent 对用户负责，子 Agent 把结论写进最终回答交给父 Agent）。**D11 只对能委派 `agent_review` 的 4 份生效**（`banbo-main`、`planner-main`、`planner-child`、`executor-child`）——`implement` 与 `review` 的 `allowedChildren` 里没有 review。
+**适用范围**：D1–D10 与 **D12** 对**所有** 6 份可委派 persona 生效（措辞按主/子调整：主 Agent 对用户负责，子 Agent 把结论写进最终回答交给父 Agent）。**D11 只对能委派 `agent_review` 的 4 份生效**（`banbo-main`、`planner-main`、`planner-child`、`executor-child`）——`implement` 与 `review` 的 `allowedChildren` 里没有 review。**D12 是刻意的例外**：`implement` 与 `review` 的 `allowedChildren` 里只有 one-shot 的 `research` / `explorer`，它们没有"同角色 continuable child"可复用，会带着一条用不上的规则——共享段落逐字节一致优先于"每份只留有用的规则"，这是**刻意代价**，不要当成漏改。
 
-**D5–D10 在四份 continuable 子 persona 中必须是逐字节一致的共享段落**（各自只保留一句角色相关的 lead-in），由既有测试锁住，避免只改一份而让某个 Agent 学到不同协议。
+**D5–D10 与 D12 在四份 continuable 子 persona 中必须是逐字节一致的共享段落**（各自只保留一句角色相关的 lead-in），由既有测试锁住，避免只改一份而让某个 Agent 学到不同协议。**共享段落允许包含某一两份用不上的规则**（如 D12 对 `implement` / `review`）：逐字节一致是防漂移的唯一护栏，测试结构不为"每份只留有用的规则"改动。
 
-**lint**：`builtin-catalog.spec.ts` 逐条断言上述关键词出现在每一份适用 persona 中，并断言覆盖面（≥6 份、D11 恰好 4 份）。规则被删掉会红，不会静默消失。
+**lint**：`builtin-catalog.spec.ts` 逐条断言上述关键词出现在每一份适用 persona 中，并断言覆盖面（≥6 份、D11 恰好 4 份），以及**顺序**（**新建同角色 child 前**早于**四种例外**，而**上一轮没交出结论**必须落在例外列表之内）。规则被删掉会红，不会静默消失。
+
+**强制边界（哪些由代码强制、哪些只是 persona 约定）**：
+
+| 由代码强制 | 只是 persona 约定 |
+|---|---|
+| `allowedChildren` 边、`FORBIDDEN_DELEGATION_TOOLS`、绝对 `maxDepth`、`agent_<id>` 工具的存在与否、main 形态模型归官方选择器（`model-on-main-only`） | 任务路由给哪个专家；"小任务自己做完" |
+| root Session 预算（`maxConcurrentChildren`、`maxBatchWidth`）fail-fast 不排队 | D12 的复用优先级（先查后建、复用 idle 同角色 child、多种子选最近上下文、四种例外、并成一件事），以及理由是否真实具体 |
+| 三条路径各有 deadline、`drainGraceMs`、cleanup registry | 中断前先问、不喂结论、不轮询、结束本轮等唤醒 |
+| `preferBackground` 的 `background-required` / `batch-target-kept`；continuable identity fail-closed；`RetiredToolShell` | 审查合理时长、中断是否正当 |
+| persona lint 与 §5.4 关键词 / 顺序断言 | persona 正文究竟会不会被遵守 |
+
+D12 落在右列：**不加运行时闸门**——代码不校验"是否先查过"、不解析理由、**不限制同角色 child 数量**；复用轮次也不计入 `maxConcurrentChildren`（§10.3）。改 D12 时必须同批修改 §5.3 第 2 条、§10.3、§10.6 第 5 条与两份 README，否则四处副本会漂移。
 
 子 Agent persona 最小职责边界：
 | Agent | persona 边界 |
@@ -637,7 +650,7 @@ persona 禁止承诺工具层做不到的事：
 - 每个内置 persona 文件都包含固定标题，且没有禁止短语；
 - persona 中出现的工具名必须是该 Agent 默认可见工具或主 Agent 具名委派工具；
 - Research / Explorer persona 不出现 `send_message`、`list_agents`、`interrupt_agent`、shell、write/edit 承诺；
-- 主 persona 覆盖复用 continuable、batch deadline、并发超限和去重协议；
+- 主 persona 覆盖**默认复用（新建前先查、四种例外、多种子时选上下文最接近的）**、batch deadline、并发超限和去重协议；
 - README 只展示简短节选和覆盖方法，不复制完整 persona 正文。
 
 ---
@@ -1247,7 +1260,7 @@ interface MainSessionBudgetState {
 - **不做独立的 `maxConcurrentBackgroundJobs`**：后台 one-shot 本身就是 child 轮次，已被 `maxConcurrentChildren` 覆盖。
 - **计数不跨 Host 重启**：v1 的预算是**本次 root activation**的护栏，不是计费系统。重启后从 0 开始。这是刻意取舍，README 必须写明，避免用户以为它是配额。
 
-主 persona 必须指导 LLM：需要同一专家继续上下文时，先 `list_agents` 找 idle continuable child，再用 `send_message` 复用，不要为同一任务反复新建 child。禁用某个 Agent 后不允许新建；已有 continuable child 默认可继续 `send_message`，但它后续再委派仍受当前 enabled、`allowedChildren`、并发上限和 depth guard 约束。
+主 persona 必须指导 LLM：**默认复用**——需要同一专家继续上下文时，**新建同角色 child 前先 `list_agents` 查一眼** idle 的 continuable 同角色 child（有多个时选上下文最接近这次任务的那个），能复用就用 `send_message` 追加，不要为同一任务反复新建 child；只有四种例外才新建（§5.4 D12），每种都要说得出理由。这条是 **persona 约束，不是运行时闸门**：代码不校验是否先查过、不解析理由，也不限制同角色 child 的数量。禁用某个 Agent 后不允许新建；已有 continuable child 默认可继续 `send_message`，但它后续再委派仍受当前 enabled、`allowedChildren`、并发上限和 depth guard 约束。
 
 ### 10.4 薄 wrapper
 
@@ -1329,7 +1342,7 @@ Research、Explorer 的 `continuation` 固定 one-shot。Planner、Executor、Im
 2. 下一步依赖子结果，或会改同一文件/资源时，前台等待；
 3. 只有存在明确无依赖、无冲突的其他工作时，才使用后台；
 4. 后台后不轮询、不催促、不重复委派、不亲自做同一任务；
-5. 需要同一专家继续上下文时，先 `list_agents` 找已有 idle continuable child；能复用就用 `send_message`，不要重复新建；
+5. **默认复用**：需要同一专家继续上下文时，**新建同角色 child 前先 `list_agents` 查一眼**已有 idle continuable 同角色 child（有多个时选上下文最接近这次任务的那个）；能复用就用 `send_message` 追加，不要重复新建；只有四种例外才新建（§5.4 D12），每种都要说得出理由；
 6. 父 Agent 的 `send_message` 只用于补充新信息、回答子 Agent 问题、纠正方向或追加新任务；子 Agent 可以用它发送提前发现、问题和最终结果；官方 settlement notice 仍可能再次携带 closing message，主 persona 必须按 childId 把两者视为同一次完成，不重复行动；
 7. 多个互不依赖的结果都返回后才能继续时，用 `delegate_batch`（它的 item 一律 one-shot，跑完即终结）；需要保留对话的委派一律走单个 `agent_<id>`。
 
@@ -1912,7 +1925,7 @@ v1 选择 Host logger。若未来需要把路由与成本数据**展示在 Web U
 2. DAG、悬空 child、preset/tool/id 冲突、每次调用重算的绝对 maxDepth、main budget 全部字段的默认值/上限/非法值拒绝（含 `maxConcurrentChildren` 的 `[1, 32]` 边界）；
 3. **YAML 解析边界**：`<<` 合并键给出专门错误、重复 key 报错、自定义 tag 被拒、`!!timestamp` 被拒、alias 取值复用仍可用（`tools: *t` 应通过）、嵌套 alias bomb 被 `maxAliasCount` 挡住、未知字段报错包含文件与行号；
 4. **`CATALOG_LIMITS` 逐项**：每一项的边界值通过、超一字节/超一个元素即启动失败、错误信息含实测值与上限值、确认**不截断**；字节数检查发生在解析之前（用超大文件断言解析器未被调用）；
-5. prompt realpath、symlink、UTF-8、64 KiB、persona 总量 1 MiB、缓存快照，以及内置 persona 固定标题/禁止短语/工具名可见性 lint；
+5. prompt realpath、symlink、UTF-8、64 KiB、persona 总量 1 MiB、缓存快照，以及内置 persona 固定标题/禁止短语/工具名可见性 lint，以及 §5.4 纪律的关键词与**顺序**断言（先查后建早于例外列表、没交出结论的例外必须落在列表之内）、四份 continuable 子 persona 共享段落的逐字节一致；
 6. settings owner validate、includeDefaults、显式 enabled、child default/concrete model、main-only model 拒绝、revision 冲突、保存前拒绝；外部 schema-invalid 与 owner-validate-invalid 两类 section 都断言 resolved value/revision last-good、无 updated/document-updated，并分别断言 describe.user 的真实行为；注册时坏 section 失败；
 7. ToolCapability / extraTools → runtime tool name 编译、精确名、profile 缺失、exec fish/bash 解析、strict allowlist；
 8. delegateOne 授权、禁用、model preflight、并发占用/释放、one-shot/continuable 选择；
@@ -1924,6 +1937,7 @@ v1 选择 Host logger。若未来需要把路由与成本数据**展示在 Web U
 14. **`generation` 只做诊断的回归断言**：编辑 catalog（新增一个无关 Agent）使 generation 变化后，一个未受影响的旧 continuable child **仍可继续委派**；反向断言 generation 变化本身不产生任何拒绝。这条锁定 11.1.1 的"generation 绝不是阻断条件"，防止实现者把它当成版本兼容检查；
 15. 四个时间预算（`foregroundDeadlineMs` / `backgroundDeadlineMs` / `batchDeadlineMs` / `drainGraceMs`）的默认值、clamp 边界和非法值拒绝；且断言**没有任何一条委派路径缺少 deadline**（前台 / 后台 / batch 三者各有其值）；
 16. 可观测性（13.1）：六类结构事件按 13.1.1 的字段发出；`delegation/rejected.reason` 六种原因可区分；**断言日志中不出现 prompt 正文、子 Agent 输出、persona 正文、凭据和绝对路径**（用含敏感标记的 fixture 输入，断言这些标记不出现在捕获的日志里）；Host logger 不产生 Session event。
+17. §5.4 D12：6 份可委派 persona 都含"默认复用 / 新建同角色 child 前 / idle 的 continuable 同角色 child / 选上下文最接近这次任务的那个 / 四种例外 / 上一轮没交出结论 / 说得出理由 / 既不新建、也不干等 / 唤醒消息到达后"，位置断言为 `新建同角色 child 前` < `四种例外` < `上一轮没交出结论`；**主门禁是 canonical 等值**，**每份 persona 一个 golden**（`D12_BANBO_MAIN` / `D12_PLANNER_MAIN` / 四份 `D12_*_CHILD`，集中在 `D12-GOLDEN-BEGIN/END` 哨兵之间）：单元是**整个承载规则的 section body**——主 persona 取 `# Delegation Policy`，continuable 子 persona 取 `# Collaboration Protocol`（**含角色 lead-in**）——**按标题边界提取、绝不做关键词搜索**，比较前只做 `sectionBody` 自身的裁剪，实际值必须**逐字等于** golden。派生阶段还有一个**锚点唯一性**守卫：`默认复用` 或 `新建同角色 child 前` 在同一文件里出现次数 != 1 就直接抛错（`… carries "…" N time(s); the D12 gate requires exactly one, or a copy can shadow the live rule`）。**代价如实写明：改 D12 所在 section 的措辞必须同批重生 golden**——`env NODE_ENV=development pnpm run test:agents:update-goldens`（根 `package.json` 的 `test:agents:update-goldens` = `UPDATE_GOLDENS=1 vitest run` 两个 spec；写回器在 `plugins/agents/tests/golden-writer.ts`，**严格路径永不写文件**，并断言"磁盘上的块就是写回器的不动点"＝幂等）。该门禁**取代**了此前"裸词频 + 同义词黑名单"，并逐轮关掉了四种已实证绕过：① bullet 前缀插 `急需时可另起同角色 child。`（词频/黑名单时代 24 passed）；② 单元内插零宽字符（U+200B）——等值断言必红；③ 把 canonical 副本藏进 HTML 注释、活跃规则另放一份带额外许可的版本（关键词提取会被注释副本骗过）——锚点唯一性守卫直接抛错；④ 四份 child 在 lead-in 与 `` 用 `list_agents` `` 之间插许可（旧单元从 marker 起算）——section 边界把 lead-in 也算进去。模型可见 schema 有独立基准：`delegation-composition.spec.ts` 的 `NAMED_TOOL_SCHEMAS_GOLDEN`（`TOOL-SCHEMA-GOLDEN-BEGIN/END` 哨兵）钉住**每一个 shipped named tool 的完整模型可见 schema**——完整 `tool.description` + **整份 `tool.parameters` JSON Schema**（**递归按键名稳定排序**，数组顺序保留；含**顶层 `required` 数组**——property 上的 `required` 根本不存在——以及 property 上的 `const` / `enum` / `default` / `examples` / `title` 等全部键；不再做任何字段投影，投影时代曾漏掉两处真实 schema 变化），并单独断言**参数键集恰好是** `description` / `prompt` / `run_in_background`，新增、删除、改名都必红（复审 SCHEMA-EXTRA-PARAM：加一个 `foreground_hint` 参数曾 `5 passed`，现在报 `must expose exactly the documented parameters`；**SCHEMA-CONST**：给 `run_in_background` 加 `const: true`——与描述里的 `Defaults false` / `leave it false` 直接冲突——composition + runtime 两个 spec 现在**都必红**；**SCHEMA-REQUIRED**：删掉 `prompt` 的 `required: true`，此前只有 runtime spec 兜住、现在 composition 也红）；唯一规范化是 live deadline 分钟数换 `N`（**深度**应用，参数描述里将来出现数字也不会抖动），但**规范化之前**先用 live `foregroundDeadlineMs` 算出精确分钟数并**逐工具断言**原描述里确实含该值（复审 DEADLINE-NORMALIZE：把 `Math.round(… / 60_000)` 改成 `+ 7` 曾 `5 passed`，现在报 `must render the LIVE foreground deadline (30 minutes)`）。此前只钉 `review` / `explorer` 两个顶层 description、参数描述只有局部正则、其余 target 只断言 guidance 被包含，于是 DESC-N2（给 kept 的 `run_in_background` 参数追加 "but it may wait up to 30 minutes and return the result in this turn"，保留原正向短语）与 DESC-C1（给 `catalog/executor.yaml` 的 guidance 追加 "A foreground invocation waits until this kept child answers in the same turn."）都能全绿绕过；现在两条都必红（非 kept / one-shot 目标与 `HEAD` 的渲染仍逐字相同：805 字节 / md5 `8552c91b2095851601e907bf6fb2b946`）。**persona 侧的已知边界（如实标注，不夸大）**：section 级基准只锁 D12 **所在的那一个 section**（主 persona 是 `# Delegation Policy`，子 persona 是 `# Collaboration Protocol`）——同一 persona 的**其它 section** 若写出相反规则（复审的 D12-X1：把相反许可放进 `# Failure Policy`），**测试抓不住**，只能靠 golden / spec diff 的人工审阅；**不要**把它读成"封闭集合已完全锁死"。标题解析已统一：`sectionBody` 与 §5.3 骨架测试都要求**整行精确匹配且恰好出现一次**（**D12-X2** 的重复同名 heading 直接抛错），并**拒绝等价影子标题**——`scanHeadings` 一个扫描器同时供**等价拒绝**与 **section 边界判定**使用。**仓库没有声明任何 Markdown 依赖**（`markdown-it` 只在 `node_modules` 里作为传递依赖存在），所以这是**手写抽取器、不是完整 CommonMark**；结论口径因此是**"固定的类别清单 + 已知未覆盖/剩余风险清单"**，**不声称覆盖全部语法**。**块级白名单与终止性论证（为什么可以停止枚举"又一个新类别"）**：persona 的块构造走**白名单**——只允许**空行、段落文本行（含 Setext 候选）、ATX 标题、列表项及其合法续行**；**白名单之外的 CommonMark 块构造一律判红**。CommonMark 的块构造是**有限枚举**，本轮已把清单补全为：**thematic break**（`***` / `---` / `___` 独立成行；`---` 紧跟段落行时按 Setext 下划线放行，否则判红）、**围栏代码块**（含容器前缀写法 `> ``` `、`> > ~~~`）、**缩进代码块行**、**HTML 块**（行首 `<标签` / `<!--` / `<!` / `<?`）、**link reference definition**、**block quote**、**GFM 表格**（分隔行或以 `|` 开头的行）、**空列表项标记**（lone `+` / `*` / `1.`）、**列表项内的 Setext 标题**（`===` / `---` 下划线紧跟在列表项内容行之后——marker 宽度、内容缩进与 lazy continuation 一起决定 item 的边界，容器 × Setext 组合无法可靠归一）。**列表项的边界按原始行判定**：扫描器与守卫都把"detab 后、未剥容器的行是列表项起始"当作**段落边界**，绝不把相邻两个列表项的内容并进同一个 Setext 段落（否则第二个 item 里真实的同名 `<h1>` 会被漏掉）。因此**不存在"又一个新块类别"的枚举空间**；判定按 CommonMark 的**块起始语义**做（先按 tab stop **detab**、再做 `stripContainers`，且**原行与容器剥离形式都跑**）。**归一化与内联子集**：比较键 = case-fold + NFKC + 折叠空白；**不可见字符按 Unicode 属性 `\p{Default_Ignorable_Code_Point}` 处理**（ZWSP、soft hyphen、CGJ U+034F、蒙古自由变体选择符、补充平面变体选择符 U+E0100…、BOM、双向控制符……），"视作空格"与"直接删除"两种策略都查；**行结束符统一归一**（CRLF / lone CR → LF），`normalizeNewlines` 是 read / 扫描 / 守卫 / section 提取 / golden 抽取 / 写回器**共用的同一入口**（写回器读时归一、写盘 LF）。heading 内联内容支持的正子集只有：普通字符与强调 / 代码标记、**已支持实体**（`&nbsp;` `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` + 十进制 + 小写十六进制）、**简单形式的行内链接** `[label](destination)`（destination 不含空白、`(`、`)`、`\`、`<`、`>`）；**内联图片一律判红**——`![alt](dest)`、`![alt](dest "title")`、引用式 `![alt][label]` / `![alt][]` / `![alt]`、嵌在链接里 `[![alt](d)](d2)`、data-URI destination，理由：图片的 **alt 文本与消费者 renderer 的 DOM `textContent` 语义不一致**，且 renderer 差异不可控，heading 必须是纯文本；**范围**：图片只在 **heading 候选（含 Setext 段落文本）** 里判红——body 里的图片既不参与也不能影响标题转写（唯一能影响标题归属的 link reference definition 已作为块构造判红），所以不做额外限制；其余（尖括号 / 原始 HTML、反斜杠转义、引用式链接、复杂 destination 与 title、抽取器不解析的实体如 `&#X20;` / `&Tab;` / `&ensp;`）一律判红。**有意的保守误报**（它们在 CommonMark 里**不是** heading，本门禁仍然判红——宁可拒绝，不做猜测）：围栏代码块、缩进代码块行（4 列以上，含 tab 展开后）、空列表项标记、表格里以 `#` 开头的单元格。**受控对照 99 条**（`HEADING(*)` 12 + `HEADING2(*)` 18 + `FAILCLOSED(*)` 15 + `FAILCLOSED2(*)` 8 + `FAILCLOSED3(*)` 2 + `FAILCLOSED4(*)` 2 + `FAILCLOSED5(*)` 2 + `FAILCLOSED6(*)` 3 + `FAILCLOSED7(*)` 5 + `FAILCLOSED8(*)` 6 + `FAILCLOSED9(*)` 7 + `TITLE-*` 5 + 回归 13 + `W1` 1）全部必红，且阴影里的冲突规则特意不含 D12 锚点词；清单与驱动在仓库外：`/tmp/banbo-d12-controls.mjs`。**仍然只 golden canonical section**，没有扩成整文件基准。**已知未覆盖 / 剩余风险（如实标注，不写成"完全等价"、也不声称全语法穷尽）**：① **其余 CommonMark block interruption / termination**——HTML block types 1–7 的不同结束条件、fence 的字符 / 长度 / 缩进 / 未闭合、indented-code 的空行归属、多行 link reference definition 与 title；② **混合 / 递归容器**——blockquote × list 任意深度、lazy continuation、marker 宽度与内容缩进、逐层 tab stop，以及 "detab → stripContainers" 与 CommonMark **逐层解析次序**之间的差异；③ **thematic break / list marker / Setext underline 的优先级组合**（本轮已有一个具体的 exploit 实例）；④ **inline 层**——任意 backtick-run code span、嵌套 emphasis、links / images / references / autolinks / raw HTML、escape、entity、hard / soft break，以及 Unicode combining / default-ignorable / NFKC 的**组合与变换顺序**；⑤ **浏览器 HTML 纠错**（raw HTML 会被浏览器按自有规则修复）与 consumer renderer 相对 strict CommonMark 的扩展差异。**这些残余风险不是被批准放行的构造，文档化也绝不构成豁免**：它们是**已知可能仍未覆盖的解析差异**；白名单之外一律判红，任何这类实例一旦被复现，**一律按 bug 处理并继续收口**（补判红规则或继续缩小白名单），当前文档只为如实记录边界。发现者请附最小 payload 与 CommonMark oracle 输出，收口后进受控对照清单。写回器也已加硬：哨兵必须独占整行且唯一、`begin < end`、每个 replacement 恰好命中一次、写入值 / 区域体不得含哨兵、候选先自证是不动点、**临时文件名 = `<目标>.update-goldens-<pid>-<随机 UUID>.tmp` 并在 `finally` 里 `rmSync(…, { force: true })` 清理、写入用临时文件 + rename 原子替换**——实测：假哨兵场景（W1）失败且 spec md5 不变；目标为目录导致 `rename` 失败时**不留 .tmp 残留**；40 个并发写同一目标 **40/40 成功、落盘内容完整、无残留**。四份 continuable 子 persona 的共享**规则句**仍逐字节一致（由那条 byte-identity 用例单独锁）；
 
 ### 14.2 Bundle 契约测试
 
@@ -1977,7 +1991,7 @@ dsh-tui 0.10.2 profile + @banbolee/dsh-agents
 3. 新增一个 child Agent；
 4. 新增一个 main Agent 并在重启后从 picker 选择；
 5. 用 `includeDefaults: false` 只保留自己的团队；
-6. 看懂前台等待、后台 continuable、batch（item 一律 one-shot、不可续聊）、并发超限和 `send_message` 复用的区别；看懂"部分结果 / 已请求取消 / 清理已移交"三种终态的含义，不把后两者当成功；
+6. 看懂前台等待、后台 continuable、batch（item 一律 one-shot、不可续聊）、并发超限和 `send_message` 复用的区别；看懂"部分结果 / 已请求取消 / 清理已移交"三种终态的含义，不把后两者当成功；并看懂**默认复用是 persona 约定、不是运行时闸门**，以及复用轮次不计入并发上限、同角色 child 数量无上限；
 7. 看懂旧主 Session 重启后使用当前新配置继续运行，而旧 continuable child 保持创建时 descriptor；
 8. 看懂删除 Agent 的后果（主 Agent 连整棵子树失效、纯 child 只留空壳），知道想停用应该用 `enabled: false` 而不是删文件；并根据错误提示修复一个悬空授权、坏 persona 路径或并发超限。
 
@@ -2648,6 +2662,36 @@ ambient  = registered \ 能力词表 \ FORBIDDEN_RUNTIME_TOOLS \ 本插件自己
 
 **lint**：`builtin-catalog.spec.ts` 的 §5.4 逐条断言新增 `/空手结束本轮去等，是正确做法/`、`/会唤醒你开新一轮/`、`/不要自己发明/`、`/用 shell \`sleep\` 等待也不算等待/`，并把旧的 `/不算并行的理由/`、`/结束本轮前收割/` 换成新措辞——旧措辞删掉后测试会红，不会静默消失。
 
+### 16.16 同角色 child 的默认复用与四种例外（用户报告 / 设计依据；实现已改、行为未验证）
+
+**证据等级（如实标注，勿当作已验证结论）**：本条**不是** §16.9 那种带真实会话 id 与计数的实测复盘，而是**用户报告 + 设计依据**。persona、模型可见文案、lint 与文档均已落地，**真实行为尚未验证**；下文所有 `<!-- 待补 -->` 必须在拿到真实会话证据后补齐，补齐前不得把本条读作"已修并已证实"。
+
+**来源（用户报告）**：用户报告"让同一个专家连续做几轮活"时，模型**每轮新建一个同角色 child**，而不是复用上一轮的 child；并报告一个**上一轮没有交出结论**的 child（失败 / 被中断 / 超时）会被当成"可以接着派活的人"。<!-- 待补：会话 id、任务、时间线；new-child 与 send_message 的实测计数 -->
+
+**现象**：
+
+1. **先建后想**：新建 child 前没有 `list_agents` 这一步——因为旧措辞（"需要同一专家继续上下文时，先 `list_agents` 找 idle 的 continuable child，再用 `send_message`"）把"先"放在**新建之后**，读起来是建议而不是前置；
+2. **例外不封闭**：任何"我觉得这次不太一样"都能算理由，规则没有给出一个必须逐一反驳的封闭集合；
+3. **没交出结论的 child 被当成可复用**：那种 idle child 的上下文只有半截工作，接着派活等于让它从不完整的状态继续——它与 D6 的语义（没收到结论就算未完成）**方向相反**，而 D6 只说了"去要结果、**重新委派**"，没说"重新委派时不要再复用那个 child"。
+
+**根因**：规则写的是**偏好**（"有 idle 就用"），不是**前置**（建前必须先查）+ **封闭例外集**（要新建就得落进其中一种并说明）。§16.9 的 D5 甚至把 `list_agents` 的用途表述成"要复用某个 child 的上下文时才查一次"——它默认你会复用，却没规定你必须先看。
+
+**修复（用户拍板五条）**：
+
+1. **默认复用**：改写 D5、新增 D12，把"新建同角色 child 前先 `list_agents` 查一眼"写成新建的**前置动作**；
+2. **四种例外，每种都要说得出理由**：任务无关（新活与那个 child 的工作无关）/ 上下文拖累 / 需要隔离（**要一个不带着旧上下文的干净 child**——不再写"用完即散的一次性 child"：这个 runtime 没有创建同角色 one-shot child 的路径，前台被 `background-required` 拒、后台 `optional` 必然 `startContinuable`、batch 拒绝 kept target，写成一次性等于承诺一个不存在的生命周期）/ **上一轮没交出结论**（失败、被中断或超时——这种 idle child 的上下文不可信；D6 仍要求重新委派，本例外只允许"新起一个"而不是复用那个）；
+3. **多种子时选谁**：有多个 idle 同角色 child 时**选上下文最接近这次任务的那个**；
+4. **四态写清**（复审补全）：**idle** → 复用；**正在跑且新活属于同一件事**（同一份工作、同一 MR、同一模块，或上一轮的延续）→ **不新建**，并成一件、等唤醒后用**一次** `send_message` 追加（与 §16.15 同向）；**正在跑但与新活无关** → 可以新建，但要说明命中的例外；**压根没有** → 直接新建。只要存在同角色 child（idle 或 running）而仍要新建，就必须说得出理由。四态同款措辞也渲染进 `agent_<id>` 具名工具描述（`optional` 目标）——旧描述只说"找一个 **idle** 的"，而 child 正在跑时必然没有 idle 匹配，等于**明文允许** persona 禁止的新建；
+5. **改动范围（准确说法）**：不碰 delegation 的执行路径——**无新增校验、无运行时闸门、不改路径选择**，也不写"同角色最多 N 个"；但**运行时按目标类型生成的模型可见 schema 文本确有变化**（`agent_<id>` 的 `description`、`run_in_background` 的 `description`）：ALWAYS KEPT 目标**不再渲染**前台等待段（`A FOREGROUND call waits up to … minutes` 与"or for the foreground deadline … never resumable"整段跳过——运行时在 `background-required` 处就拒了，这段描述的是一个它做不到的调用），只留"结束本轮、等消息唤醒"；描述尾部与非 kept 目标的原文一律保持不变。
+
+**四份子 persona 仍逐字节一致（刻意代价）**：`implement` / `review` 没有同角色 continuable child 可复用，会带着 D12 这条用不上的规则。用户拍板**共享段落优先**，不为这条规则改测试结构（不做"共享核心 + 每份可追加"）。
+
+**lint**：`builtin-catalog.spec.ts` 的 §5.4 逐条断言新增 `/默认复用/`、`/新建同角色 child 前/`、`/idle 的 continuable 同角色 child/`、`/选上下文最接近这次任务的那个/`、`/四种例外/`、`/上一轮没交出结论/`、`/说得出理由/`、`/既不新建、也不干等/`、`/唤醒消息到达后/`，并新增**位置断言**：`新建同角色 child 前` < `四种例外` < `上一轮没交出结论`。**主门禁是 canonical 等值（第三轮复审后替换掉词频 + 黑名单，第四轮复审后改成按 section 取单元）**：**每份 persona 一个 golden**（`D12_BANBO_MAIN` / `D12_PLANNER_MAIN` 与四份 `D12_*_CHILD`，集中在 `D12-GOLDEN-BEGIN/END` 哨兵之间），单元 = 整个承载规则的 section body（主 persona 取 `# Delegation Policy`；continuable 子 persona 取 `# Collaboration Protocol`，**含 lead-in**），**按标题边界提取、不做关键词搜索**，逐字等值；派生阶段还有**锚点唯一性**守卫（`默认复用` / `新建同角色 child 前` 出现次数 != 1 直接抛错）。词频 / 黑名单为何被撤：受控实验里三种**同义**插句（bullet 开头 `急需时可另起同角色 child。`、running 段后 `团队繁忙时也可另起同角色 child。`、四份 child 共享段 `项目吃紧时可另起同角色 child；`）在旧门禁下**全部 24 passed**；而一句**禁止性**补充 `同一工作流里绝不应新建重复 child。` 因把 `新建` 计数从 2 顶到 3 而**被误报**。关键词提取时代又漏掉两种：把 canonical 副本藏进 HTML 注释、活跃规则另放一份带许可的版本（**U2**，现在由锚点唯一性守卫抛错），以及四份 child 在 lead-in 与 marker 之间插许可（**U3**，现在由 section 边界覆盖）；`U1`（单元内插零宽字符 U+200B）在等值下必红，保留为常驻对照。**代价是改 D12 所在 section 的措辞必须同批重生 golden——这是刻意接受的紧耦合，不美化**；为此第四轮把重生做成了可发现的一条命令：`env NODE_ENV=development pnpm run test:agents:update-goldens`（根 `package.json`；写回器 `plugins/agents/tests/golden-writer.ts`；**严格路径永不写文件**，两个 spec 都断言"磁盘上的块＝写回器的不动点"，即幂等；`goldensWritable` 的取值表由测试固定，`UPDATE_GOLDENS` 除 `1` 以外都不写）。整份 persona 级的 `用完即散 / 一次性 child` 禁令也已撤掉（复审证据：在 `Non-goals` 写"one-shot research 是一次性 child，不能继续会话"会被误伤）——该表述现在由 golden 精确钉在 D12 的 isolation 例外里。`delegation-composition.spec.ts` 另锁模型可见 schema：`NAMED_TOOL_SCHEMAS_GOLDEN` 钉住**每一个 shipped named tool 的完整 schema**（`tool.description` + **整份 `tool.parameters` JSON Schema**，**递归按键名稳定排序**、数组顺序保留，含**顶层 `required` 数组**与 property 上的 `const` / `enum` / `default` / `examples` / `title` 等全部键——不做字段投影；另断言参数键集恰好是 `description` / `prompt` / `run_in_background`。SCHEMA-EXTRA-PARAM（加 `foreground_hint`）报 `must expose exactly the documented parameters`；**SCHEMA-CONST**（给 `run_in_background` 加 `const: true`，与 `Defaults false` / `leave it false` 冲突）此前两个 spec 全绿、现在都必红；SCHEMA-REQUIRED（删 `prompt` 的 `required: true`）此前只有 runtime spec 兜住、现在 composition 也红。唯一规范化是 `up to \d+ minutes` → `up to N minutes` 且**深度**应用，但**规范化之前**先用 live `foregroundDeadlineMs` 逐工具断言精确分钟数——DEADLINE-NORMALIZE（`+ 7`）曾 `5 passed`，现在报 `must render the LIVE foreground deadline (30 minutes)`）。窄门禁时代只钉 `review` / `explorer` 两个顶层 description，参数描述只有局部正则、其余 target 只断言 guidance 被包含：DEFS 的两条受控变异——DESC-N2 给 kept 的 `run_in_background` 参数追加 `but it may wait up to 30 minutes and return the result in this turn`（保留原正向短语，5 passed）、DESC-C1 给 `catalog/executor.yaml` 的 guidance 追加 `A foreground invocation waits until this kept child answers in the same turn.`（31 passed）——现在两条都必红。**已知边界（如实标注）**：persona 侧是 **section 级**基准，只锁 `# Delegation Policy` / `# Collaboration Protocol` 这**一个** section；同一 persona 的其它 section 若写出相反规则（**D12-X1**：把相反许可放进 `# Failure Policy`），**测试抓不住**，靠 diff 人工审阅——不要写成"封闭集合已完全锁死"。标题解析已统一：`sectionBody` 与 §5.3 骨架测试都要求**整行精确匹配且恰好出现一次**（**D12-X2** 的重复同名 heading 直接抛错），并**拒绝等价影子标题**——`scanHeadings` 一个扫描器同时供**等价拒绝**与 **section 边界判定**使用。**仓库没有声明任何 Markdown 依赖**（`markdown-it` 只在 `node_modules` 里作为传递依赖存在），所以这是**手写抽取器、不是完整 CommonMark**；结论口径因此是**"固定的类别清单 + 已知未覆盖/剩余风险清单"**，**不声称覆盖全部语法**。**块级白名单与终止性论证（为什么可以停止枚举"又一个新类别"）**：persona 的块构造走**白名单**——只允许**空行、段落文本行（含 Setext 候选）、ATX 标题、列表项及其合法续行**；**白名单之外的 CommonMark 块构造一律判红**。CommonMark 的块构造是**有限枚举**，本轮已把清单补全为：**thematic break**（`***` / `---` / `___` 独立成行；`---` 紧跟段落行时按 Setext 下划线放行，否则判红）、**围栏代码块**（含容器前缀写法 `> ``` `、`> > ~~~`）、**缩进代码块行**、**HTML 块**（行首 `<标签` / `<!--` / `<!` / `<?`）、**link reference definition**、**block quote**、**GFM 表格**（分隔行或以 `|` 开头的行）、**空列表项标记**（lone `+` / `*` / `1.`）、**列表项内的 Setext 标题**（`===` / `---` 下划线紧跟在列表项内容行之后——marker 宽度、内容缩进与 lazy continuation 一起决定 item 的边界，容器 × Setext 组合无法可靠归一）。**列表项的边界按原始行判定**：扫描器与守卫都把"detab 后、未剥容器的行是列表项起始"当作**段落边界**，绝不把相邻两个列表项的内容并进同一个 Setext 段落（否则第二个 item 里真实的同名 `<h1>` 会被漏掉）。因此**不存在"又一个新块类别"的枚举空间**；判定按 CommonMark 的**块起始语义**做（先按 tab stop **detab**、再做 `stripContainers`，且**原行与容器剥离形式都跑**）。**归一化与内联子集**：比较键 = case-fold + NFKC + 折叠空白；**不可见字符按 Unicode 属性 `\p{Default_Ignorable_Code_Point}` 处理**（ZWSP、soft hyphen、CGJ U+034F、蒙古自由变体选择符、补充平面变体选择符 U+E0100…、BOM、双向控制符……），"视作空格"与"直接删除"两种策略都查；**行结束符统一归一**（CRLF / lone CR → LF），`normalizeNewlines` 是 read / 扫描 / 守卫 / section 提取 / golden 抽取 / 写回器**共用的同一入口**（写回器读时归一、写盘 LF）。heading 内联内容支持的正子集只有：普通字符与强调 / 代码标记、**已支持实体**（`&nbsp;` `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` + 十进制 + 小写十六进制）、**简单形式的行内链接** `[label](destination)`（destination 不含空白、`(`、`)`、`\`、`<`、`>`）；**内联图片一律判红**——`![alt](dest)`、`![alt](dest "title")`、引用式 `![alt][label]` / `![alt][]` / `![alt]`、嵌在链接里 `[![alt](d)](d2)`、data-URI destination，理由：图片的 **alt 文本与消费者 renderer 的 DOM `textContent` 语义不一致**，且 renderer 差异不可控，heading 必须是纯文本；**范围**：图片只在 **heading 候选（含 Setext 段落文本）** 里判红——body 里的图片既不参与也不能影响标题转写（唯一能影响标题归属的 link reference definition 已作为块构造判红），所以不做额外限制；其余（尖括号 / 原始 HTML、反斜杠转义、引用式链接、复杂 destination 与 title、抽取器不解析的实体如 `&#X20;` / `&Tab;` / `&ensp;`）一律判红。**有意的保守误报**（它们在 CommonMark 里**不是** heading，本门禁仍然判红——宁可拒绝，不做猜测）：围栏代码块、缩进代码块行（4 列以上，含 tab 展开后）、空列表项标记、表格里以 `#` 开头的单元格。**受控对照 99 条**（`HEADING(*)` 12 + `HEADING2(*)` 18 + `FAILCLOSED(*)` 15 + `FAILCLOSED2(*)` 8 + `FAILCLOSED3(*)` 2 + `FAILCLOSED4(*)` 2 + `FAILCLOSED5(*)` 2 + `FAILCLOSED6(*)` 3 + `FAILCLOSED7(*)` 5 + `FAILCLOSED8(*)` 6 + `FAILCLOSED9(*)` 7 + `TITLE-*` 5 + 回归 13 + `W1` 1）全部必红，且阴影里的冲突规则特意不含 D12 锚点词；清单与驱动在仓库外：`/tmp/banbo-d12-controls.mjs`。**仍然只 golden canonical section**，没有扩成整文件基准。**已知未覆盖 / 剩余风险（如实标注，不写成"完全等价"、也不声称全语法穷尽）**：① **其余 CommonMark block interruption / termination**——HTML block types 1–7 的不同结束条件、fence 的字符 / 长度 / 缩进 / 未闭合、indented-code 的空行归属、多行 link reference definition 与 title；② **混合 / 递归容器**——blockquote × list 任意深度、lazy continuation、marker 宽度与内容缩进、逐层 tab stop，以及 "detab → stripContainers" 与 CommonMark **逐层解析次序**之间的差异；③ **thematic break / list marker / Setext underline 的优先级组合**（本轮已有一个具体的 exploit 实例）；④ **inline 层**——任意 backtick-run code span、嵌套 emphasis、links / images / references / autolinks / raw HTML、escape、entity、hard / soft break，以及 Unicode combining / default-ignorable / NFKC 的**组合与变换顺序**；⑤ **浏览器 HTML 纠错**（raw HTML 会被浏览器按自有规则修复）与 consumer renderer 相对 strict CommonMark 的扩展差异。**这些残余风险不是被批准放行的构造，文档化也绝不构成豁免**：它们是**已知可能仍未覆盖的解析差异**；白名单之外一律判红，任何这类实例一旦被复现，**一律按 bug 处理并继续收口**（补判红规则或继续缩小白名单），当前文档只为如实记录边界。发现者请附最小 payload 与 CommonMark oracle 输出，收口后进受控对照清单。仍只 golden canonical section。写回器加硬后，**W1**（正文含假哨兵 `// D12-GOLDEN-END`）实测**失败且 spec md5 不变**（旧实现把它写坏成 `2909567b…`）——哨兵独占整行且唯一、`begin < end`、replacement 恰好一次、写入体不得含哨兵、候选先自证不动点、临时文件名 = `<目标>.update-goldens-<pid>-<随机 UUID>.tmp`，写入后在 `finally` 里 `rmSync(…, { force: true })`，再确认原子 rename ——实测**不留 .tmp 残留**（`rename` 因目标为目录失败时同样不留），40 个并发写同一目标 **40/40 成功且落盘内容完整**。`docs-shape-agents.spec.ts` 对 README 那张表做**语义 + 反向**断言（复用规则必须在 prompt-only 那一列、必须写"不设上限"，且两份 README 任何位置都不得出现"复用规则由代码强制"这类反向陈述）。
+
+**README / 规格同步**：两份 README 新增"哪些由代码强制、哪些只是提示词约定"表（§5.4 的强制边界段是其出处），明示复用规则是 persona 约定、复用轮次不计入 `maxConcurrentChildren`、同角色 child 数量无上限；`docs-shape-agents.spec.ts` 增加一条断言钉住该表。
+
+**未做**：没有运行时闸门（不校验是否查过、不解析理由、不限制数量）——理由同 §16.9 末段：本插件的强制手段只有自己的工具描述与 persona。真实效果待验证：加入第四种例外后，"child 变少"**不再单调**，必须区分"该新建的新建"与"该复用的复用"。<!-- 待补：真实会话验证结论（含一个"先失败/被中断、再派活"的用例） -->
+
 ---
 
 ## 17. 仓库联动清单
@@ -2697,7 +2741,7 @@ tests/qa/pty.spec.ts                              Unix socket 重试（2 项）
 - Web 与 dsh-tui 使用同一个包、同一个 catalog；
 - 用户自定义 main/child 从文件到 picker/工具完整走通；
 - strict tool policy、授权图、absolute depth、enabled 和 root Session 并发上限在运行时被强制；每次 continuable child 委派都按当前 catalog 的边授权判定，而非历史工具白名单；
-- README 如实声明 v1 的三条非承诺：不精确计数 `send_message` 复用轮次、并发计数不跨 Host 重启、删除主 Agent 会连带整棵子树失效；
+- README 如实声明 v1 的三条非承诺：不精确计数 `send_message` 复用轮次、并发计数不跨 Host 重启、删除主 Agent 会连带整棵子树失效；并单列"哪些由代码强制、哪些只是提示词约定"表，其中**复用规则（D12）明示为 persona 约定**，与 §5.4 的强制边界段一致；
 - 13.1 的六类结构事件已接入，且有一条自动化断言证明**日志中不含 prompt 正文、子 Agent 输出、persona 正文、凭据与绝对路径**；
 - `delegate_batch` 的 item 一律 one-shot（接受任意有 `child` 形态的目标），deadline 到期返回 `partial_timeout`，不永久 pending；未在 grace 内收束的 holder 由 cleanup registry 接管，任何路径下都不存在无人持有的 run；
 - 前台单个委派受 `foregroundDeadlineMs`、后台 one-shot 受 `backgroundDeadlineMs`、batch 受 `batchDeadlineMs`；三条路径都不无限期挂起，且都不存在"无 deadline 的委派"；

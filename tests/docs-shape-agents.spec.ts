@@ -93,6 +93,32 @@ describe('agents README — shipped contract', () => {
     expect(ZH).toMatch(/冻结/)
     expect(EN).toMatch(/frozen/)
   })
+
+  it('separates what the runtime enforces from what only the personas ask for', () => {
+    // Semantic, not phrase-only: a table that said the opposite ("the reuse rule
+    // is enforced in code") used to leave every containment assertion green, so
+    // the reuse rule is pinned to the PROMPT-ONLY cell of its own row and the
+    // opposite claim is refused anywhere in either file. A README that blurred
+    // the two would let a reader take a persona request for a runtime guarantee.
+    expect(EN).toMatch(/Enforced in code/)
+    expect(EN).toMatch(/prompt-only/i)
+    expect(EN).toMatch(/not\*{0,2}\s+\*{0,2}capped/)
+    expect(ZH).toContain('由代码强制')
+    expect(ZH).toContain('提示词约定')
+    expect(ZH).toContain('没有上限')
+
+    // The reuse rule must sit in the second cell of the budget row — the
+    // prompt-only column — not next to what code enforces.
+    const enRow = EN.split('\n').find((line) => line.includes('The reuse rule')) ?? ''
+    const zhRow = ZH.split('\n').find((line) => line.includes('复用规则')) ?? ''
+    expect(enRow, 'the reuse rule must be stated in a table row').toMatch(/^\|.*`maxBatchWidth`.*\|.*The reuse rule/)
+    expect(zhRow, 'the reuse rule must be stated in a table row').toMatch(/^\|.*`maxBatchWidth`.*\|.*复用规则/)
+    expect(zhRow, 'the row must keep the stated-reason clause').toContain('四种例外之一要给出理由')
+
+    // And the opposite claim must not appear anywhere in either file.
+    expect(ZH, 'the reuse rule must not be described as code-enforced').not.toMatch(/复用规则[^。\n]{0,20}代码强制/)
+    expect(EN, 'the reuse rule must not be described as code-enforced').not.toMatch(/reuse rule[^.\n]{0,30}enforced in code/i)
+  })
 })
 
 describe('agents README — build and Gate lanes are documented', () => {

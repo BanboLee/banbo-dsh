@@ -92,9 +92,24 @@ Seven agents ship built in. A `main` form appears in the official Session preset
 - **Background**: use `run_in_background: true` only when genuinely independent, non-conflicting work exists.
 - **Batch**: use `delegate_batch` when several independent one-shot results must all return before continuing. A batch rejects agents that need to keep a conversation.
 - **One-shot**: `research` / `explorer` are one-shot; no continuable session survives settlement, so a reuse-style instruction never gets a second delivery.
-- **Continuable**: an `optional`-continuation child is still one-shot when called in the foreground; only a background call keeps it continuable. To continue one expert with its context, use `list_agents` to find an idle continuable child and reuse it with `send_message`.
+- **Continuable**: an `optional`-continuation child is still one-shot when called in the foreground; only a background call keeps it continuable. **Reuse is the default**: before creating a child of the same role, `list_agents` for one — it may be idle, it may still be running, or there may be none — and append the new work with `send_message` when the idle one fits (with several idle candidates, pick the one whose context is closest to this task). Creating a new child is the exception and needs a stated reason; the four exceptions are an unrelated task, a context that has grown too long or been polluted, needing a fresh isolated child that does not carry the previous context, and a previous turn that produced no conclusion (failed, interrupted or timed out — that child's context is not trustworthy, so re-delegate into a new child instead of reusing it). While a child is still running and the new work belongs to the same workstream (the same piece of work, MR or module, or a continuation of the previous turn), neither create nor idle: fold it into that same task and append it with **one** `send_message` after the wake-up message for its turn arrives. A running child whose work is unrelated to the new task does not block a new child — but say which exception you are using.
 
 A child may deliver the same conclusion **twice**, as a direct message and as a settlement notice; treat both as one completion keyed by `childId`, and do not act twice.
+
+### Enforced in code vs. prompt-only
+
+The personas ask for more than the runtime enforces, and the difference decides whether a rule can be relied on. The left column fails loudly; the right column depends on the model reading its persona.
+
+| Enforced in code | Prompt-only convention |
+|---|---|
+| `allowedChildren` edges, the forbidden-delegation denylist, absolute `maxDepth`, which `agent_<id>` tools exist at all, and the official Session selector owning every main-form model (`model-on-main-only`) | Routing a task to the right expert, and leaving small tasks to the coordinator itself |
+| The root Session budget (`maxConcurrentChildren`, `maxBatchWidth`): fail-fast, nothing queued | The reuse rule — look with `list_agents` before creating, reuse an idle same-role child, pick the closest context, state a reason for one of the four exceptions, and fold new work into a running child instead of polling |
+| A deadline on every path (foreground, background, batch), `drainGraceMs`, and the cleanup registry | Whether the stated reason for a new child is honest and specific: no code reads it |
+| `preferBackground` on `review`, `implement`, `planner` and `executor`: a foreground call is refused as `background-required`, and `delegate_batch` refuses those targets as `batch-target-kept` | "Don't feed the reviewer your own conclusions", "ask the child before interrupting it", "`list_agents` is not a progress poll", "end the turn and wait to be woken" |
+| Continuable child identity failing closed on a missing or corrupt sidecar; retired `agent_*` shells | How long a review may legitimately take, and whether an interruption was justified |
+| The persona lint itself: fixed headings and order, no tool name an agent cannot see, and the §5.4 keyword and ordering assertions | That the persona text is obeyed at all |
+
+Two consequences follow: reuse rounds are **not** counted against `maxConcurrentChildren` (see **Three explicit non-promises**), and the number of same-role children is **not capped** — the reuse rule is a prompt convention, not a quota. The rule itself is §5.4 D12; the user report behind it is written up in §16.16 — implementation landed, behaviour not yet verified. Both are in `docs/agents-plugin-plan.md`.
 
 ## Partial states and concurrency
 

@@ -11,6 +11,7 @@
     "test:composition": "vitest run --config vitest.composition.config.ts tests/composition",
     "test:harness": "vitest run tests/harness.spec.ts",
     "test:agents:gates": "vitest run --config vitest.gates.config.ts plugins/agents/tests/gates plugins/agents/tests/packed.spec.ts",
+    "test:agents:update-goldens": "UPDATE_GOLDENS=1 vitest run plugins/agents/tests/builtin-catalog.spec.ts plugins/agents/tests/delegation-composition.spec.ts",
     "typecheck": "tsc -p plugins/agents/tsconfig.json --noEmit && tsc -p plugins/agents/tsconfig.host.json --noEmit && tsc -p plugins/agents/tsconfig.client.json --noEmit && tsc -p plugins/codegraph-mcp/tsconfig.json --noEmit && tsc -p plugins/dsh-llm-pi-ai-with-session/tsconfig.json --noEmit && tsc -p plugins/dsh-lsp-diagnostics/tsconfig.json --noEmit && tsc -p plugins/fish-shell/tsconfig.json --noEmit && tsc -p plugins/rtk/tsconfig.json --noEmit",
     "build:agents": "node plugins/agents/scripts/build.mjs",
     "test:e2e:headless": "RUN_REAL_HEADLESS_E2E=1 vitest run tests/e2e",

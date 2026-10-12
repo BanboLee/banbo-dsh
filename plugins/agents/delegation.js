@@ -1165,25 +1165,57 @@ function namedTool(ctx, shared, configuredMainAgentId, record) {
   // calling `agent_review`. Read it from the live definition, not the ABI
   // record, which deliberately does not carry it.
   const guidance = ctx.banboAgents?.definitions?.get(record.id)?.child?.guidance
+  // §16.14 — the declaration is rendered into the description rather than left
+  // to the persona: this is the moment the model chooses the flag, and a
+  // foreground call is refused outright for these Agents.
+  const kept = ctx.banboAgents?.definitions?.get(record.id)?.child?.preferBackground === true
+  const keepClause = kept
+    ? ' This Agent is ALWAYS KEPT: call it with run_in_background: true, because its work is meant to be followed up and a foreground call is refused.'
+    : ''
   // §16.10: the caller cannot judge "will this fit in the foreground?" without
   // knowing the actual deadline, and a real session chose background purely to
   // dodge a deadline it could not see. Render the LIVE value, not a constant —
   // the budget is per-preset configurable.
+  // §16.14/§16.16 — but a kept Agent never reaches that foreground path: the
+  // runtime refuses the call before the deadline is consulted. Rendered right
+  // next to "a foreground call is refused", the foreground narration told the
+  // model to reason about a call it cannot make, so it is skipped for kept
+  // targets and kept verbatim for every target that can still take it.
   const foregroundMs = ctx.banboAgents?.definitions?.get(configuredMainAgentId)?.main?.budget?.foregroundDeadlineMs
-  const deadlineClause = typeof foregroundMs === 'number'
-    ? ` A FOREGROUND call waits up to ${Math.round(foregroundMs / 60_000)} minutes for the child to settle`
-    : ' A FOREGROUND call waits for the child to settle'
-  // §16.14 — the declaration is rendered into the description rather than left
-  // to the persona: this is the moment the model chooses the flag, and a
-  // foreground call is refused outright for these Agents.
-  const keepClause = ctx.banboAgents?.definitions?.get(record.id)?.child?.preferBackground === true
-    ? ' This Agent is ALWAYS KEPT: call it with run_in_background: true, because its work is meant to be followed up and a foreground call is refused.'
+  const foregroundClause = kept
+    ? ''
+    : `${typeof foregroundMs === 'number' ? ` A FOREGROUND call waits up to ${Math.round(foregroundMs / 60_000)} minutes for the child to settle` : ' A FOREGROUND call waits for the child to settle'} — or for the foreground deadline, after which it returns a cancel_requested or cleanup_deferred status — and is never resumable afterwards: the child ends with the call.`
+  // §16.16 — reuse-first, in FOUR states. The first wording only said "look
+  // for an IDLE child ... create when there is no match": with a same-role
+  // child still RUNNING there is never an idle match, so the description
+  // granted exactly the creation the persona forbids. The states below are the
+  // persona's rule (idle / running-same-workstream / running-unrelated /
+  // absent), and the "workstream" is spelled out so a caller cannot relabel a
+  // continuation as a new one. Scoped to `optional` targets: only they can ever
+  // have a reusable child, and a one-shot target must not be taught a rule that
+  // cannot apply to it (§5.1).
+  const continuation = ctx.banboAgents?.definitions?.get(record.id)?.child?.continuation
+  const reuseClause = continuation === 'optional'
+    ? ' Before creating a child of the same role, check for one first: a same-role child may be IDLE, may still be RUNNING, or may not exist at all, so call list_agents before you create. IDLE and reusable: reuse it with send_message, unless you can state one of the documented exceptions (an unrelated task; a context too long or polluted; needing a fresh, isolated child that does not carry the previous context; a previous turn that produced no conclusion). RUNNING and the new work belongs to the SAME workstream — the same piece of work, the same MR, the same module, or a continuation of the previous turn: do NOT create — fold the new work into that same task and append it with ONE send_message once its wake-up or settlement message arrives. RUNNING and the new work is UNRELATED to it: creating a new child is allowed, but you must still state which exception applies. NO same-role child exists: create. Whenever a same-role child already exists — idle or running — and you still create one, say which exception you are using and why.'
     : ''
+  // §16.14 vs §16.16 — the flag description below says "if you need this result,
+  // leave it false", but a foreground call for an ALWAYS KEPT Agent is refused:
+  // the model was told to do the one thing that fails. The exception is stated
+  // where the flag is SET, and only for the Agents it applies to.
+  const keptFlagClause = kept
+    ? ' Exception — this Agent is ALWAYS KEPT: a foreground call is refused with background-required, so run_in_background must be true even when you need the result; end your turn and answer from the child\'s message or its settlement notice when it arrives.'
+    : ''
+  // §16.14 vs §16.16 — the description's tail told EVERY caller to stay in the
+  // foreground for a result, which is the one thing a kept Agent refuses. The
+  // tail is generated per target; a kept Agent is told to end its turn instead.
+  const resultClause = kept
+    ? ' — because this Agent is ALWAYS KEPT, run it in the background and end your turn: answer from its message or settlement notice when it wakes you.'
+    : ' — if you need the result now, stay in the foreground.'
   return defineTool({
     name: record.toolName,
     description: record.retired === true
       ? `Retired Agent ${record.id}; calling this compatibility shell always fails until its definition is restored and the Host restarts.`
-      : `Delegate one bounded task to the "${record.id}" Agent.${typeof guidance === 'string' && guidance !== '' ? ` ${guidance}` : ''}${keepClause}${deadlineClause} — or for the foreground deadline, after which it returns a cancel_requested or cleanup_deferred status — and is never resumable afterwards: the child ends with the call. Set run_in_background to true to keep it: a one-shot Agent then returns a job id, and an Agent whose continuation is optional returns a durable child id (reachable with send_message when you have agent-control). A background child's outcome arrives later as a notice; there is no wait call, and sleeping in a shell is not a way to wait — if you need the result now, stay in the foreground.`,
+      : `Delegate one bounded task to the "${record.id}" Agent.${typeof guidance === 'string' && guidance !== '' ? ` ${guidance}` : ''}${reuseClause}${keepClause}${foregroundClause} Set run_in_background to true to keep it: a one-shot Agent then returns a job id, and an Agent whose continuation is optional returns a durable child id (reachable with send_message when you have agent-control). A background child's outcome arrives later as a notice; there is no wait call, and sleeping in a shell is not a way to wait${resultClause}`,
     parameters: {
       prompt: {
         type: 'string',
@@ -1197,7 +1229,7 @@ function namedTool(ctx, shared, configuredMainAgentId, record) {
       },
       run_in_background: {
         type: 'boolean',
-        description: 'Run in the background. Defaults to false. Set true ONLY when you have other, UNRELATED work to do while this child runs; "I will also do this task myself" is NOT a reason. If you need this result to answer the user, leave it false: a background child ends your turn without a result, and an optional Agent then returns a durable child id you can reach with send_message.',
+        description: 'Run in the background. Defaults to false. Set true ONLY when you have other, UNRELATED work to do while this child runs; "I will also do this task myself" is NOT a reason. If you need this result to answer the user, leave it false: a background child ends your turn without a result, and an optional Agent then returns a durable child id you can reach with send_message.' + keptFlagClause,
       },
     },
     output: textOutput,

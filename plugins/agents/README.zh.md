@@ -92,9 +92,24 @@ dsh-tui `0.10.2` 及更早是 0.1.5 世代：它们的 `@deepseek-ai/dsh-agent` 
 - **后台**：仅当存在明确无依赖、无冲突的其他工作时才用 `run_in_background: true`。
 - **batch**：多个互不依赖的 one-shot 结果都返回后才能继续时用 `delegate_batch`。batch 不接受需要保留对话的 Agent。
 - **one-shot**：`research` / `explorer` 是一次性任务，结算后不保留可继续会话；给它们发复用型指令不会有第二次送达。
-- **continuable**：`optional` continuation 的 child 在前台调用时仍是 one-shot，只有后台调用才保留可继续会话。需要同一专家继续上下文时，先 `list_agents` 找 idle 的 continuable child，再用 `send_message` 复用。
+- **continuable**：`optional` continuation 的 child 在前台调用时仍是 one-shot，只有后台调用才保留可继续会话。**默认复用**：新建同角色 child 前先 `list_agents` 查一眼——它可能 idle、可能还在跑、也可能压根没有；是 idle 的那个合适就用 `send_message` 追加新活（有多个 idle 候选时选上下文最接近这次任务的那个）。新建是例外，且要给出理由；四种例外是：任务无关、上下文拖累（上下文太长或被污染）、需要隔离（要一个不带着旧上下文的干净 child）、上一轮没交出结论（失败、被中断或超时——那个 child 的上下文不可信，该重新委派就新起一个，不要硬复用）。同角色 child 还在跑、且新活属于同一件事（同一份工作、同一 MR、同一模块，或上一轮的延续）时，**既不新建、也不干等**：把新活并成同一件事，等它这一轮的唤醒消息到达后，用**一次** `send_message` 追加给它。正在跑的那个 child 与新活无关时才可以另起一个，但要说明命中的例外。
 
 子 Agent 可能通过 direct message 和 settlement notice **两次**送达同一份结论；按 `childId` 视为同一次完成，不重复行动。
+
+### 哪些由代码强制，哪些只是提示词约定
+
+persona 要求的比运行时强制的多，"一条规则能不能依赖"就看这个差别：左列会 fail loud，右列靠模型读没读自己的 persona。
+
+| 由代码强制 | 只是提示词约定 |
+|---|---|
+| `allowedChildren` 边、委派禁用清单、绝对 `maxDepth`、`agent_<id>` 工具是否存在，以及 main 形态的模型归官方 Session selector 所有（`model-on-main-only`） | 任务路由给哪个专家；以及"小任务自己做完" |
+| root Session 预算（`maxConcurrentChildren`、`maxBatchWidth`）：fail-fast，不排队 | 复用规则——新建前先用 `list_agents` 查一眼、复用 idle 同角色 child、多种子时选最近的上下文、四种例外之一要给出理由、新活并进正在跑的 child 而不是轮询 |
+| 三条路径（前台 / 后台 / batch）各有 deadline、`drainGraceMs` 与 cleanup registry | 新建 child 时写出的理由是否真实、具体——没有代码读它 |
+| `review`、`implement`、`planner`、`executor` 的 `preferBackground`：前台调用被拒 `background-required`，`delegate_batch` 同样拒绝这些目标 `batch-target-kept` | "不要把结论喂给审查者"、"中断前先问 child"、"`list_agents` 不是进度查询"、"结束本轮等唤醒" |
+| continuable child 身份缺失或损坏时 fail-closed；退役的 `agent_*` 空壳 | 一次审查合理地跑多久，以及那次中断是否正当 |
+| persona lint 本身：固定标题与顺序、不出现不可见工具名，以及 §5.4 的关键词与顺序断言 | persona 正文究竟会不会被遵守 |
+
+两条后果照实说：复用轮次**不计入** `maxConcurrentChildren`（见**三条明确的非承诺**第 1 条），同角色 child 的数量**没有上限**——复用规则是提示词约定，不是配额。规则本体是 §5.4 的 D12；它来自 §16.16 记录的用户报告——实现已落地、行为未验证。两者都在 `docs/agents-plugin-plan.md`。
 
 ## 部分状态与并发
 
