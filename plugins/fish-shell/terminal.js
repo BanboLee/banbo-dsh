@@ -123,7 +123,7 @@ const DEFAULT_PWSH_ARGS = ['-NoLogo', '-NoProfile']
 
 /**
  * The official `resolveConfig`, replicated from
- * `@deepseek-ai/dsh-terminal-bash@0.2.0-rc.1` (`lib/index.js:27-35`; the
+ * `@deepseek-ai/dsh-terminal-bash@0.2.0-rc.2` (`lib/index.js:27-35`; the
  * official package does not export it). An unset or EMPTY
  * `shellPath`/`shellArgs` selects the dialect's defaults — schemastery
  * materializes an absent optional array as `[]` — while a non-empty explicit
@@ -150,7 +150,7 @@ export function resolveTerminalConfig(config) {
 
 /**
  * The official `validateConfig`, replicated from
- * `@deepseek-ai/dsh-terminal-bash@0.2.0-rc.1` (`lib/index.js:62-74`; not
+ * `@deepseek-ai/dsh-terminal-bash@0.2.0-rc.2` (`lib/index.js:62-74`; not
  * exported) with the official error text verbatim — including the
  * `terminal-bash:` prefix, which is deliberate: the row's config surface IS the
  * official schema, and parity with the official validator (messages compared

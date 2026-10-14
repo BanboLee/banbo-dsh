@@ -39,7 +39,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'grep-compress.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.0.4',
-      '@deepseek-ai/dsh-subprocess': '^0.2.0-rc.1',
+      '@deepseek-ai/dsh-subprocess': '^0.2.0-rc.2',
     }
   },
   {
@@ -48,7 +48,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.0.4',
-      '@deepseek-ai/dsh-mcp-client': '^0.2.0-rc.1',
+      '@deepseek-ai/dsh-mcp-client': '^0.2.0-rc.2',
     },
   },
   {
@@ -57,8 +57,8 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'adapter.js', 'context.js', 'model.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.0.4',
-      '@deepseek-ai/dsh-llm': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-timeout': '^0.2.0-rc.1',
+      '@deepseek-ai/dsh-llm': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-timeout': '^0.2.0-rc.2',
       '@earendil-works/pi-ai': '^0.84.2',
     },
   },
@@ -68,10 +68,10 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'collector.js', 'framing.js', 'runtime.js', 'tool.js', 'render.js', 'coordinator.js', 'message-source.d.ts', 'workspace-root.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.0.4',
-      '@deepseek-ai/dsh-fs': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-llm': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-subprocess': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-tools': '^0.2.0-rc.1',
+      '@deepseek-ai/dsh-fs': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-llm': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-subprocess': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-tools': '^0.2.0-rc.2',
     },
   },
   {
@@ -79,30 +79,30 @@ const bundleExpectations: readonly BundleExpectation[] = [
     packageName: '@banbolee/dsh-fish-shell',
     files: ['index.js', 'local.js', 'tool.js', 'policy.js', 'terminal.js', 'terminal-fish.js', 'persistent.js', 'job-kind.d.ts', 'terminal-tools.js', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG.md'],
     dependencies: {
-      '@deepseek-ai/dsh-tool-terminal': '0.2.0-rc.1',
+      '@deepseek-ai/dsh-tool-terminal': '0.2.0-rc.2',
     },
     bundledDependencies: ['@deepseek-ai/dsh-tool-terminal'],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.0.4',
-      '@deepseek-ai/dsh-agent': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-bash-local': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-bash-sandbox': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-home-paths': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-jobs': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-llm': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-pwsh-local': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-sandbox': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-sandbox-policy': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-scope': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-session-projection': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-shell': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-shell-env': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-subprocess': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-system-prompt': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-terminal': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-terminal-bash': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-tools': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-user-approval': '^0.2.0-rc.1',
+      '@deepseek-ai/dsh-agent': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-bash-local': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-bash-sandbox': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-home-paths': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-jobs': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-llm': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-pwsh-local': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-sandbox': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-sandbox-policy': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-scope': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-session-projection': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-shell': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-shell-env': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-subprocess': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-system-prompt': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-terminal': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-terminal-bash': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-tools': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-user-approval': '^0.2.0-rc.2',
     },
   },
   {
@@ -138,27 +138,27 @@ const bundleExpectations: readonly BundleExpectation[] = [
     ],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.0.4',
-      '@deepseek-ai/dsh-agent': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-agent-preset': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-agent-preset-registry': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-api-gateway': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-api-remotes': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-client-locale': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-client-ui-plugin-manager': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-client-ui-renderer': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-client-ui-settings': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-client-ui-slots': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-home-paths': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-invariants': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-jobs': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-scope': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-session': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-session-projection': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-settings': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-subagent': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-system-prompt': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-tools': '^0.2.0-rc.1',
-      '@deepseek-ai/dsh-typert-protocol': '^0.2.0-rc.1',
+      '@deepseek-ai/dsh-agent': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-agent-preset': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-agent-preset-registry': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-api-gateway': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-api-remotes': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-client-locale': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-client-ui-plugin-manager': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-client-ui-renderer': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-client-ui-settings': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-client-ui-slots': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-home-paths': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-invariants': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-jobs': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-scope': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-session': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-session-projection': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-settings': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-subagent': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-system-prompt': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-tools': '^0.2.0-rc.2',
+      '@deepseek-ai/dsh-typert-protocol': '^0.2.0-rc.2',
       '@deepseek-ai/schemastery': '~3.18.4',
       'react': '^18.3.1',
     },
@@ -249,17 +249,17 @@ describe('DSH bundle package manifests', () => {
 })
 
 describe('DSH dependency family ranges', () => {
-  it('codegraph-mcp declares @deepseek-ai/dsh-llm from the rc.1 family', () => {
+  it('codegraph-mcp declares @deepseek-ai/dsh-llm from the rc.2 family', () => {
     const manifest = readManifest('plugins/codegraph-mcp')
 
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.0-rc.1')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.0-rc.2')
   })
 
-  it('rtk declares @deepseek-ai/dsh-llm and @deepseek-ai/dsh-settings from the rc.1 family', () => {
+  it('rtk declares @deepseek-ai/dsh-llm and @deepseek-ai/dsh-settings from the rc.2 family', () => {
     const manifest = readManifest('plugins/rtk')
 
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.0-rc.1')
-    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('^0.2.0-rc.1')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.0-rc.2')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('^0.2.0-rc.2')
   })
 })
 

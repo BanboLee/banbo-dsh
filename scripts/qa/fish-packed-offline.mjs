@@ -37,7 +37,7 @@
  * root is removed on the way out, success or failure; every failure prints the
  * failing command and its complete output and exits non-zero.
  *
- * Requires on PATH: `dsh` (0.2.0-rc.1), `pnpm`, `tar`. `fish` is deliberately
+ * Requires on PATH: `dsh` (0.2.0-rc.2), `pnpm`, `tar`. `fish` is deliberately
  * NOT required: this lane proves the packed bundle installs, loads and
  * registers its tools — session behavior is the real lane's job
  * (`plugins/fish-shell/tests/terminal-session-real.spec.ts`).
@@ -220,7 +220,7 @@ async function loadAgentRuntime(packageRoot) {
 async function main() {
   const dshBinary = findOnPath('dsh')
   if (dshBinary === undefined) {
-    throw new ProbeError('the `dsh` CLI is not on PATH (install @deepseek-ai/dsh@0.2.0-rc.1)')
+    throw new ProbeError('the `dsh` CLI is not on PATH (install @deepseek-ai/dsh@0.2.0-rc.2)')
   }
   const pnpmBinary = process.env.PNPM_BIN ?? findOnPath('pnpm')
   if (pnpmBinary === undefined) {

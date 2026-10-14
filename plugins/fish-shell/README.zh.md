@@ -24,7 +24,7 @@ DeepSeek Harness 的 fish shell executor 与工具：用 **fish** 而不是 bash
 
 | 项 | 支持范围 | 验证情况 |
 |---|---|---|
-| `@deepseek-ai/*` dsh 族 | `0.2.0-rc.1` —— 精确版本钉在仓库根 `package.json`（`pnpm.overrides`） | 是：S0 探针在真实隔离 profile 里跑过 |
+| `@deepseek-ai/*` dsh 族 | `0.2.0-rc.2` —— 精确版本钉在仓库根 `package.json`（`pnpm.overrides`） | 是：S0 探针在真实隔离 profile 里跑过 |
 | `fish` | `3.7+` | 是，实测 `3.7.1`；更低版本未验证 |
 | 平台 | 仅 POSIX：Linux 与 macOS。Windows 不支持（Windows 由 `pwsh` 系列覆盖） | Linux：`test` job 里 `DSH_REAL_FISH_PTY=1` 的真实 lane；macOS：`fish-pty-macos` job 跑真实 L2 lane，含 `workspace-write` 下 workspace 外写入被拒 |
 | Node.js | `>=22`（`engines.node`） | 是 |
@@ -65,7 +65,7 @@ dsh plugin --profile <name> add ./plugins/fish-shell
 
 ### 发布与 provenance
 
-发布预期带上 **npm provenance**：`publishConfig` 里带 `provenance: true`，因此从支持 OIDC 的 CI（GitHub Actions）发布即可，或显式执行 `npm publish --provenance --access public`。本机发布会缺少为该次构建作证的 OIDC provider，因此维护者从工作站发版时必须为那一次发布关掉 provenance，用 `--no-provenance`。**2FA 是发版前置条件**——provenance 不能替代它，且 npm 在账户/组织侧校验，本仓库无法验证。发布前把 `CHANGELOG.md` 的 `[Unreleased]` 落成即将发布的版本号（本次 `0.8.0` 就是这样做的）。
+发布预期带上 **npm provenance**：`publishConfig` 里带 `provenance: true`，因此从支持 OIDC 的 CI（GitHub Actions）发布即可，或显式执行 `npm publish --provenance --access public`。本机发布会缺少为该次构建作证的 OIDC provider，因此维护者从工作站发版时必须为那一次发布关掉 provenance，用 `--no-provenance`。**2FA 是发版前置条件**——provenance 不能替代它，且 npm 在账户/组织侧校验，本仓库无法验证。发布前把 `CHANGELOG.md` 的 `[Unreleased]` 落成即将发布的版本号（本次 `0.8.1` 就是这样做的）。
 
 发布形态必须从用 `--config.package-import-method=copy` 装出来的暂存目录打包：pnpm 默认的 import method 会把 store 里的文件硬链接过来，而 npmjs 会以 `415 Unsupported Media Type — Hard link is not allowed` 拒绝带硬链接成员的 tarball。`npm publish --dry-run` 抓不到这件事（dry run 不上传），因此发布 workflow 显式断言该形态，`plugins/fish-shell/tests/packed-files.spec.ts` 也对自己的 `npm pack` 产物做同一断言。
 
@@ -92,7 +92,7 @@ prompt setup 走 `-C` 参数（与 `terminal-fish.js` 导出的 `FISH_PROMPT_SET
 
 **为什么一次性路径一行没动。** 追加的 group 是纯增量的。它上面的 host 平面 row 保持逐字不变（`bash-sandbox`/`tool-bash` 禁用，`fish-shell`/`tool-fish`/`fish-preset-policy` 插入），并且 `ctx.shell`（`index.js`）、一次性 `fish` 工具（`tool.js`）、`minimal` preset 的持久工具（`persistent.js`）与 `terminal-fish.js` 库都保持原样的代码路径：交互式 surface 的存在不改变一次性命令的任何行为。
 
-**随包分发的 `@deepseek-ai/dsh-tool-terminal`。** `terminal-tools` row 从本包内部解析官方工具包，而不是从 profile 平面解析：`@deepseek-ai/dsh-tool-terminal@0.2.0-rc.1` 声明在 `dependencies` 与 `bundledDependencies` 里，所以打包会把它及其传递依赖作为实体文件放进 tarball 内的 `node_modules/` 下。这正是离线 profile 能安装成功的原因。它**不能**被挪到 `peerDependencies`：peer 解析会去找 profile 平面的副本，而那正是本设计要避免的。版本、来源与许可证见 `./THIRD-PARTY-NOTICES.md`。
+**随包分发的 `@deepseek-ai/dsh-tool-terminal`。** `terminal-tools` row 从本包内部解析官方工具包，而不是从 profile 平面解析：`@deepseek-ai/dsh-tool-terminal@0.2.0-rc.2` 声明在 `dependencies` 与 `bundledDependencies` 里，所以打包会把它及其传递依赖作为实体文件放进 tarball 内的 `node_modules/` 下。这正是离线 profile 能安装成功的原因。它**不能**被挪到 `peerDependencies`：peer 解析会去找 profile 平面的副本，而那正是本设计要避免的。版本、来源与许可证见 `./THIRD-PARTY-NOTICES.md`。
 
 ## 安全模型
 
@@ -141,7 +141,7 @@ prompt setup 走 `-C` 参数（与 `terminal-fish.js` 导出的 `FISH_PROMPT_SET
 
 ### `@deepseek-ai/dsh-tool-terminal` 报 `ERR_MODULE_NOT_FOUND`
 
-bundled 的工具包没有进安装产物，或它被当成 peer（profile 平面）依赖解析了。用 hoisted linker 构建：先 `pnpm install --prod --config.node-linker=hoisted`，再 `pnpm pack --config.node-linker=hoisted`。不带它 pnpm 会拒绝打包 bundled 依赖，并报 `ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`。检查产物：tarball 必须包含 `package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json`。有一条上游原因不在我们能修的范围内：`@deepseek-ai/dsh-tool-terminal@0.2.0-rc.1` 声明的 `exports` 里有 `./src/*`，而实际发布的 tarball 并不包含它，因此任何按该子路径解析的代码都会 `ERR_MODULE_NOT_FOUND`。
+bundled 的工具包没有进安装产物，或它被当成 peer（profile 平面）依赖解析了。用 hoisted linker 构建：先 `pnpm install --prod --config.node-linker=hoisted`，再 `pnpm pack --config.node-linker=hoisted`。不带它 pnpm 会拒绝打包 bundled 依赖，并报 `ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`。检查产物：tarball 必须包含 `package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json`。有一条上游原因不在我们能修的范围内：`@deepseek-ai/dsh-tool-terminal@0.2.0-rc.2` 声明的 `exports` 里有 `./src/*`，而实际发布的 tarball 并不包含它，因此任何按该子路径解析的代码都会 `ERR_MODULE_NOT_FOUND`。
 
 ### `ERR_PNPM_NO_OFFLINE_TARBALL`
 

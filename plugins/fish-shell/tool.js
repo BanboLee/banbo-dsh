@@ -505,7 +505,7 @@ function fishParameters(escalationModes) {
 }
 
 /** Canonical output declaration: a background acknowledgment or a foreground
- * run. The rc.1 ToolRuntime dialect forbids `type`/`additionalProperties`
+ * run. The rc.2 ToolRuntime dialect forbids `type`/`additionalProperties`
  * beside a `oneOf` root (exact-one branches), so the union is expressed as a
  * bare `oneOf` with each branch carrying its own object shape.
  * @type {import('@deepseek-ai/dsh-tools').JsonSchemaNode} */

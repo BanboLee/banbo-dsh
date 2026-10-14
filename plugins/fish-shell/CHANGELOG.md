@@ -5,6 +5,23 @@ All notable changes to `@banbolee/dsh-fish-shell` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-10-14
+
+This is a **patch** release (`0.8.0` → `0.8.1`): the bundle now targets the
+`0.2.0-rc.2` DSH family, with no behavioural change of its own.
+
+### Changed
+
+- The `@deepseek-ai/*` dependency family moves to `0.2.0-rc.2` (dsh
+  `0.2.0-rc.2`): the peer and dev ranges are `^0.2.0-rc.2`, and the bundled
+  `@deepseek-ai/dsh-tool-terminal` pin is `0.2.0-rc.2`. `0.8.0` cannot be
+  installed against a `0.2.0-rc.2` harness.
+
+### Documentation
+
+- README (both languages) names the `0.2.0-rc.2` family in the support matrix;
+  `THIRD-PARTY-NOTICES.md` follows the bundled pin.
+
 ## [0.8.0] - 2026-10-09
 
 This is a **minor** release (`0.7.0` → `0.8.0`): a new capability, no breaking

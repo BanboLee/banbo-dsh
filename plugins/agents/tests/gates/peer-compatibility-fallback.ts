@@ -10,7 +10,7 @@
  * because the real evaluator was unavailable.
  *
  * Reference: `@deepseek-ai/dsh-app-boot`'s `lib/types/plugin-compatibility.js`
- * (0.2.0-rc.1), reproduced here in behaviour — every throw included:
+ * (0.2.0-rc.2), reproduced here in behaviour — every throw included:
  *
  *   - a runtime version that is not a valid semver is a `throw`;
  *   - a manifest that is not a plain object (null, array, primitive) is a `throw`;

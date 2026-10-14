@@ -15,7 +15,7 @@
  * `FS_TOO_LARGE` mapping, the Diagnostic consumed-field vs
  * optional/extension contract, 0→1 based rendering, the hard deadline and
  * final gate, the unique session teardown order, shell boundaries, server
- * self-installation, the rc.1/`dsh-tools` peer boundary, the sync script,
+ * self-installation, the rc.2/`dsh-tools` peer boundary, the sync script,
  * and the verification commands. It deliberately avoids asserting
  * incidental prose.
  *
@@ -406,9 +406,9 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
     failures.push('a missing server must be documented as fail open with server not found')
   }
 
-  // rc.1 and dsh-tools peer boundary.
-  if (!sentencesContaining(f, '0.2.0-rc.1').some((s) => s.includes('^0.2.0-rc.1'))) {
-    failures.push('the peer range ^0.2.0-rc.1 must be documented')
+  // rc.2 and dsh-tools peer boundary.
+  if (!sentencesContaining(f, '0.2.0-rc.2').some((s) => s.includes('^0.2.0-rc.2'))) {
+    failures.push('the peer range ^0.2.0-rc.2 must be documented')
   }
   if (!f.includes('@deepseek-ai/dsh-tools')) {
     failures.push('@deepseek-ai/dsh-tools must be named in the peer boundary')
@@ -560,9 +560,9 @@ describe('@banbolee/dsh-lsp-diagnostics README shape', () => {
     expect(README).toContain('gopls')
   })
 
-  it('documents the rc.1 and dsh-tools peer boundary', () => {
-    expect(README).toContain('0.2.0-rc.1')
-    expect(README).toContain('^0.2.0-rc.1')
+  it('documents the rc.2 and dsh-tools peer boundary', () => {
+    expect(README).toContain('0.2.0-rc.2')
+    expect(README).toContain('^0.2.0-rc.2')
     expect(README).toContain('@deepseek-ai/dsh-tools')
   })
 
@@ -646,7 +646,7 @@ describe('@banbolee/dsh-lsp-diagnostics README shape', () => {
   })
 
   it('rejects a README that restores the old dsh peer family (mutation regression)', () => {
-    const mutated = README.split('^0.2.0-rc.1').join('>=0.1.4-rc.2 <0.1.5-0')
+    const mutated = README.split('^0.2.0-rc.2').join('>=0.1.4-rc.2 <0.1.5-0')
     expect(mutated).not.toEqual(README)
     expect(validateLspDiagnosticsReadmeContract(mutated)).not.toEqual([])
   })

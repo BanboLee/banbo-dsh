@@ -375,7 +375,7 @@ describe('upgrade gate verdicts', () => {
 // ── The G5 activation step against a real QA-packed profile ──────────────────
 
 const TUI_BUNDLE = '@deepseek-harness-tui/dsh-tui'
-const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.11.2`'
+const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.12.0`'
 const repoRoot = resolve(import.meta.dirname, '..', '..')
 
 function findExecutableOnPath(name: string): string | undefined {

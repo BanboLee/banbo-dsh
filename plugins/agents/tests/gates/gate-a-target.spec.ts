@@ -69,12 +69,12 @@ afterEach(() => {
 /* ------------------------------------------------------------------ A1 --- */
 
 describe('A1 — dependency family is uniform', () => {
-  it('the workspace lockfile resolves no 0.1.7-rc.2 package alongside 0.2.0-rc.1', () => {
+  it('the workspace lockfile resolves no 0.1.7-rc.2 package alongside 0.2.0-rc.2', () => {
     const lock = readFileSync(join(repoRoot, 'pnpm-lock.yaml'), 'utf8')
     const previous = lock.match(/0\.1\.7-rc\.2/g) ?? []
-    const family = lock.match(/0\.2\.0-rc\.1/g) ?? []
+    const family = lock.match(/0\.2\.0-rc\.2/g) ?? []
     // Mixing prereleases inside one family is the exact failure this probe
-    // exists to catch: `^0.2.0-rc.1` cannot express "stay on rc.1", so a
+    // exists to catch: `^0.2.0-rc.2` cannot express "stay on rc.2", so a
     // caret range silently drifts to the newest rc.x — and a package left
     // behind on the previous family is the other half of the same drift.
     expect(previous).toHaveLength(0)
@@ -95,7 +95,7 @@ describe('A1 — dependency family is uniform', () => {
 
     expect(family.length).toBeGreaterThan(0)
     for (const [name, range] of family) {
-      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.0-rc\.1$/)
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.0-rc\.2$/)
     }
   })
 })

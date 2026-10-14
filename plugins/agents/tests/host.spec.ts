@@ -148,12 +148,12 @@ describe('dependencyFamilyVersion — the locked harness range (§11.2)', () => 
 
   it('refuses a manifest whose harness dependencies disagree', () => {
     expect(() => dependencyFamilyVersion({
-      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.0-rc.1', '@deepseek-ai/dsh-agent': '^0.1.8' },
+      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.0-rc.2', '@deepseek-ai/dsh-agent': '^0.1.8' },
     })).toThrow(/family|uniform|one range/i)
   })
 
   it('is content, not a host path — the same manifest gives the same answer', () => {
-    const manifest = { peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.0-rc.1' } }
+    const manifest = { peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.0-rc.2' } }
     expect(dependencyFamilyVersion(manifest)).toBe(dependencyFamilyVersion(manifest))
   })
 })
@@ -162,9 +162,9 @@ describe('dependencyFamilyVersion — the locked harness range (§11.2)', () => 
 
 const repoRoot = resolve(pluginRoot, '..', '..')
 /** The runtime the declared family names — the version the range must admit. */
-const TARGET_DSH_VERSION = '0.2.0-rc.1'
+const TARGET_DSH_VERSION = '0.2.0-rc.2'
 /** The runtime the family was upgraded FROM: the negative control. */
-const PREVIOUS_DSH_VERSION = '0.1.7-rc.2'
+const PREVIOUS_DSH_VERSION = '0.2.0-rc.1'
 
 /**
  * Load a module from THIS workspace's installed tree.
@@ -188,7 +188,7 @@ function optionalInstalledModule(id: string): unknown {
 }
 
 describe('dependencyFamilyVersion — the declared range admits the target runtime', () => {
-  it('accepts 0.2.0-rc.1 through the platform evaluator, with semver as the fallback', () => {
+  it('accepts 0.2.0-rc.2 through the platform evaluator, with semver as the fallback', () => {
     const manifest: object = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'))
     const appBoot = optionalInstalledModule('@deepseek-ai/dsh-app-boot') as {
       evaluatePluginCompatibility: (

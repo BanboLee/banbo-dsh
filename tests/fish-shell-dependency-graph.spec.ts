@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const DSH_VERSION = '0.2.0-rc.1'
+const DSH_VERSION = '0.2.0-rc.2'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -33,7 +33,7 @@ function collectDshVersions(value: unknown, result = new Map<string, Set<string>
 }
 
 describe('fish-shell installed dependency graph', () => {
-  it('resolves sandbox and LLM packages from the coherent 0.2.0-rc.1 family', () => {
+  it('resolves sandbox and LLM packages from the coherent 0.2.0-rc.2 family', () => {
     // Given the real installed dependency chain rooted at @banbolee/dsh-fish-shell
     const listed = spawnSync('pnpm', ['list', '--filter', '@banbolee/dsh-fish-shell', '--depth=8', '--json'], {
       cwd: repoRoot,
@@ -50,7 +50,7 @@ describe('fish-shell installed dependency graph', () => {
     const graph: unknown = JSON.parse(listed.stdout)
     const versions = collectDshVersions(graph)
 
-    // Then the formerly incompatible sandbox/LLM pair and the full family are rc.1
+    // Then the formerly incompatible sandbox/LLM pair and the full family are rc.2
     expect(versions.get('@deepseek-ai/dsh-sandbox')).toEqual(new Set([DSH_VERSION]))
     expect(versions.get('@deepseek-ai/dsh-llm')).toEqual(new Set([DSH_VERSION]))
     for (const [name, resolved] of versions) {

@@ -28,7 +28,7 @@
  *       2. the OFFICIAL minimal preset declaration, read byte-for-byte from the
  *          installed `@deepseek-ai/dsh-web-app` package's
  *          `presets/minimal.patch.yml`. The minimal preset is NOT declared by
- *          dsh-base: in 0.2.0-rc.1 it is one of the ordered patch files of
+ *          dsh-base: in 0.2.0-rc.2 it is one of the ordered patch files of
  *          `@deepseek-ai/dsh-web-app` (`dsh.bundle.patch` lists
  *          `./presets/{standard,ptc,minimal,cordis}.patch.yml`), and
  *          `@deepseek-ai/dsh-agent-preset` is only the generic declaration
@@ -139,7 +139,7 @@ const TERMINAL_TOOL_NAMES = [
   'terminal_close',
   'terminal_list',
 ] as const
-const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.0-rc.1`'
+const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.0-rc.2`'
 const FISH_HINT = 'install it (`apt-get install fish` on Linux, `brew install fish` on macOS)'
 const WEB_APP_HINT = `install a dsh release that ships ${WEB_APP} (the \`web\` profile template)`
 
@@ -162,7 +162,7 @@ const installationRoot = dshBinary === undefined
 /**
  * The OFFICIAL minimal preset declaration, resolved through the installation's
  * own module resolution (so a pnpm-shaped global install works as well as the
- * flat npm one). dsh-base ships no preset roster: in 0.2.0-rc.1 the built-in
+ * flat npm one). dsh-base ships no preset roster: in 0.2.0-rc.2 the built-in
  * presets are ordered patch files of `@deepseek-ai/dsh-web-app`.
  */
 const officialPresetFile: string | undefined = (() => {

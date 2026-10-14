@@ -20,21 +20,21 @@ naming one.
 
 | Package | Version | License | Location inside the tarball |
 |---|---|---|---|
-| `@deepseek-ai/dsh-tool-terminal` | `0.2.0-rc.1` | MIT | `package/node_modules/@deepseek-ai/dsh-tool-terminal/` |
+| `@deepseek-ai/dsh-tool-terminal` | `0.2.0-rc.2` | MIT | `package/node_modules/@deepseek-ai/dsh-tool-terminal/` |
 | `@deepseek-ai/schemastery` | `3.18.4` | MIT | `package/node_modules/@deepseek-ai/schemastery/` |
 | `@deepseek-ai/cosmokit` | `1.8.5` | MIT | `package/node_modules/@deepseek-ai/cosmokit/` |
 | `@standard-schema/spec` | `1.1.0` | MIT | `package/node_modules/@standard-schema/spec/` |
 
 Dependency edges, as declared by the packaged manifests:
 
-- `@deepseek-ai/dsh-tool-terminal@0.2.0-rc.1` → `@deepseek-ai/schemastery ~3.18.4`
+- `@deepseek-ai/dsh-tool-terminal@0.2.0-rc.2` → `@deepseek-ai/schemastery ~3.18.4`
 - `@deepseek-ai/schemastery@3.18.4` → `@standard-schema/spec ^1.1.0`, `@deepseek-ai/cosmokit ~1.8.5`
 - `@standard-schema/spec@1.1.0` and `@deepseek-ai/cosmokit@1.8.5` → no runtime dependencies
 
 Those four packages are the complete `node_modules/` inventory of the packed
 tarball; each of them includes its `LICENSE` file.
 
-## `@deepseek-ai/dsh-tool-terminal` 0.2.0-rc.1 — MIT
+## `@deepseek-ai/dsh-tool-terminal` 0.2.0-rc.2 — MIT
 
 - Origin: `git+https://github.com/deepseek-ai/deepseek-harness.git`, directory
   `packages/terminal/tool-terminal` (from the packaged `package.json`
