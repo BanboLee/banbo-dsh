@@ -259,13 +259,17 @@ describe('initialiseCatalog — Host startup (§9.2)', () => {
 
   it('keeps the harness placeholders in the declared preset composition', () => {
     // The composition a preset mounts is now the `config.plugins` list of the
-    // `preset-<id>` rows, which is generated from the template. `{{cwd}}`
-    // belongs to the harness and must survive verbatim in a real config VALUE:
-    // asserting it against the template is not enough, because the previous
-    // version of this test was satisfied by a template COMMENT that merely
-    // mentioned `{{model}}`, so it passed while the value was absent.
+    // `preset-<id>` rows, which is generated from the template.
+    //
+    // The persona `suffix` used to be asserted HERE as
+    // `Your working directory is {{cwd}}.`, and that assert pinned a real
+    // production bug: dsh 0.2.1-rc.2 registers only `provider` and `model` as
+    // prompt variables, so the first turn of every root session threw
+    // `unknown prompt variable`. The suffix is gone; the directory reaches the
+    // model natively through `@deepseek-ai/dsh-working-directory`. The assertion
+    // is now the OPPOSITE one: no unregistered variable may appear in a value.
     const persona = declaredPresetPlugins('banbo').find((row) => row.id === 'persona')!
-    expect((persona.config as Record<string, unknown>).suffix).toBe('Your working directory is {{cwd}}.')
+    expect((persona.config as Record<string, unknown>).suffix).toBeUndefined()
     // `{{agentId}}` is ours and must be substituted away.
     expect(patchText).not.toContain('{{agentId}}')
     // `{{model}}` is deliberately NOT carried by the composition any more: the

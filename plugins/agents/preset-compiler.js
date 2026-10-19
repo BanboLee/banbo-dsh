@@ -186,10 +186,16 @@ const byId = (left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 
 /**
  * Render the composition template for one agent.
  *
- * Only the agent-id placeholder is substituted; `{{model}}` and `{{cwd}}` are
- * the harness's own placeholders and must survive into the mounted composition
- * verbatim, which is why the guard below names one placeholder rather than
- * rejecting every `{{...}}` it sees.
+ * Only the agent-id placeholder is substituted; it is OURS, which is why the
+ * guard below names it rather than rejecting every `{{...}}` it sees.
+ *
+ * PROMPT VARIABLES ARE A DIFFERENT MECHANISM with a different rule: the target DSH
+ * registers only `provider` and `model` (dsh 0.2.1-rc.2 calls
+ * `ctx.systemPrompt.variable(...)` for exactly those two), so the composition must
+ * not carry any other `{{name}}`. An unregistered one throws
+ * `unknown prompt variable` while the persona renders — on the first turn of every
+ * root session. That rule is enforced by `tests/prompt-variables.spec.ts` rather
+ * than here, because it covers the declared patch as well as this template.
  *
  * @param templateText - the in-package template bytes.
  * @param agentId - the catalog agent id to substitute in.

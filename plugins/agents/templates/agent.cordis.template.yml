@@ -44,11 +44,20 @@
 # whole preset then fails to mount with
 #   `$.prefix missing required value (at prefix)`
 # which is exactly what a real profile reported before this was fixed.
+#
+# `suffix` is deliberately ABSENT (it defaults to ""). It used to carry
+# `Your working directory is {{cwd}}.`, and that broke every root session on
+# dsh 0.2.1-rc.2: the system prompt registers only `provider` and `model`, so
+# rendering the persona reported `unknown prompt variable` for `cwd` on the very
+# first turn. The directory is already injected natively —
+# `@deepseek-ai/dsh-working-directory` contributes a
+# `Current working directory: "<path>".` context from `dsh-base` — so the suffix
+# was redundant as well as broken. Do not reintroduce a prompt variable here
+# without checking which ones the target DSH actually registers.
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
     prefix: ''
-    suffix: Your working directory is {{cwd}}.
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
@@ -168,7 +177,7 @@
 - id: banbo-main-runtime
   name: '@banbolee/dsh-agents/main-runtime'
   config:
-    agentId: {{agentId}}
+    agentId: '{{agentId}}'
 
 # `delegation` owns everything that reaches another agent: the stable named
 # `agent_<id>` tools, `delegate_batch`, the absolute depth cap, the root-session
@@ -176,7 +185,7 @@
 - id: banbo-delegation
   name: '@banbolee/dsh-agents/delegation'
   config:
-    agentId: {{agentId}}
+    agentId: '{{agentId}}'
 
 # ── remaining model-facing rows ─────────────────────────────────────────────
 

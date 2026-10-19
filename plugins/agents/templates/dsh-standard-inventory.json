@@ -2,7 +2,7 @@
   "dshVersion": "0.2.1-rc.2",
   "standardDigest": "sha256:4f1f7e668dc9b0faa1929153a20439e44b06b0fdbf42c830e9aef0b36378f7e1",
   "templateProbe": "probe",
-  "templateDigest": "sha256:059180ddea932452c32147621b21305f949b7e281f64087bd23a008d11a77009",
+  "templateDigest": "sha256:31a7f41acb3cbe9dac075d82d03209bb1f949df2be1615f5e31911744ac14b56",
   "rows": [
     {
       "id": "persona",

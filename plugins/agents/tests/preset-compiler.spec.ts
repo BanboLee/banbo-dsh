@@ -183,7 +183,18 @@ describe('renderComposition', () => {
   it('substitutes every placeholder', () => {
     const rendered = renderComposition(templateText, 'my-lead')
     expect(rendered).not.toContain('{{agentId}}')
-    expect(rendered).toContain('agentId: my-lead')
+    // Asserted on the PARSED value rather than the raw spelling: the template QUOTES
+    // the placeholder (`agentId: '{{agentId}}'`) so the unrendered template is valid
+    // YAML with a string value. A bare `{{agentId}}` parses as a flow mapping
+    // (`{ agentId: null }`), which silently hid the placeholder from every
+    // value-level scan — the hole the quoting closes.
+    const { parseDocument } = require('yaml') as typeof import('yaml')
+    const parsed = parseDocument(rendered, { schema: 'core', merge: false }).toJS() as Array<{
+      id?: string
+      config?: Record<string, unknown>
+    }>
+    const runtime = parsed.find((row) => row.id === 'banbo-main-runtime')
+    expect(runtime?.config?.['agentId']).toBe('my-lead')
   })
 
   it('leaves every other byte untouched', () => {

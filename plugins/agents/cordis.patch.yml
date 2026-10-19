@@ -40,7 +40,6 @@
             'name': '@deepseek-ai/dsh-persona'
             'config':
               'prefix': ''
-              'suffix': 'Your working directory is {{cwd}}.'
           - 'id': 'agent-instructions'
             'name': '@deepseek-ai/dsh-agent-instructions'
             'config':
@@ -154,7 +153,6 @@
             'name': '@deepseek-ai/dsh-persona'
             'config':
               'prefix': ''
-              'suffix': 'Your working directory is {{cwd}}.'
           - 'id': 'agent-instructions'
             'name': '@deepseek-ai/dsh-agent-instructions'
             'config':
