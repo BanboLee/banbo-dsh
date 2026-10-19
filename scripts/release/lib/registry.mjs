@@ -340,33 +340,51 @@ export function classifyNpmFailure(error, context = {}) {
  *
  * @param {string} spec `<package>@<version>` or `<package>@<dist-tag>`.
  * @param {string} field the field to print.
- * @param {object} [options] retry knobs (`attempts`, `delayMs`) and the
- *   `sleep` seam the tests drive.
+ * @param {object} [options] retry knobs (`attempts`, `delayMs`), the `sleep` seam
+ *   the tests drive, and `timeoutMs` — a hard cap on EACH child `npm view` so a
+ *   hung registry cannot outlive the caller's deadline.
  * @returns {unknown} the parsed JSON value, or `undefined` for a confirmed absence.
  * @throws {Error} on any failure that is not a confirmed absence.
  */
 export function viewField(spec, field, options = {}) {
-  const { attempts = 3, delayMs = 2000, sleep: sleepFn = sleep } = options
+  const { attempts = 3, delayMs = 2000, sleep: sleepFn = sleep, timeoutMs } = options
   let lastFatal
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       const stdout = execFileSync('npm', ['view', spec, field, '--json', '--registry', REGISTRY], {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
+        // A child that never answers must not consume the caller's whole budget:
+        // `execFileSync` kills it at the deadline and throws with `ETIMEDOUT`.
+        ...(timeoutMs === undefined ? {} : { timeout: Math.max(1, Math.floor(timeoutMs)) }),
       }).trim()
       if (stdout === '') return undefined
       try {
         return JSON.parse(stdout)
       } catch (error) {
-        throw new Error(`npm view ${spec} ${field} printed non-JSON output: ${String(error?.message ?? error)}`)
+        throw taggedError(
+          'fatal',
+          `npm view ${spec} ${field} printed non-JSON output: ${String(error?.message ?? error)}`,
+        )
       }
     } catch (error) {
+      // A killed child is a read that produced no verdict. `execFileSync` marks it
+      // with a timeout code or a real signal NAME. Note the trap: `signal` is
+      // `null` — not `undefined` — for a child that exited normally, so a
+      // truthiness test on the property would swallow every ordinary npm failure
+      // (an absent version included) as a "timeout".
+      if (error?.code === 'ETIMEDOUT' || error?.killed === true || typeof error?.signal === 'string') {
+        lastFatal = error
+        if (attempt < attempts - 1) sleepFn(Math.min(delayMs, Math.max(0, (timeoutMs ?? delayMs) - 1)))
+        continue
+      }
       // The spec is passed as context so an absence answer must NAME what was
       // asked for; a bare 404 about something else cannot become `undefined`.
       const classification = classifyNpmFailure(error, { spec })
       if (classification === 'absent') return undefined
       if (classification === 'auth') {
-        throw new Error(
+        throw taggedError(
+          'auth',
           `npm view ${spec} ${field} was REFUSED (authentication/authorisation), which is not the same as "absent": `
           + `${String(error?.stderr ?? '').trim() || String(error?.message ?? error)}\n`
           + 'Fix the registry credentials (or the trusted-publisher permission) before retrying — '
@@ -374,13 +392,17 @@ export function viewField(spec, field, options = {}) {
         )
       }
       if (classification === 'fatal') {
-        throw new Error(`npm view ${spec} ${field} failed: ${String(error?.stderr ?? '').trim() || String(error?.message ?? error)}`)
+        throw taggedError(
+          'fatal',
+          `npm view ${spec} ${field} failed: ${String(error?.stderr ?? '').trim() || String(error?.message ?? error)}`,
+        )
       }
       lastFatal = error
       if (attempt < attempts - 1) sleepFn(delayMs)
     }
   }
-  throw new Error(
+  throw taggedError(
+    'transient',
     `npm view ${spec} ${field} kept failing with a transient registry error after ${attempts} attempts; `
     + `refusing to treat it as absent: ${String(lastFatal?.stderr ?? '').trim() || String(lastFatal?.message ?? lastFatal)}`,
   )
@@ -421,10 +443,14 @@ export function normaliseViewAnswer(value, what) {
  *
  * @param {string} packageName published npm name.
  * @param {string} version exact version.
+ * @param {object} [options] forwarded to {@link viewField} (`timeoutMs`, retry knobs).
  * @returns {string | undefined} `sha512-…`, or `undefined` when the version is absent.
  */
-export function publishedIntegrity(packageName, version) {
-  return normaliseViewAnswer(viewField(`${packageName}@${version}`, 'dist.integrity'), `${packageName}@${version} dist.integrity`)
+export function publishedIntegrity(packageName, version, options = {}) {
+  return normaliseViewAnswer(
+    viewField(`${packageName}@${version}`, 'dist.integrity', options),
+    `${packageName}@${version} dist.integrity`,
+  )
 }
 
 /**
@@ -468,6 +494,109 @@ export function classifyPublishedVersion(options) {
 }
 
 /**
+ * How long the post-publish readback is allowed to wait for the registry.
+ *
+ * The number is evidence-driven, not aspirational. On run 39244336827,
+ * `npm publish @banbolee/dsh-fish-shell@0.8.2` exited 0, but the version only
+ * became READABLE from `registry.npmjs.org` about 2m44s later (the registry's own
+ * `time` metadata confirms it; integrity and both provenance records were correct
+ * once it appeared). The previous budget — 10 attempts, 3s apart, ~27s — gave up
+ * well before that, so a genuinely successful publish was reported as "the
+ * registry does not report this version" and the whole release aborted.
+ *
+ * Six minutes is that observed 2m44s with room for a slower day, and it is a
+ * WALL-CLOCK budget rather than an attempt count so the guarantee survives any
+ * change to the interval.
+ */
+export const REGISTRY_READBACK_BUDGET_MS = 6 * 60 * 1000
+
+/** First inter-poll delay; small so the common fast propagation is still quick. */
+export const REGISTRY_READBACK_INITIAL_DELAY_MS = 2000
+
+/** Cap on the inter-poll delay, so the wait stays responsive near the end. */
+export const REGISTRY_READBACK_MAX_DELAY_MS = 60000
+
+/**
+ * The backoff for one attempt index, capped.
+ *
+ * Single source of truth for both the live loop and
+ * {@link registryReadbackDelays}, so the documented schedule and the behaviour
+ * cannot drift apart.
+ *
+ * @param {number} attemptIndex zero-based index of the attempt just completed.
+ * @param {object} options `initialDelayMs`, `maxDelayMs`.
+ * @returns {number} the delay in milliseconds.
+ */
+function backoffDelay(attemptIndex, options) {
+  const { initialDelayMs, maxDelayMs } = options
+  return Math.min(initialDelayMs * 2 ** attemptIndex, maxDelayMs)
+}
+
+/**
+ * The deterministic delay schedule for one readback.
+ *
+ * Doubling from {@link REGISTRY_READBACK_INITIAL_DELAY_MS} up to
+ * {@link REGISTRY_READBACK_MAX_DELAY_MS}, with the FINAL delay truncated so the
+ * delays sum to EXACTLY the budget. This documents the intended pacing and is what
+ * the tests assert against; it is NOT used as a fuse, because a fixed attempt
+ * count would fire early whenever a read costs more than one interval.
+ *
+ * @param {object} [options] overrides (`budgetMs`, `initialDelayMs`, `maxDelayMs`).
+ * @returns {number[]} delays in milliseconds, to sleep BETWEEN polls.
+ */
+export function registryReadbackDelays(options = {}) {
+  const {
+    budgetMs = REGISTRY_READBACK_BUDGET_MS,
+    initialDelayMs = REGISTRY_READBACK_INITIAL_DELAY_MS,
+    maxDelayMs = REGISTRY_READBACK_MAX_DELAY_MS,
+  } = options
+  const delays = []
+  let spent = 0
+  while (spent < budgetMs) {
+    const scheduled = backoffDelay(delays.length, { initialDelayMs, maxDelayMs })
+    // Truncate the last delay so the schedule spends the budget exactly instead of
+    // overshooting on a coarse cap.
+    const delay = Math.min(scheduled, budgetMs - spent)
+    if (delay <= 0) break
+    delays.push(delay)
+    spent += delay
+  }
+  return delays
+}
+
+/**
+ * Read one version's integrity with a SINGLE registry view.
+ *
+ * The post-publish readback owns retrying, backing off and the deadline, so the
+ * read it calls must not retry again — otherwise every outer attempt silently
+ * spends three child invocations (and three internal sleeps) against a timeout
+ * that was computed once, which is exactly how a "six minute" budget turns into
+ * something longer. `publishedIntegrity` keeps its own retries for every other
+ * caller; only this wrapper collapses them.
+ *
+ * @param {string} packageName published npm name.
+ * @param {string} version exact version.
+ * @param {object} [options] forwarded (`timeoutMs`).
+ * @returns {string | undefined} `sha512-…`, or `undefined` when absent.
+ */
+function singleAttemptIntegrity(packageName, version, options = {}) {
+  return publishedIntegrity(packageName, version, { ...options, attempts: 1 })
+}
+
+/**
+ * Read the current value of a MONOTONIC clock, in milliseconds.
+ *
+ * Wall-clock time is the wrong input for a deadline: `Date.now()` can jump
+ * backwards over an NTP correction, which would silently extend the budget.
+ * `performance.now()` is monotonic, which is what a deadline needs.
+ *
+ * @returns {number} milliseconds from an arbitrary origin.
+ */
+function monotonicNow() {
+  return performance.now()
+}
+
+/**
  * Assert the registry's integrity for a just-published version matches ours.
  *
  * npm returns success once it has accepted the upload; this is the check that
@@ -475,34 +604,99 @@ export function classifyPublishedVersion(options) {
  * run built. A mismatch fails the package (and therefore the release), because a
  * silently different artefact is exactly what provenance exists to rule out.
  *
+ * THE BUDGET IS A WALL-CLOCK DEADLINE, and THIS LOOP IS THE ONLY RETRYER.
+ *
+ * Both halves are load-bearing:
+ *
+ *   - the deadline is fixed up front from a monotonic clock, and every read is
+ *     measured against it, so time spent inside the child process counts;
+ *   - the read call is a SINGLE registry view (`attempts: 1`). If the read retried
+ *     internally, each outer iteration would spawn several children whose combined
+ *     time exceeds the `timeoutMs` computed once for it, and the real wall clock
+ *     would outrun the budget while the arithmetic still looked correct.
+ *
+ * Each sleep is CLAMPED to the remaining time, and the child process is killed at
+ * the deadline, so a hung `npm` cannot outlive the budget.
+ *
+ * The loop is bounded by the DEADLINE, not by an attempt count. A static fuse
+ * would fire early whenever a read costs more than one interval, and would hang
+ * when a caller's `sleep` does not advance the clock — so instead the loop detects
+ * genuine no-progress and reports it as a broken `now`/`sleep` seam rather than
+ * disguising it as an exhausted budget.
+ *
  * Only two conditions are retried, and the reason is the same in both cases: the
  * publish has just succeeded, so the registry may not have propagated the version
  * yet.
  *
  *   - the version is not readable YET (a confirmed absence — the readback raced
  *     the registry's own replication);
- *   - the read itself failed transiently (429 / connection reset / 5xx).
+ *   - the read failed TRANSIENTLY, i.e. the error carries `classification:
+ *     'transient'` (429 / connection reset / 5xx / a killed child).
  *
- * A readable version with a DIFFERENT integrity is NOT retried: that is a real
- * mismatch, not a propagation delay, and waiting would only delay the abort.
+ * Everything else fails on the spot, because waiting cannot change it:
  *
- * @param {object} options `package`, `version`, `integrity`, and optional retry knobs.
+ *   - a readable version with a DIFFERENT integrity;
+ *   - a REFUSED read (`auth`) — retrying credentials for six minutes would only
+ *     delay the abort and hide the real cause;
+ *   - a `fatal` read error;
+ *   - an UNCLASSIFIED error — a response shape npm should never produce, a
+ *     programming error, a bug in this module. Retrying an unknown failure is how
+ *     a real defect gets laundered into "the registry was slow".
+ *
+ * @param {object} options `package`, `version`, `integrity`, plus optional knobs:
+ *   `budgetMs`/`initialDelayMs`/`maxDelayMs` (the schedule), `sleep` (seam),
+ *   `now` (seam; defaults to the monotonic clock) and `readIntegrity` (seam;
+ *   defaults to the real registry read).
  * @returns {string} the registry's integrity.
- * @throws {Error} when the registry reports a different integrity, or none at all.
+ * @throws {Error} when the registry reports a different integrity, refuses the
+ *   read, fails unexpectedly, or still does not report the version when the
+ *   deadline passes.
  */
 export function assertRegistryIntegrity(options) {
-  const { package: packageName, version, integrity, attempts = 10, delayMs = 3000, sleep: sleepFn = sleep } = options
-  let last
+  const {
+    package: packageName,
+    version,
+    integrity,
+    budgetMs = REGISTRY_READBACK_BUDGET_MS,
+    initialDelayMs = REGISTRY_READBACK_INITIAL_DELAY_MS,
+    maxDelayMs = REGISTRY_READBACK_MAX_DELAY_MS,
+    sleep: sleepFn = sleep,
+    now = monotonicNow,
+    readIntegrity = singleAttemptIntegrity,
+  } = options
+  const started = now()
+  const deadline = started + budgetMs
+  /**
+   * Consecutive iterations in which the clock did not move at all.
+   *
+   * The loop is bounded by the DEADLINE, and that is the only bound it should
+   * need. A static attempt fuse would be wrong in both directions: it fires early
+   * when reads are slow (fewer, longer iterations), and it hangs when a caller's
+   * `sleep` returns without advancing the clock. So instead of guessing a count,
+   * the loop detects the one condition that can actually stall it — a clock that
+   * is not moving — and names it.
+   */
+  let stalled = 0
+  let attempts = 0
   let lastError
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+  for (;;) {
+    const remainingBeforeRead = deadline - now()
+    // Not even one millisecond left: stop BEFORE spawning another child.
+    if (remainingBeforeRead <= 0) break
+    const iterationStarted = now()
+    attempts += 1
+    lastError = undefined
+    let last
     try {
-      last = publishedIntegrity(packageName, version)
-      lastError = undefined
+      // ONE attempt per iteration: the outer loop is the only retryer, so the
+      // child's own timeout is exactly the time left and the budget arithmetic
+      // stays honest. `viewField`'s internal retries stay for other callers.
+      last = readIntegrity(packageName, version, { timeoutMs: remainingBeforeRead })
     } catch (error) {
-      // A transient read failure is retried; `viewField` already retried the
-      // classification internally, so reaching here means it stayed flaky.
+      // ONLY an explicit transient verdict is retryable. Auth, fatal, shape
+      // errors and plain programming errors are thrown as they are.
+      if (error?.classification !== 'transient') throw error
       lastError = error
-      last = undefined
     }
     if (last === integrity) return last
     if (last !== undefined) {
@@ -511,14 +705,62 @@ export function assertRegistryIntegrity(options) {
         `registry integrity mismatch for ${packageName}@${version}: registry ${last} != packed ${integrity}`,
       )
     }
-    if (attempt < attempts - 1) sleepFn(delayMs)
+    const remaining = deadline - now()
+    if (remaining <= 0) break
+    // Backoff by attempt index, capped, and CLAMPED to the deadline so the last
+    // sleep can never overshoot the budget.
+    const delay = Math.min(backoffDelay(attempts - 1, { initialDelayMs, maxDelayMs }), remaining)
+    // A sub-millisecond remainder is not worth a sleep call.
+    if (delay < 1) break
+    sleepFn(delay)
+
+    // Progress check: after a read plus a sleep, time MUST have moved. If it has
+    // not, the `sleep`/`now` seams are inconsistent (a no-op sleep, a frozen
+    // clock) and looping on would poll the registry forever. Say that plainly —
+    // never dress it up as "the budget ran out".
+    if (now() <= iterationStarted) {
+      stalled += 1
+      if (stalled >= 3) {
+        throw new Error(
+          `the readback clock is not advancing for ${packageName}@${version}: `
+          + `${attempts} attempts and ${stalled} consecutive iterations produced no measurable time, so the deadline can never be reached. `
+          + 'This is a broken `now`/`sleep` seam, not a slow registry — refusing to poll forever.',
+        )
+      }
+    } else {
+      stalled = 0
+    }
   }
+  // Elapsed time comes from the CLOCK, never from summing the sleeps we asked for.
+  const elapsed = now() - started
   if (lastError !== undefined) {
     throw new Error(
-      `could not read ${packageName}@${version} back from the registry after ${attempts} attempts: ${String(lastError?.message ?? lastError)}`,
+      `could not read ${packageName}@${version} back from the registry after ${attempts} attempts over ${elapsed}ms: ${String(lastError?.message ?? lastError)}`,
     )
   }
-  throw new Error(`the registry does not report ${packageName}@${version} after publish; refusing to continue`)
+  throw new Error(
+    `the registry does not report ${packageName}@${version} after publish; refusing to continue `
+    + `(waited ${elapsed}ms over ${attempts} attempts — a version can lag that long before it is readable)`,
+  )
+}
+
+/**
+ * Build an error carrying the read classification, so a caller can tell a verdict
+ * from a delay without parsing the message text.
+ *
+ * `assertRegistryIntegrity` retries a MISSING version and a transient read, but
+ * must never retry a refused read or a fatal one. Matching on message text would
+ * make that decision brittle (any rewording silently turns a fail-fast into a
+ * six-minute wait), so the classification travels with the error instead.
+ *
+ * @param {'auth' | 'fatal' | 'transient'} classification what the read concluded.
+ * @param {string} message the human-readable explanation.
+ * @returns {Error} the tagged error.
+ */
+function taggedError(classification, message) {
+  const error = new Error(message)
+  error.classification = classification
+  return error
 }
 
 /** Block the current thread for `ms` (the release lane is a script, not a server). */

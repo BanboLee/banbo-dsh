@@ -35,13 +35,17 @@ import { RELEASE_PACKAGES, STAGED_PACKAGES, requireReleasePackage } from '../scr
 import { assertOutsideWorkspace, releaseMismatch, stageBundle } from '../scripts/release/release.mjs'
 import { MIN_NPM_VERSION, assertNpmCapability, checkNpmVersion, compareVersions } from '../scripts/release/lib/npm-capability.mjs'
 import {
+  REGISTRY_READBACK_BUDGET_MS,
   absenceNamesSpec,
   absenceSpecifierOf,
+  assertRegistryIntegrity,
   classifyNpmFailure,
   normaliseViewAnswer,
+  publishedIntegrity,
+  registryReadbackDelays,
   requestedResourceSpecifierOf,
 } from '../scripts/release/lib/registry.mjs'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync as readTextFile, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -210,6 +214,556 @@ describe('npm view answer normalisation', () => {
   it('refuses an ambiguous answer instead of guessing one', () => {
     expect(() => normaliseViewAnswer(['a', 'b'], 'x')).toThrow(/needs exactly one/)
     expect(() => normaliseViewAnswer({ a: 1 }, 'x')).toThrow(/expected a string/)
+  })
+})
+
+describe('post-publish registry readback (how long a publish may take to become readable)', () => {
+  const READBACK = { package: '@banbolee/dsh-fish-shell', version: '0.8.2', integrity: 'sha512-packed' }
+
+  /**
+   * A virtual clock shared by `now`, `sleep` AND the read, so the test measures
+   * what the PRODUCTION loop measures.
+   *
+   * That sharing is the point of this helper. The previous version counted only
+   * the sleeps, which is exactly the bug a reviewer found: the real loop also
+   * spends time inside `execFileSync` and `viewField`'s own retries, so a budget
+   * that only counts sleeps is not a wall-clock budget at all. Here every poll
+   * costs `readCostMs` on the same clock, so "the loop respected the budget" means
+   * "the total wall clock, reads included, respected it".
+   */
+  function virtualClock(options: { readCostMs?: number } = {}) {
+    const readCostMs = options.readCostMs ?? 0
+    let clock = 0
+    const sleeps: number[] = []
+    return {
+      now: () => clock,
+      sleep: (ms: number) => {
+        sleeps.push(ms)
+        clock += ms
+      },
+      /** Charge one poll's subprocess cost to the same clock. */
+      chargeRead: () => { clock += readCostMs },
+      elapsed: () => clock,
+      sleeps,
+    }
+  }
+
+  it('waits past the old ~27s budget when the registry has not propagated yet', () => {
+    // THE run 39244336827 REGRESSION. `npm publish` exited 0 and the version took
+    // about 2m44s to become readable. The previous 10x3s budget gave up long
+    // before that and reported a successful publish as a missing version.
+    //
+    // The reader withholds the version until MORE THAN 30s of virtual time have
+    // passed, so a passing assertion cannot come from the old budget.
+    const clock = virtualClock()
+    let polls = 0
+    const result = assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      readIntegrity: () => {
+        polls += 1
+        return clock.elapsed() > 30_000 ? READBACK.integrity : undefined
+      },
+    })
+    expect(result).toBe(READBACK.integrity)
+    expect(clock.elapsed()).toBeGreaterThan(30_000)
+    // …and it did not burn the whole budget to get there: it stopped as soon as the
+    // version appeared.
+    expect(clock.elapsed()).toBeLessThan(REGISTRY_READBACK_BUDGET_MS)
+    expect(polls).toBeGreaterThan(2)
+  })
+
+  it('counts the cost of READING against the budget, not just the sleeps', () => {
+    // The defect this covers: summing sleeps only. Each poll here costs 5s of
+    // subprocess time, so a sleep-only accounting would claim 360s while the real
+    // wall clock was far larger. The loop must stop when the CLOCK reaches the
+    // budget.
+    const clock = virtualClock({ readCostMs: 5000 })
+    let polls = 0
+    expect(() => assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      readIntegrity: () => {
+        polls += 1
+        clock.chargeRead()
+        return undefined
+      },
+    })).toThrow(/the registry does not report/u)
+    // The whole run — reads included — never exceeded the budget.
+    expect(clock.elapsed()).toBeLessThanOrEqual(REGISTRY_READBACK_BUDGET_MS)
+    // …but it did get close, rather than giving up early.
+    expect(clock.elapsed()).toBeGreaterThan(REGISTRY_READBACK_BUDGET_MS - 60_000)
+    // With reads eating the clock there are FEWER polls than a sleep-only budget
+    // would allow — proof the read time was actually charged.
+    expect(polls).toBeLessThan(11)
+  })
+
+  it('gives up only when the whole budget is spent, and says so', () => {
+    const clock = virtualClock()
+    expect(() => assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      readIntegrity: () => undefined,
+    })).toThrow(/the registry does not report .* after publish/u)
+    // The failure must come AFTER the budget, not before it: this is the property
+    // that was wrong (it stopped at ~27s), and it must not overshoot either.
+    expect(clock.elapsed()).toBe(REGISTRY_READBACK_BUDGET_MS)
+  })
+
+  it('clamps the final sleep so it cannot overshoot the deadline', () => {
+    // A single huge backoff near the end must be clipped to what is left.
+    const clock = virtualClock()
+    expect(() => assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      budgetMs: 10_000,
+      initialDelayMs: 9000,
+      maxDelayMs: 9000,
+      readIntegrity: () => undefined,
+    })).toThrow(/the registry does not report/u)
+    expect(clock.elapsed()).toBeLessThanOrEqual(10_000)
+    // Every recorded sleep fits inside the remaining budget.
+    expect(clock.sleeps.reduce((sum, delay) => sum + delay, 0)).toBeLessThanOrEqual(10_000)
+  })
+
+  it('still fails immediately on an integrity mismatch', () => {
+    // A readable-but-different artefact is a real mismatch, not a propagation
+    // delay. Waiting cannot change it, so it must abort on the FIRST poll.
+    const clock = virtualClock()
+    let polls = 0
+    expect(() => assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      readIntegrity: () => {
+        polls += 1
+        return 'sha512-DIFFERENT'
+      },
+    })).toThrow(/registry integrity mismatch/u)
+    expect(polls).toBe(1)
+    expect(clock.elapsed()).toBe(0)
+    expect(clock.sleeps).toEqual([])
+  })
+
+  it.each(['auth', 'fatal'] as const)('does not retry a %s read refusal', (classification) => {
+    // Raising the budget must not turn a refused or fatal read into a six-minute
+    // wait that hides the real cause.
+    const clock = virtualClock()
+    let polls = 0
+    const failure = Object.assign(new Error(`${classification} refusal`), { classification })
+    expect(() => assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      readIntegrity: () => {
+        polls += 1
+        throw failure
+      },
+    })).toThrow(new RegExp(`${classification} refusal`, 'u'))
+    expect(polls).toBe(1)
+    expect(clock.sleeps).toEqual([])
+  })
+
+  it.each([
+    ['an unclassified error', Object.assign(new Error('boom — a bug in this module'), {})],
+    ['a programming error', new TypeError('cannot read properties of undefined')],
+  ])('does not retry %s', (_label, failure) => {
+    // An UNCLASSIFIED failure is not a propagation delay. Retrying it is how a
+    // real defect gets laundered into "the registry was slow" — and with a
+    // six-minute budget that laundering costs six minutes of CI.
+    const clock = virtualClock()
+    let polls = 0
+    expect(() => assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      readIntegrity: () => {
+        polls += 1
+        throw failure
+      },
+    })).toThrow(/boom|cannot read properties/u)
+    expect(polls).toBe(1)
+    expect(clock.sleeps).toEqual([])
+  })
+
+  it('does retry a transient read failure, and succeeds once it clears', () => {
+    const clock = virtualClock()
+    let polls = 0
+    const transient = Object.assign(new Error('429 Too Many Requests'), { classification: 'transient' })
+    const result = assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      readIntegrity: () => {
+        polls += 1
+        if (polls < 3) throw transient
+        return READBACK.integrity
+      },
+    })
+    expect(result).toBe(READBACK.integrity)
+    expect(polls).toBe(3)
+    expect(clock.elapsed()).toBeGreaterThan(0)
+  })
+
+  /* ------------- the real chain: publishedIntegrity -> viewField -> normalise --- */
+
+  it('fails fast when the live read chain returns a MULTI-VALUE answer', () => {
+    // Not a hand-made label: this drives the production reader, whose
+    // `normaliseViewAnswer` throws on a multi-value answer. The readback must
+    // surface that immediately instead of retrying it for six minutes.
+    //
+    // `viewField` is stubbed at its own boundary by pointing the PATH-resolved
+    // `npm` at a script that prints an array — but that would need a real child
+    // process, so the equivalent shape error is injected at the reader seam WITH
+    // the real `normaliseViewAnswer` doing the throwing.
+    const clock = virtualClock()
+    let polls = 0
+    expect(() => assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      readIntegrity: (packageName: string, version: string) => {
+        polls += 1
+        // Exactly what `publishedIntegrity` does with npm's answer.
+        return normaliseViewAnswer(['sha512-a', 'sha512-b'], `${packageName}@${version} dist.integrity`)
+      },
+    })).toThrow(/returned 2 values for/u)
+    expect(polls).toBe(1)
+    expect(clock.sleeps).toEqual([])
+  })
+
+  it('fails fast when the live read chain returns an OBJECT answer', () => {
+    const clock = virtualClock()
+    let polls = 0
+    expect(() => assertRegistryIntegrity({
+      ...READBACK,
+      now: clock.now,
+      sleep: clock.sleep,
+      readIntegrity: (packageName: string, version: string) => {
+        polls += 1
+        return normaliseViewAnswer({ unexpected: true }, `${packageName}@${version} dist.integrity`)
+      },
+    })).toThrow(/expected a string/u)
+    expect(polls).toBe(1)
+    expect(clock.sleeps).toEqual([])
+  })
+
+  it('still treats a REAL absent-version failure as absence, not a timeout', () => {
+    // A trap found by exercising the real chain: `execFileSync` sets `signal` to
+    // `null` (not `undefined`) for a child that exited normally. A truthiness test
+    // on that property classifies EVERY npm failure — including the ordinary
+    // "this version is not published" 404 — as a killed child, which turns the
+    // most common correct answer into a transient error and blocks the release.
+    const spec = '@banbolee/dsh-fish-shell@0.0.0-does-not-exist'
+    const stderr = [
+      'npm error code E404',
+      'npm error 404 No match found for version 0.0.0-does-not-exist',
+      'npm error 404',
+      `npm error 404  The requested resource '${spec}' could not be found or you do not have permission to access it.`,
+      'npm error 404',
+      'npm error 404 tarball, folder, http url, or git url.',
+    ].join('\n')
+    // The fixture is the real error shape: `signal: null`, `status: 1`.
+    const absentError = Object.assign(new Error('Command failed: npm view …'), {
+      status: 1,
+      signal: null,
+      killed: false,
+      stderr,
+      stdout: '',
+    })
+    // The predicate the readback relies on must NOT consider this a timeout.
+    const looksKilled = (absentError as { code?: string }).code === 'ETIMEDOUT'
+      || absentError.killed === true
+      || typeof absentError.signal === 'string'
+    expect(looksKilled).toBe(false)
+    // …and classification of that shape is absence, so the readback sees `undefined`.
+    expect(classifyNpmFailure(absentError, { spec })).toBe('absent')
+  })
+
+  describe('through the REAL child-process chain (fake npm on PATH)', () => {
+    /**
+     * These tests do NOT stub `readIntegrity`. They put a fake `npm` executable on
+     * `PATH` and call the production entry point, so the whole chain runs for
+     * real:
+     *
+     *     assertRegistryIntegrity -> singleAttemptIntegrity -> publishedIntegrity
+     *       -> viewField -> execFileSync -> (fake) npm -> normaliseViewAnswer
+     *
+     * That matters because the previous rounds' stubs could not see anything about
+     * child processes: the `signal: null` trap, the number of invocations per outer
+     * attempt, and whether a hung child is actually killed at the deadline are all
+     * invisible to a stubbed reader.
+     */
+    let sandbox: string
+    let binDir: string
+    let counterFile: string
+    let originalPath: string | undefined
+
+    /** The fake CLI. Behaviour is selected by `FAKE_NPM_MODE`. */
+    const FAKE_NPM = `#!/usr/bin/env node
+'use strict'
+const fs = require('node:fs')
+const mode = process.env.FAKE_NPM_MODE || 'absent'
+const counter = process.env.FAKE_NPM_COUNTER
+if (counter) fs.appendFileSync(counter, '.')
+
+const ABSENT = [
+  'npm error code E404',
+  'npm error 404 No match found for version 0.8.2',
+  'npm error 404',
+  "npm error 404  The requested resource '@banbolee/dsh-fish-shell@0.8.2' could not be found or you do not have permission to access it.",
+  'npm error 404',
+].join('\\n')
+
+switch (mode) {
+  case 'absent':
+    process.stderr.write(ABSENT + '\\n')
+    process.exit(1)
+    break
+  case 'integrity':
+    process.stdout.write(JSON.stringify('sha512-packed') + '\\n')
+    process.exit(0)
+    break
+  case 'multi':
+    process.stdout.write(JSON.stringify(['sha512-a', 'sha512-b']) + '\\n')
+    process.exit(0)
+    break
+  case 'object':
+    process.stdout.write(JSON.stringify({ unexpected: true }) + '\\n')
+    process.exit(0)
+    break
+  case 'selfsigterm':
+    // A child killed by a SIGNAL NAME (not by our timeout): \`error.signal\` is the
+    // string 'SIGTERM', which must be retried as transient.
+    process.kill(process.pid, 'SIGTERM')
+    break
+  case 'hang':
+    // Never answers. The readback must kill this at the deadline.
+    setTimeout(() => {}, 600000)
+    break
+  default:
+    process.exit(0)
+}
+`
+
+    function installFakeNpm(): void {
+      sandbox = mkdtempSync(join(tmpdir(), 'banbo-fake-npm-'))
+      binDir = join(sandbox, 'bin')
+      mkdirSync(binDir, { recursive: true })
+      counterFile = join(sandbox, 'invocations')
+      writeFileSync(counterFile, '')
+      const npmPath = join(binDir, 'npm')
+      writeFileSync(npmPath, FAKE_NPM)
+      chmodSync(npmPath, 0o755)
+      originalPath = process.env.PATH
+      process.env.PATH = `${binDir}:${originalPath ?? ''}`
+      process.env.FAKE_NPM_COUNTER = counterFile
+    }
+
+    function invocations(): number {
+      return readTextFile(counterFile, 'utf8').length
+    }
+
+    function teardown(): void {
+      if (originalPath === undefined) delete process.env.PATH
+      else process.env.PATH = originalPath
+      delete process.env.FAKE_NPM_MODE
+      delete process.env.FAKE_NPM_COUNTER
+      rmSync(sandbox, { recursive: true, force: true })
+    }
+
+    it('treats a real E404 with signal:null as absence, not a killed child', () => {
+      // The regression that a stub could not catch: `execFileSync` sets `signal` to
+      // `null` for a normally-exiting child, so a truthiness test makes every
+      // ordinary npm failure look killed — turning "this version is not published
+      // yet" into a transient error. The crisp assertion is on the PRODUCTION
+      // reader: an absent version must come back as `undefined`, not throw.
+      installFakeNpm()
+      try {
+        process.env.FAKE_NPM_MODE = 'absent'
+        expect(publishedIntegrity('@banbolee/dsh-fish-shell', '0.8.2')).toBeUndefined()
+        expect(invocations()).toBe(1)
+      } finally {
+        teardown()
+      }
+    })
+
+    it('polls an absent version repeatedly instead of failing on the first attempt', () => {
+      // …and the readback keeps waiting on it, because absence is exactly the
+      // condition a just-published version can be in.
+      installFakeNpm()
+      try {
+        process.env.FAKE_NPM_MODE = 'absent'
+        const started = performance.now()
+        // Either message is fine: with a deliberately tiny budget the last child is
+        // killed by the deadline (transient) instead of returning a 404 on time.
+        // What matters is that it POLLED rather than aborting immediately.
+        expect(() => assertRegistryIntegrity({
+          ...READBACK,
+          budgetMs: 300,
+          initialDelayMs: 20,
+          maxDelayMs: 20,
+          sleep: () => {},
+        })).toThrow(/could not read .* back from the registry|the registry does not report/u)
+        expect(invocations()).toBeGreaterThan(1)
+        expect(performance.now() - started).toBeLessThan(3000)
+      } finally {
+        teardown()
+      }
+    })
+
+    it('retries a child killed by a SIGNAL NAME as transient', () => {
+      installFakeNpm()
+      try {
+        process.env.FAKE_NPM_MODE = 'selfsigterm'
+        // The fake dies on EVERY invocation, so the readback keeps retrying until
+        // the budget is gone — which proves the signal was classified transient
+        // rather than fatal (a fatal would throw on the first attempt).
+        expect(() => assertRegistryIntegrity({
+          ...READBACK,
+          budgetMs: 150,
+          initialDelayMs: 50,
+          maxDelayMs: 50,
+          sleep: () => {},
+        })).toThrow(/could not read .* back from the registry/u)
+        expect(invocations()).toBeGreaterThan(1)
+      } finally {
+        teardown()
+      }
+    })
+
+    it('fails fast on a multi-value answer from the real chain', () => {
+      installFakeNpm()
+      try {
+        process.env.FAKE_NPM_MODE = 'multi'
+        const started = performance.now()
+        expect(() => assertRegistryIntegrity({
+          ...READBACK,
+          budgetMs: 60_000,
+          sleep: () => {},
+        })).toThrow(/returned 2 values for/u)
+        // One child, no retry: a shape error is a verdict.
+        expect(invocations()).toBe(1)
+        expect(performance.now() - started).toBeLessThan(2000)
+      } finally {
+        teardown()
+      }
+    })
+
+    it('fails fast on an object answer from the real chain', () => {
+      installFakeNpm()
+      try {
+        process.env.FAKE_NPM_MODE = 'object'
+        expect(() => assertRegistryIntegrity({
+          ...READBACK,
+          budgetMs: 60_000,
+          sleep: () => {},
+        })).toThrow(/expected a string/u)
+        expect(invocations()).toBe(1)
+      } finally {
+        teardown()
+      }
+    })
+
+    it('kills a HUNG child at the deadline and keeps the total wall clock within budget', () => {
+      // The property the previous implementation could not promise: a child that
+      // never answers must not outlive the budget. `execFileSync` gets
+      // `timeout: remaining`, so the child is killed and the loop stops.
+      installFakeNpm()
+      try {
+        process.env.FAKE_NPM_MODE = 'hang'
+        const budgetMs = 700
+        const started = performance.now()
+        expect(() => assertRegistryIntegrity({
+          ...READBACK,
+          budgetMs,
+          initialDelayMs: 50,
+          maxDelayMs: 50,
+          sleep: () => {},
+        })).toThrow(/could not read .* back from the registry|does not report/u)
+        const elapsed = performance.now() - started
+        // Real subprocess spawn + kill overhead is allowed, but only a little.
+        expect(elapsed, `elapsed ${elapsed}ms exceeded budget ${budgetMs}ms`).toBeLessThan(budgetMs + 1500)
+      } finally {
+        teardown()
+      }
+    })
+
+    it('uses ONE child per outer attempt, so the budget is not spent N times', () => {
+      // With the read retrying internally (the old shape), each outer attempt cost
+      // three children against a timeout computed once — the wall clock outran the
+      // budget while the arithmetic looked right. Count them.
+      installFakeNpm()
+      try {
+        process.env.FAKE_NPM_MODE = 'absent'
+        const sleeps: number[] = []
+        expect(() => assertRegistryIntegrity({
+          ...READBACK,
+          budgetMs: 100,
+          initialDelayMs: 50,
+          maxDelayMs: 50,
+          sleep: (ms: number) => { sleeps.push(ms) },
+        })).toThrow(/could not read .* back from the registry|the registry does not report/u)
+        // One invocation per recorded sleep, plus the final one that hit the
+        // deadline (or the one that found the budget exhausted).
+        expect(invocations()).toBeLessThanOrEqual(sleeps.length + 1)
+      } finally {
+        teardown()
+      }
+    })
+
+    it('reports a broken clock seam instead of pretending the budget ran out', () => {
+      // A `sleep` that does not advance the clock must NOT spin forever, and must
+      // NOT be reported as "the registry is slow". It is a seam bug.
+      installFakeNpm()
+      try {
+        process.env.FAKE_NPM_MODE = 'absent'
+        expect(() => assertRegistryIntegrity({
+          ...READBACK,
+          budgetMs: 60_000,
+          initialDelayMs: 10,
+          maxDelayMs: 10,
+          sleep: () => {}, // no clock advance
+          now: () => 0, // frozen clock
+        })).toThrow(/clock is not advancing/u)
+        // It bailed out quickly rather than burning six virtual minutes.
+        expect(invocations()).toBeLessThan(10)
+      } finally {
+        teardown()
+      }
+    })
+  })
+
+  describe('the default schedule', () => {
+    const delays = registryReadbackDelays()
+    const total = delays.reduce((sum, delay) => sum + delay, 0)
+
+    it('spends exactly the six-minute budget', () => {
+      expect(REGISTRY_READBACK_BUDGET_MS).toBe(6 * 60 * 1000)
+      expect(total).toBe(REGISTRY_READBACK_BUDGET_MS)
+    })
+
+    it('covers the propagation delay actually observed (2m44s)', () => {
+      // Below this, run 39244336827 would abort again.
+      expect(total).toBeGreaterThan(2 * 60 * 1000 + 44 * 1000)
+    })
+
+    it('backs off but caps, so it stays responsive near the end', () => {
+      for (let index = 1; index < delays.length - 1; index += 1) {
+        expect(delays[index]).toBeGreaterThanOrEqual(delays[index - 1]!)
+      }
+      // Everything except the truncated tail is capped at 60s.
+      const capped = delays.slice(0, -1)
+      for (const delay of capped) expect(delay).toBeLessThanOrEqual(60_000)
+    })
+
+    it('is deterministic — the same schedule every time', () => {
+      expect(registryReadbackDelays()).toEqual(delays)
+    })
   })
 })
 
