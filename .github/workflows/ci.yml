@@ -184,6 +184,15 @@ jobs:
   # profile under an isolated DSH_HOME, installs the tarball with
   # `--offline --config.auto-install-peers=false`, boots the profile and asserts
   # the real load. It exits non-zero on any failure.
+  #
+  # This job runs NO workspace `pnpm install`, and therefore sets NO pnpm cache.
+  # `actions/setup-node`'s `cache: pnpm` caches `pnpm store path`; with no install
+  # there is no store, and the action's POST step fails the job with "Path(s)
+  # specified in the action for caching were not found". The lane does not need
+  # one: it packs in a temp tree with its own `--store-dir`, and it loads the
+  # agent runtime from the GLOBAL `dsh` installation (`dshPackageRoot()`), never
+  # from the checkout's `node_modules`. Installing the workspace here purely to
+  # populate a cache would be strictly slower than the lane itself.
   fish-packed-offline:
     runs-on: ubuntu-latest
     steps:
@@ -194,11 +203,11 @@ jobs:
         with:
           version: 9.3.0
 
+      # NO `cache: pnpm` HERE, deliberately — see the note above this job.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
       # The lane needs `dsh` (it shells out to `dsh plugin` to build and install
       # its isolated profile) as well as the `pnpm` set up above, so the CLI must
