@@ -50,7 +50,11 @@ interface Workflow {
   readonly on?: unknown
   readonly permissions?: Readonly<Record<string, string>>
   readonly env?: Readonly<Record<string, string>>
-  readonly jobs: Readonly<Record<string, { readonly steps: readonly WorkflowStep[] }>>
+  readonly jobs: Readonly<Record<string, {
+    readonly steps: readonly WorkflowStep[]
+    /** Job-level `env:` — a token could be injected here instead of per step. */
+    readonly env?: Readonly<Record<string, string>>
+  }>>
 }
 
 /** The YAML 1.1 `on:` key parses as the boolean `true`; accept both spellings. */
@@ -113,6 +117,75 @@ describe('release workflow permissions and toolchain', () => {
     // npm provenance is signed with the per-run OIDC token.
     expect(permissions['id-token']).toBe('write')
     expect(Object.keys(permissions).sort()).toEqual(['contents', 'id-token'])
+  })
+
+  /* ------------------------------------- tokenless Trusted Publishing --- */
+
+  it('never lets setup-node configure a registry token (that disables OIDC)', () => {
+    // THE run 39233297067 REGRESSION. `setup-node` with `registry-url` writes
+    //     //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
+    // into an `.npmrc` and exports NODE_CONFIG_USERCONFIG at it. npm then treats
+    // the run as TOKEN-authenticated and never performs the OIDC exchange: the
+    // publish signed provenance, then every registry PUT 404'd, with zero
+    // versions published.
+    //
+    // Asserted on the PARSED step, so the long explanatory comment above that step
+    // (which mentions `registry-url` by name) cannot satisfy or trip the check.
+    const steps = job(load()).steps
+    const setupNode = steps.filter((step) => step.uses?.startsWith('actions/setup-node'))
+    expect(setupNode.length, 'the release job needs a setup-node step').toBeGreaterThan(0)
+    for (const step of setupNode) {
+      expect(step.with?.['registry-url'], 'registry-url makes npm skip Trusted Publishing').toBeUndefined()
+      expect(step.with?.['always-auth'], 'always-auth is the same token-auth path').toBeUndefined()
+      expect(step.with?.['scope'], 'a scoped registry is the same token-auth path').toBeUndefined()
+    }
+  })
+
+  it('sets no NODE_AUTH_TOKEN and no token-auth npmrc anywhere ACTIVE', () => {
+    // A commented-out bypass is allowed (it is documentation for a human who
+    // deliberately falls back to a granular token), so this walks the parsed
+    // structure rather than the raw text: `env:` mappings on jobs/steps, and any
+    // `run:` script that would WRITE an auth entry.
+    const workflow = load()
+    const envMaps: Array<[string, Record<string, unknown>]> = [
+      ...Object.entries(workflow.jobs).map(([name, job]) => [`job:${name}`, (job as { env?: Record<string, unknown> }).env ?? {}] as [string, Record<string, unknown>]),
+      ...Object.entries(workflow.jobs).flatMap(([name, job]) => job.steps.map((step, index) => [`job:${name}/step:${step.name ?? index}`, step.env ?? {}] as [string, Record<string, unknown>])),
+    ]
+    for (const [where, env] of envMaps) {
+      for (const key of Object.keys(env)) {
+        expect(key, `${where} must not set ${key}`).not.toBe('NODE_AUTH_TOKEN')
+        expect(key.toLowerCase(), `${where} must not set ${key}`).not.toContain('npm_token')
+      }
+    }
+    // …and no active command may write `_authToken` / `always-auth` into an
+    // `.npmrc`. Comments inside a `run:` block are skipped line by line, so the
+    // documented bypass stays legal.
+    const activeLines = Object.entries(workflow.jobs).flatMap(([name, job]) => job.steps.flatMap((step) => (step.run ?? '')
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line !== '' && !line.startsWith('#'))
+      .map((line) => [`${name}/${step.name ?? 'run'}`, line] as const)))
+    for (const [where, line] of activeLines) {
+      expect(line, `${where} must not configure token auth`).not.toMatch(/_authToken|always-auth|NODE_AUTH_TOKEN/u)
+    }
+  })
+
+  it('keeps the tokenless path the publish actually needs', () => {
+    // The three things that make OIDC publish work, all still present:
+    //   - the per-run OIDC token scope;
+    //   - an npm CLI that speaks tokenless publish AND dist-tag;
+    //   - `--provenance` on the publish command.
+    const workflow = load()
+    expect(workflow.permissions?.['id-token']).toBe('write')
+    expect(workflow.env?.RELEASE_NPM_VERSION).toBe(MIN_NPM_VERSION)
+    const source = readFileSync(releaseScriptPath, 'utf8')
+    expect(source).toContain("'--provenance'")
+    // The registry still resolves to npmjs without `registry-url`, because every
+    // call passes it explicitly.
+    expect(source).toContain("'--registry', REGISTRY")
+    // `REGISTRY` lives in the pure module the script imports.
+    const registrySource = readFileSync(join(repoRoot, 'scripts', 'release', 'lib', 'registry.mjs'), 'utf8')
+    expect(registrySource).toContain("export const REGISTRY = 'https://registry.npmjs.org'")
   })
 
   it('pins the Node, pnpm and npm versions explicitly', () => {

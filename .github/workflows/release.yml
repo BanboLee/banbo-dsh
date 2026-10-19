@@ -112,12 +112,28 @@ jobs:
         with:
           version: ${{ env.RELEASE_PNPM_VERSION }}
 
+      # NO `registry-url` HERE, deliberately — it silently disables Trusted
+      # Publishing.
+      #
+      # `setup-node` with `registry-url` writes an `.npmrc` containing
+      # `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and exports
+      # `NODE_CONFIG_USERCONFIG` pointing at it. npm then treats that as
+      # configured TOKEN authentication and skips the OIDC exchange entirely: the
+      # run logs a placeholder token, `npm publish` never performs the tokenless
+      # exchange, and every PUT comes back 404 with zero versions published.
+      # Observed on run 39233297067 — all four gates, preflight and pack passed,
+      # the first publish signed provenance/sigstore successfully, then the
+      # registry PUT 404'd and no tags, releases or `next` tag appeared.
+      #
+      # The registry still resolves to npmjs WITHOUT this option, twice over:
+      # every `npm publish` / `dist-tag` / `view` call in
+      # `scripts/release/release.mjs` passes `--registry https://registry.npmjs.org`
+      # explicitly, and every manifest carries `publishConfig.registry`.
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.RELEASE_NODE_VERSION }}
           cache: pnpm
-          registry-url: 'https://registry.npmjs.org'
 
       # `setup-node` writes an `.npmrc` that points npm at the registry but does
       # not decide the npm CLI version; the release needs a specific one because
