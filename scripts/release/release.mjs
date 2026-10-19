@@ -64,9 +64,13 @@ import {
 import {
   REGISTRY,
   assertRegistryIntegrity,
+  classifyNpmFailure,
+  createRegistryDeadline,
   classifyPublishedVersion,
   distTagVersion,
   publishedIntegrity,
+  waitForCandidateTagRemoval,
+  waitForDistTag,
 } from './lib/registry.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -887,11 +891,7 @@ function finalize(flags) {
       process.stdout.write(`${entry.package}@${entry.version} is already promoted; skipping\n`)
       continue
     }
-    run('npm', ['dist-tag', 'add', `${entry.package}@${entry.version}`, 'latest', '--registry', REGISTRY])
-    const promoted = distTagVersion(entry.package, 'latest')
-    if (promoted !== entry.version) {
-      throw new Error(`latest for ${entry.package} is ${promoted ?? 'absent'}, expected ${entry.version}`)
-    }
+    promoteLatest(entry.package, entry.version)
     setPackageState(journal, entry.package, 'promoted')
     persistJournal(path, journal)
   }
@@ -901,7 +901,7 @@ function finalize(flags) {
   // removal is verified by reading the tag back, so "the rm printed nothing" can
   // never stand in for "the tag is gone".
   for (const entry of plan) {
-    removeCandidateTag(entry.package, journal.candidateTag)
+    removeCandidateTag(entry.package, journal.candidateTag, entry.version)
   }
   setStep(journal, 'finalize:promoted')
   persistJournal(path, journal)
@@ -936,7 +936,115 @@ function finalize(flags) {
 }
 
 /**
- * Remove one package's candidate dist-tag, tolerating only "it is already gone".
+ * Point `latest` at one version AND wait for the read path to agree.
+ *
+ * `npm dist-tag add` exiting 0 does not mean the read path reflects it: on run
+ * 39249407401 the promotion of `@banbolee/dsh-fish-shell@0.8.2` succeeded and the
+ * very next read still answered `0.8.1`, which aborted finalize after the tag had
+ * already moved. The wait uses the same monotonic deadline as the version
+ * readback, so a slow registry is waited out while a real failure still aborts.
+ *
+ * Exported so the propagation behaviour can be exercised against a real child
+ * process instead of only through a stub.
+ *
+ * @param {string} packageName published npm name.
+ * @param {string} version the version `latest` must resolve to.
+ * @param {object} [options] forwarded to {@link waitForDistTag} (budget/seams);
+ *   production callers pass nothing and get the full six-minute deadline.
+ * @throws {Error} when the tag does not converge inside the budget.
+ */
+export function promoteLatest(packageName, version, options = {}) {
+  run('npm', ['dist-tag', 'add', `${packageName}@${version}`, 'latest', '--registry', REGISTRY])
+  waitForDistTag(packageName, 'latest', version, options)
+}
+
+/**
+ * Copy the machine-readable facts off one failure onto another.
+ *
+ * `classification`, `status`, `code` and `signal` are what a caller decides on, and
+ * they were being copied field-by-field at each wrap site — which is exactly how
+ * one of them gets forgotten. One helper, one list.
+ *
+ * @param {object} target the error being constructed.
+ * @param {object} [source] the error being wrapped.
+ * @returns {object} `target`, for convenience.
+ */
+function copyErrorMetadata(target, source) {
+  if (source === null || source === undefined) return target
+  for (const key of ['classification', 'status', 'code', 'signal']) {
+    if (source[key] !== undefined) target[key] = source[key]
+  }
+  return target
+}
+
+/**
+ * Run one `npm dist-tag` MUTATION, preserving everything a caller needs to classify it.
+ *
+ * Deliberately separate from `run`: that helper is the generic command runner used
+ * by preflight, pack, git and the tag creation, and its error contract (a plain
+ * message, no `cause`) is depended on elsewhere. A dist-tag mutation is different
+ * because its failure has to be CLASSIFIED — an auth refusal must stay an auth
+ * refusal — and because it must be bounded by the caller's remaining deadline.
+ *
+ * The thrown error carries:
+ *
+ *   - `message` — the old, human-readable text (unchanged shape, so logs read the
+ *     same as before);
+ *   - `cause` — the original `execFileSync` error, with `status`/`signal`/`stderr`;
+ *   - `classification` — `auth` | `transient` | `fatal` from the SAME classifier
+ *     the read path uses. An UNKNOWN failure classifies as `fatal`, never
+ *     `transient`: retrying a defect is how it gets hidden.
+ *
+ * @param {readonly string[]} args arguments after `npm`.
+ * @param {object} [options] `timeoutMs` — hard cap on the child.
+ * @returns {string} trimmed stdout.
+ * @throws {Error} the context error described above.
+ */
+function runDistTagMutation(args, options = {}) {
+  const { timeoutMs } = options
+  try {
+    return execFileSync('npm', [...args], {
+      cwd: repoRoot,
+      env: process.env,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024 * 1024,
+      ...(timeoutMs === undefined ? {} : { timeout: Math.max(1, Math.floor(timeoutMs)) }),
+    }).trim()
+  } catch (error) {
+    const stderr = String(error?.stderr ?? '').trim()
+    const stdout = String(error?.stdout ?? '').trim()
+    const detail = stderr === '' ? stdout : stderr
+    const failure = new Error(`npm ${args.join(' ')} failed${detail === '' ? '' : `:\n${detail}`}`, { cause: error })
+    // Keep the child's own facts reachable for object-level assertions and logs.
+    copyErrorMetadata(failure, error)
+    // A killed child produced no verdict, so it is transient by construction; every
+    // other failure goes through the shared classifier, which only ever widens to
+    // `transient` on POSITIVE evidence (429, connection reset, 5xx, …).
+    const killed = error?.code === 'ETIMEDOUT' || error?.killed === true || typeof error?.signal === 'string'
+    failure.classification = killed ? 'transient' : toMutationClassification(classifyNpmFailure(error, {}))
+    throw failure
+  }
+}
+
+/**
+ * Map the read classifier's verdict onto a mutation verdict.
+ *
+ * `absent` is not a meaningful outcome for `npm dist-tag rm/add` — the tag either
+ * moved or the command failed — so it is treated as `fatal` rather than being
+ * smuggled into a retryable bucket.
+ *
+ * @param {'absent' | 'transient' | 'auth' | 'fatal'} verdict the read verdict.
+ * @returns {'auth' | 'transient' | 'fatal'} the mutation verdict.
+ */
+function toMutationClassification(verdict) {
+  if (verdict === 'auth') return 'auth'
+  if (verdict === 'transient') return 'transient'
+  return 'fatal'
+}
+
+/**
+ * Remove one package's candidate dist-tag, WITHOUT ever removing another release's.
  *
  * `npm dist-tag rm` fails for several reasons and they are NOT interchangeable:
  *
@@ -946,41 +1054,175 @@ function finalize(flags) {
  *     and swallowing it would leave a published candidate tag pointing at a
  *     release nobody can install.
  *
- * So the failure is classified, not ignored, and the result is verified by
- * reading the tag back either way.
+ * OWNERSHIP IS THE HARD PART. A dist-tag is a mutable pointer shared by every
+ * actor that can reach the package, so "remove `next`" is only correct if `next`
+ * still belongs to THIS release. The procedure is therefore:
+ *
+ *   1. ONE authoritative read immediately before the destructive command:
+ *      absent → already clean (idempotent success); exactly `expectedVersion` →
+ *      ours, proceed; ANY other version → refuse and never run `rm`;
+ *   2. run `npm dist-tag rm`;
+ *   3. verify the outcome, treating a read of `expectedVersion` as propagation and
+ *      a read of ANY OTHER version as ownership moving away — never "removed".
+ *
+ * ONE DEADLINE FOR THE WHOLE OPERATION. The pre-read, the command, the outcome
+ * read and the propagation poll all draw on a single absolute monotonic deadline
+ * created here; none of them restarts a budget. Each child is capped at whatever
+ * time is left, so the operation cannot outlive its promise, and a step that
+ * begins with no time left fails with an explicit deadline error rather than
+ * spawning a child that is certain to be killed.
+ *
+ * npm has no compare-and-delete, so a window remains between step 1 and step 2;
+ * it is kept as small as possible (nothing but the command sits between them).
+ * The workflow's `concurrency` group serialises DISPATCHES OF THIS WORKFLOW, and
+ * nothing more — it cannot stop another publisher, a human, or a different
+ * repository from moving the tag in that window. The post-rm verification is what
+ * bounds the damage: a tag that is not ours is never reported as removed.
  *
  * @param {string} packageName published npm name.
  * @param {string} candidateTag the candidate dist-tag.
- * @throws {Error} when the tag still exists, or the removal failed for any reason other than absence.
+ * @param {string} expectedVersion the version this release put on the candidate
+ *   tag — the only version this call is allowed to remove.
+ * @param {object} [options] budget/seam overrides (production passes nothing):
+ *   `budgetMs`, `now`, `sleep`, `readDistTag`, `runMutation`.
+ * @throws {Error} when the deadline is already spent, when the tag belongs to
+ *   another release, when `rm` fails and the tag is still ours, or when the
+ *   removal never becomes visible.
  */
-function removeCandidateTag(packageName, candidateTag) {
-  const before = distTagVersion(packageName, candidateTag)
+export function removeCandidateTag(packageName, candidateTag, expectedVersion, options = {}) {
+  const {
+    budgetMs,
+    now,
+    sleep,
+    initialDelayMs,
+    maxDelayMs,
+    // ONE authoritative view per call: this function owns the retrying.
+    readDistTag = (name, tag, readOptions = {}) => distTagVersion(name, tag, { ...readOptions, attempts: 1 }),
+    runMutation = runDistTagMutation,
+  } = options
+  const clock = createRegistryDeadline({ budgetMs, now })
+
+  /** Fail loudly when a step would begin with no time left. */
+  /**
+   * The single time gate for every step that could spawn a child.
+   *
+   * When the budget is gone this throws instead of starting a child that is certain
+   * to be killed, and — crucially — it carries the failure it is standing in for, so
+   * the caller still sees WHY the operation was in flight (a timeout, an auth
+   * refusal, …) along with that failure's classification and cause.
+   *
+   * @param {string} step human description for the message.
+   * @param {object} [cause] the failure this step was reacting to.
+   * @returns {number} the remaining budget in milliseconds.
+   */
+  const requireTime = (step, cause) => {
+    const remaining = clock.remaining()
+    if (remaining <= 0) {
+      const failure = new Error(
+        `cannot ${step} for the candidate tag "${candidateTag}" on ${packageName}: the ${clock.budgetMs}ms registry deadline `
+        + 'for this cleanup was already spent, so no child was started. The release is not finished.',
+        cause === undefined ? undefined : { cause },
+      )
+      throw copyErrorMetadata(failure, cause)
+    }
+    return remaining
+  }
+
+  // Step 1: the single authoritative read, capped by what is left.
+  let before
+  try {
+    before = readDistTag(packageName, candidateTag, { timeoutMs: requireTime('read the candidate tag') })
+  } catch (error) {
+    // A pre-read that ran out of time is a deadline failure, not "the registry
+    // kept failing" — say which.
+    if (clock.expired() && error?.classification !== 'auth' && error?.classification !== 'fatal') {
+      throw new Error(
+        `cannot read the candidate tag "${candidateTag}" on ${packageName} before removing it: `
+        + `the ${clock.budgetMs}ms registry deadline expired during that read.`,
+        { cause: error },
+      )
+    }
+    throw error
+  }
   if (before === undefined) {
     process.stdout.write(`${packageName}: candidate tag "${candidateTag}" is already gone\n`)
     return
   }
+  if (before !== expectedVersion) {
+    throw new Error(
+      `refusing to remove the candidate tag "${candidateTag}" from ${packageName}: it now points at ${before}, `
+      + `not ${expectedVersion}. Another release owns it — removing it would take that release's candidate away.`,
+    )
+  }
+
+  // Step 2: the destructive command, with nothing in between, capped by the SAME
+  // deadline.
   try {
-    run('npm', ['dist-tag', 'rm', packageName, candidateTag, '--registry', REGISTRY])
+    runMutation(['dist-tag', 'rm', packageName, candidateTag, '--registry', REGISTRY], {
+      timeoutMs: requireTime('remove the candidate tag'),
+    })
   } catch (error) {
-    // `npm dist-tag rm` reports an absent tag as E404. Re-read the tag: if it is
-    // gone now the removal was effective (the error was a race), otherwise this
-    // is a real failure and it propagates.
-    const after = distTagVersion(packageName, candidateTag)
+    // Step 3a: the command failed. Deciding what it MEANT needs one authoritative
+    // outcome read — and that read needs time. If the command consumed the whole
+    // budget there is none left, so refuse to start a child that would only be
+    // killed: that is a deadline failure, reported as one, with the mutation's own
+    // facts (a timeout is `transient` with `ETIMEDOUT`) copied to the top level.
+    const remainingForOutcome = requireTime('read the outcome of the failed candidate-tag removal', error)
+    let after
+    try {
+      after = readDistTag(packageName, candidateTag, { timeoutMs: remainingForOutcome })
+    } catch (readError) {
+      // THE READ IS THE AUTHORITATIVE VERDICT. An auth refusal on the outcome read
+      // says "we cannot even look"; surfacing the mutation's tentative
+      // classification instead would mislabel it. So the read error owns the
+      // top-level message and ALL machine-readable metadata, while the mutation
+      // stays reachable on `mutationError` so nothing is lost.
+      const failure = new Error(
+        `cannot remove the candidate tag "${candidateTag}" from ${packageName}: ${String(error?.message ?? error)}. `
+        + `Re-reading the tag also failed, so the outcome is unknown: ${String(readError?.message ?? readError)}`,
+        { cause: readError },
+      )
+      copyErrorMetadata(failure, readError)
+      failure.mutationError = error
+      throw failure
+    }
     if (after === undefined) {
+      // The removal did happen; the failure was a race. Accept it.
       process.stdout.write(`${packageName}: candidate tag "${candidateTag}" removed\n`)
       return
     }
-    throw new Error(
+    if (after !== expectedVersion) {
+      throw new Error(
+        `candidate tag "${candidateTag}" on ${packageName} moved to ${after} while it was being removed `
+        + `(this release expected ${expectedVersion}). Another release took the tag; refusing to continue.`,
+        { cause: error },
+      )
+    }
+    // Still ours: the removal did not happen. Preserve the ORIGINAL failure's
+    // message, classification and cause chain so an auth refusal stays an auth
+    // refusal all the way out.
+    const failure = new Error(
       `cannot remove the candidate tag "${candidateTag}" from ${packageName}: ${String(error?.message ?? error)}. `
-      + 'It still exists on the registry, so the release is not finished.',
+      + `It still points at ${expectedVersion}, so the removal did not happen and the release is not finished.`,
+      { cause: error },
     )
+    copyErrorMetadata(failure, error)
+    throw failure
   }
-  const after = distTagVersion(packageName, candidateTag)
-  if (after !== undefined) {
-    throw new Error(
-      `the candidate tag "${candidateTag}" on ${packageName} still points at ${after} after removal; refusing to continue`,
-    )
-  }
+  // Step 3b: the command succeeded. Wait for the removal to become VISIBLE, on the
+  // SAME deadline — absence is the target, our own version is propagation, and
+  // anything else means the tag is no longer ours.
+  waitForCandidateTagRemoval(packageName, candidateTag, expectedVersion, {
+    deadline: clock.deadline,
+    started: clock.started,
+    now: clock.now,
+    // The SAME reader seam the pre-read used, so an injected reader observes every
+    // step and production uses one consistent default.
+    readDistTag,
+    sleep,
+    initialDelayMs,
+    maxDelayMs,
+  })
   process.stdout.write(`${packageName}: candidate tag "${candidateTag}" removed\n`)
 }
 

@@ -32,7 +32,13 @@ import {
   writeJournal,
 } from '../scripts/release/lib/journal.mjs'
 import { RELEASE_PACKAGES, STAGED_PACKAGES, requireReleasePackage } from '../scripts/release/lib/packages.mjs'
-import { assertOutsideWorkspace, releaseMismatch, stageBundle } from '../scripts/release/release.mjs'
+import {
+  assertOutsideWorkspace,
+  promoteLatest,
+  releaseMismatch,
+  removeCandidateTag,
+  stageBundle,
+} from '../scripts/release/release.mjs'
 import { MIN_NPM_VERSION, assertNpmCapability, checkNpmVersion, compareVersions } from '../scripts/release/lib/npm-capability.mjs'
 import {
   REGISTRY_READBACK_BUDGET_MS,
@@ -44,6 +50,7 @@ import {
   publishedIntegrity,
   registryReadbackDelays,
   requestedResourceSpecifierOf,
+  waitForDistTag,
 } from '../scripts/release/lib/registry.mjs'
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync as readTextFile, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -735,6 +742,771 @@ switch (mode) {
       } finally {
         teardown()
       }
+    })
+  })
+
+  /* --------------------------- dist-tag propagation (finalize) --- */
+
+  describe('dist-tag readback after add / rm', () => {
+    /**
+     * The failure this covers: on run 39249407401 `npm dist-tag add
+     * @banbolee/dsh-fish-shell@0.8.2 latest` exited 0, the very next read still
+     * answered `0.8.1`, and the lane aborted AFTER the promotion had happened. A
+     * single lagging read is propagation, not a verdict.
+     */
+    const TAG_READBACK = { package: '@banbolee/dsh-fish-shell', distTag: 'next', version: '0.8.2' }
+
+    /** A virtual clock shared by `now`, `sleep` and the read, as above. */
+    function clock(readCostMs = 0) {
+      let nowMs = 0
+      return {
+        now: () => nowMs,
+        sleep: (ms: number) => { nowMs += ms },
+        charge: () => { nowMs += readCostMs },
+        elapsed: () => nowMs,
+      }
+    }
+
+    it('waits for the OLD version to be replaced by the target (add)', () => {
+      // The registry keeps serving 0.8.1 for 30 virtual seconds, then flips.
+      const c = clock()
+      let polls = 0
+      const result = waitForDistTag(TAG_READBACK.package, 'latest', TAG_READBACK.version, {
+        now: c.now,
+        sleep: c.sleep,
+        readDistTag: () => {
+          polls += 1
+          return c.elapsed() > 30_000 ? TAG_READBACK.version : '0.8.1'
+        },
+      })
+      expect(result).toBe(TAG_READBACK.version)
+      expect(c.elapsed()).toBeGreaterThan(30_000)
+      expect(polls).toBeGreaterThan(2)
+    })
+
+    it('does NOT treat a still-present tag as fatal after `dist-tag rm`', () => {
+      // Same in reverse: the tag survives several polls, then disappears.
+      const c = clock()
+      let polls = 0
+      const result = waitForDistTag(TAG_READBACK.package, 'next', undefined, {
+        now: c.now,
+        sleep: c.sleep,
+        readDistTag: () => {
+          polls += 1
+          return c.elapsed() > 20_000 ? undefined : '0.8.2'
+        },
+      })
+      expect(result).toBeUndefined()
+      expect(polls).toBeGreaterThan(2)
+    })
+
+    it('returns immediately when the tag is ALREADY at the target', () => {
+      const c = clock()
+      let polls = 0
+      expect(waitForDistTag(TAG_READBACK.package, 'latest', '0.8.2', {
+        now: c.now,
+        sleep: c.sleep,
+        readDistTag: () => { polls += 1; return '0.8.2' },
+      })).toBe('0.8.2')
+      expect(polls).toBe(1)
+      expect(c.elapsed()).toBe(0)
+    })
+
+    it('returns immediately when the tag is ALREADY gone', () => {
+      const c = clock()
+      let polls = 0
+      expect(waitForDistTag(TAG_READBACK.package, 'next', undefined, {
+        now: c.now,
+        sleep: c.sleep,
+        readDistTag: () => { polls += 1; return undefined },
+      })).toBeUndefined()
+      expect(polls).toBe(1)
+    })
+
+    it('fails closed when the tag never reaches the target inside the budget', () => {
+      const c = clock()
+      expect(() => waitForDistTag(TAG_READBACK.package, 'latest', '0.8.2', {
+        now: c.now,
+        sleep: c.sleep,
+        readDistTag: () => '0.8.1',
+      })).toThrow(/the registry does not report .* dist-tag "latest" as 0\.8\.2 after npm dist-tag add\/rm/u)
+      expect(c.elapsed()).toBe(REGISTRY_READBACK_BUDGET_MS)
+    })
+
+    it('fails closed when the tag never disappears inside the budget', () => {
+      const c = clock()
+      expect(() => waitForDistTag(TAG_READBACK.package, 'next', undefined, {
+        now: c.now,
+        sleep: c.sleep,
+        readDistTag: () => '0.8.2',
+      })).toThrow(/as absent after npm dist-tag add\/rm/u)
+    })
+
+    it.each(['auth', 'fatal'] as const)('fails fast on a %s read from the tag watcher', (classification) => {
+      const c = clock()
+      let polls = 0
+      const failure = Object.assign(new Error(`${classification} refusal`), { classification })
+      expect(() => waitForDistTag(TAG_READBACK.package, 'latest', '0.8.2', {
+        now: c.now,
+        sleep: c.sleep,
+        readDistTag: () => { polls += 1; throw failure },
+      })).toThrow(new RegExp(`${classification} refusal`, 'u'))
+      expect(polls).toBe(1)
+      expect(c.elapsed()).toBe(0)
+    })
+
+    it('fails fast on an unclassified error from the tag watcher', () => {
+      const c = clock()
+      let polls = 0
+      expect(() => waitForDistTag(TAG_READBACK.package, 'latest', '0.8.2', {
+        now: c.now,
+        sleep: c.sleep,
+        readDistTag: () => { polls += 1; throw new Error('boom — a bug') },
+      })).toThrow(/boom/u)
+      expect(polls).toBe(1)
+    })
+
+    it('retries a transient read from the tag watcher', () => {
+      const c = clock()
+      let polls = 0
+      const transient = Object.assign(new Error('429'), { classification: 'transient' })
+      expect(waitForDistTag(TAG_READBACK.package, 'latest', '0.8.2', {
+        now: c.now,
+        sleep: c.sleep,
+        readDistTag: () => {
+          polls += 1
+          if (polls < 3) throw transient
+          return '0.8.2'
+        },
+      })).toBe('0.8.2')
+      expect(polls).toBe(3)
+    })
+
+    /* ---- the same, through the REAL child-process chain (fake npm) ---- */
+
+    describe('through the real child-process chain', () => {
+      let sandbox: string
+      let binDir: string
+      let counterFile: string
+      let originalPath: string | undefined
+
+      /**
+       * Serves `view` from the `FAKE_NPM_STATE` file, decrementing per READ.
+       *
+       * `dist-tag add/rm` must SUCCEED without touching the state: the whole point
+       * of these tests is that the command succeeds while the read path lags, so a
+       * fake that consumed state on the command would model the wrong thing.
+       */
+      const FAKE_NPM = `#!/usr/bin/env node
+'use strict'
+const fs = require('node:fs')
+const counter = process.env.FAKE_NPM_COUNTER
+if (counter) fs.appendFileSync(counter, '.')
+const args = process.argv.slice(2)
+const isView = args[0] === 'view'
+const isRm = args[0] === 'dist-tag' && args[1] === 'rm'
+
+if (isRm) {
+  // Count removals separately: the ownership tests assert ZERO rm, which a shared
+  // counter could not distinguish from "no read either".
+  if (process.env.FAKE_NPM_RM_COUNTER) fs.appendFileSync(process.env.FAKE_NPM_RM_COUNTER, '.')
+  if (process.env.FAKE_NPM_RM_HANG === '1') {
+    // Never exits. The trailing "if (!isView) process.exit(0)" WOULD otherwise run
+    // and make the removal look instant, so leave the script body here.
+    setTimeout(() => {}, 600000)
+    return
+  } else {
+    if (process.env.FAKE_NPM_RM_FAIL === '1' || process.env.FAKE_NPM_RM_FAIL_WITH) {
+      // A FILE, not an inline string: this whole script is itself a template
+      // literal, so embedding raw newlines here would emit invalid JavaScript.
+      const payload = process.env.FAKE_NPM_RM_FAIL_WITH
+        ? fs.readFileSync(process.env.FAKE_NPM_RM_FAIL_WITH, 'utf8')
+        : 'npm error code E403\\nnpm error 403 Forbidden - PUT https://registry.npmjs.org\\n'
+      process.stderr.write(payload)
+      process.exit(1)
+    }
+    process.exit(0)
+  }
+}
+if (!isView) process.exit(0)
+if (process.env.FAKE_NPM_VIEW_DELAY_MS) {
+  // Burn real time inside the child, so the caller deadline has to cover it.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.FAKE_NPM_VIEW_DELAY_MS))
+}
+
+const mode = process.env.FAKE_NPM_MODE || 'tag'
+if (mode === 'hang') { setTimeout(() => {}, 600000) } else if (mode === 'auth') {
+  process.stderr.write('npm error code E401\\n'); process.exit(1)
+} else if (mode === 'object') {
+  process.stdout.write(JSON.stringify({ nope: true }) + '\\n')
+} else {
+  // Serve a SCRIPTED sequence first, then the final value forever.
+  const file = process.env.FAKE_NPM_STATE
+  const state = JSON.parse(fs.readFileSync(file, 'utf8'))
+  const queue = state.sequence || []
+  if (queue.length > 0) {
+    const next = queue.shift()
+    state.sequence = queue
+    fs.writeFileSync(file, JSON.stringify(state))
+    process.stdout.write(JSON.stringify(next) + '\\n')
+  } else {
+    process.stdout.write(JSON.stringify(state.final) + '\\n')
+  }
+}
+`
+
+      function install(): void {
+        sandbox = mkdtempSync(join(tmpdir(), 'banbo-tag-npm-'))
+        binDir = join(sandbox, 'bin')
+        mkdirSync(binDir, { recursive: true })
+        counterFile = join(sandbox, 'invocations')
+        writeFileSync(counterFile, '')
+        const npmPath = join(binDir, 'npm')
+        writeFileSync(npmPath, FAKE_NPM)
+        chmodSync(npmPath, 0o755)
+        originalPath = process.env.PATH
+        process.env.PATH = `${binDir}:${originalPath ?? ''}`
+        process.env.FAKE_NPM_COUNTER = counterFile
+        process.env.FAKE_NPM_RM_COUNTER = join(sandbox, 'rm-invocations')
+        writeFileSync(process.env.FAKE_NPM_RM_COUNTER, '')
+        process.env.FAKE_NPM_STATE = join(sandbox, 'state.json')
+      }
+
+      function setState(oldValue: unknown, newValue: unknown, remaining: number): void {
+        writeFileSync(
+          process.env.FAKE_NPM_STATE!,
+          JSON.stringify({ sequence: Array.from({ length: remaining }, () => oldValue), final: newValue }),
+        )
+      }
+
+      /** Serve each of `sequence` once, then `final` forever. */
+      function setSequence(sequence: unknown[], finalValue: unknown): void {
+        writeFileSync(process.env.FAKE_NPM_STATE!, JSON.stringify({ sequence, final: finalValue }))
+      }
+
+      function invocations(): number {
+        return readTextFile(counterFile, 'utf8').length
+      }
+
+      function rmInvocations(): number {
+        return readTextFile(process.env.FAKE_NPM_RM_COUNTER!, 'utf8').length
+      }
+
+      function teardown(): void {
+        if (originalPath === undefined) delete process.env.PATH
+        else process.env.PATH = originalPath
+        for (const key of ['FAKE_NPM_MODE', 'FAKE_NPM_COUNTER', 'FAKE_NPM_RM_COUNTER', 'FAKE_NPM_RM_FAIL', 'FAKE_NPM_RM_FAIL_WITH', 'FAKE_NPM_STATE', 'FAKE_NPM_VIEW_DELAY_MS', 'FAKE_NPM_RM_HANG']) delete process.env[key]
+        rmSync(sandbox, { recursive: true, force: true })
+      }
+
+      it('waits through several OLD answers and then succeeds (add)', () => {
+        install()
+        try {
+          setState('0.8.1', '0.8.2', 3)
+          const result = waitForDistTag('@banbolee/dsh-fish-shell', 'latest', '0.8.2', {
+            budgetMs: 5000,
+            initialDelayMs: 40,
+            maxDelayMs: 40,
+            sleep: (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) },
+          })
+          expect(result).toBe('0.8.2')
+          // Four child invocations: three old answers plus the successful one.
+          expect(invocations()).toBe(4)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('waits through several still-PRESENT answers and then sees absence (rm)', () => {
+        install()
+        try {
+          setState('0.8.2', null, 3)
+          const result = waitForDistTag('@banbolee/dsh-fish-shell', 'next', undefined, {
+            budgetMs: 5000,
+            initialDelayMs: 40,
+            maxDelayMs: 40,
+            sleep: (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) },
+          })
+          expect(result).toBeUndefined()
+          expect(invocations()).toBe(4)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('fails closed when the tag never converges', () => {
+        install()
+        try {
+          // `remaining` is huge, so every poll serves the old value.
+          setState('0.8.1', '0.8.2', 10_000)
+          expect(() => waitForDistTag('@banbolee/dsh-fish-shell', 'latest', '0.8.2', {
+            budgetMs: 300,
+            initialDelayMs: 20,
+            maxDelayMs: 20,
+            sleep: () => {},
+          })).toThrow(/does not report .* as 0\.8\.2 after npm dist-tag add\/rm|could not read/u)
+          expect(invocations()).toBeGreaterThan(1)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('kills a HUNG child within the budget', () => {
+        install()
+        try {
+          process.env.FAKE_NPM_MODE = 'hang'
+          const budgetMs = 700
+          const started = performance.now()
+          expect(() => waitForDistTag('@banbolee/dsh-fish-shell', 'latest', '0.8.2', {
+            budgetMs,
+            initialDelayMs: 50,
+            maxDelayMs: 50,
+            sleep: () => {},
+          })).toThrow(/does not report|could not read/u)
+          expect(performance.now() - started).toBeLessThan(budgetMs + 1500)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('fails fast on auth and on a non-string object answer', () => {
+        install()
+        try {
+          process.env.FAKE_NPM_MODE = 'auth'
+          expect(() => waitForDistTag('@banbolee/dsh-fish-shell', 'latest', '0.8.2', {
+            budgetMs: 60_000,
+            sleep: () => {},
+          })).toThrow(/REFUSED/u)
+          expect(invocations()).toBe(1)
+
+          process.env.FAKE_NPM_MODE = 'object'
+          expect(() => waitForDistTag('@banbolee/dsh-fish-shell', 'latest', '0.8.2', {
+            budgetMs: 60_000,
+            sleep: () => {},
+          })).toThrow(/expected a string/u)
+          expect(invocations()).toBe(2)
+        } finally {
+          teardown()
+        }
+      })
+
+      /* ---- the functions finalize ACTUALLY calls, against the fake npm ---- */
+
+      /** Fast knobs: real child processes, negligible waiting. */
+      const FAST = { budgetMs: 5000, initialDelayMs: 40, maxDelayMs: 40, sleep: (ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) } }
+
+      it('promoteLatest tolerates a lagging read after a successful `dist-tag add`', () => {
+        // This is the run 39249407401 path verbatim: finalize calls
+        // `promoteLatest`, which runs the real `npm dist-tag add` and then waits.
+        // The fake serves `0.8.1` for three polls and then `0.8.2`.
+        install()
+        try {
+          setState('0.8.1', '0.8.2', 3)
+          expect(() => promoteLatest('@banbolee/dsh-fish-shell', '0.8.2', FAST)).not.toThrow()
+          // One `dist-tag add` + four reads (three old, one current).
+          expect(invocations()).toBe(5)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('promoteLatest fails closed when the tag never converges', () => {
+        install()
+        try {
+          // Every read keeps answering the OLD version: propagation that never
+          // completes must exhaust the budget, not be accepted.
+          setState('0.8.1', '0.8.2', 10_000)
+          expect(() => promoteLatest('@banbolee/dsh-fish-shell', '0.8.2', {
+            budgetMs: 300,
+            initialDelayMs: 20,
+            maxDelayMs: 20,
+            sleep: () => {},
+          })).toThrow(/does not report .* dist-tag "latest" as 0\.8\.2|could not read/u)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('promoteLatest fails fast on a REFUSED read', () => {
+        install()
+        try {
+          process.env.FAKE_NPM_MODE = 'auth'
+          expect(() => promoteLatest('@banbolee/dsh-fish-shell', '0.8.2', {
+            budgetMs: 60_000,
+            sleep: () => {},
+          })).toThrow(/REFUSED/u)
+        } finally {
+          teardown()
+        }
+      })
+
+      /* --------- candidate cleanup: ownership, not just propagation ---- */
+
+      it('removes the tag when it still belongs to this release', () => {
+        // The happy path: the authoritative read sees OUR version, the rm runs, and
+        // the reads keep answering our version until the removal becomes visible.
+        install()
+        try {
+          setState('0.8.2', null, 3)
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', FAST)).not.toThrow()
+          // 1 authoritative read + 3 propagation reads + 1 `rm` (the counter sees
+          // every child, including the command).
+          expect(invocations()).toBe(5)
+          expect(rmInvocations()).toBe(1)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('short-circuits when the tag is already gone', () => {
+        install()
+        try {
+          setState(null, null, 10_000)
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', FAST)).not.toThrow()
+          // Only the authoritative read; no `rm` and no waiting.
+          expect(invocations()).toBe(1)
+          expect(rmInvocations()).toBe(0)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('NEVER runs `rm` when the tag belongs to another release', () => {
+        // The ownership guard: the tag exists, but on a version this release did
+        // not publish. Removing it would take another release's candidate away.
+        install()
+        try {
+          setState('0.9.0', '0.9.0', 10_000)
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', FAST))
+            .toThrow(/refusing to remove .* it now points at 0\.9\.0, not 0\.8\.2/u)
+          expect(rmInvocations()).toBe(0)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('fails when the tag moves to another version AFTER the rm succeeded', () => {
+        // The TOCTOU/ownership race at its narrowest: our version is read, the rm
+        // runs, and the readback shows a version that is neither ours nor absence.
+        install()
+        try {
+          // Authoritative read: ours. Then the wait sees a foreign version.
+          setSequence(['0.8.2', '0.9.0'], '0.9.0')
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', FAST))
+            .toThrow(/now points at 0\.9\.0, not 0\.8\.2 and not nothing/u)
+          expect(rmInvocations()).toBe(1)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('accepts the race when a FAILED rm nevertheless removed the tag', () => {
+        install()
+        try {
+          setState('0.8.2', null, 1)
+          process.env.FAKE_NPM_RM_FAIL = '1'
+          // Authoritative read (ours) → rm fails → re-read says absent → success.
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', FAST)).not.toThrow()
+          expect(rmInvocations()).toBe(1)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('fails FAST — preserving the original error — when a failed rm leaves the tag on our version', () => {
+        // An auth refusal must not be hidden behind minutes of waiting: the re-read
+        // shows our version still present, so the original failure is surfaced at
+        // once.
+        install()
+        try {
+          setState('0.8.2', '0.8.2', 10_000)
+          process.env.FAKE_NPM_RM_FAIL = '1'
+          const started = performance.now()
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', {
+            budgetMs: 60_000,
+            sleep: () => {},
+          })).toThrow(/cannot remove the candidate tag[\s\S]*403 Forbidden[\s\S]*still points at 0\.8\.2/u)
+          // Fast: it never polled toward the deadline.
+          expect(performance.now() - started).toBeLessThan(2000)
+          // authoritative read + the failed `rm` + one re-read: NO polling.
+          expect(invocations()).toBe(3)
+          expect(rmInvocations()).toBe(1)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('fails with an ownership error when a failed rm shows another version', () => {
+        install()
+        try {
+          setSequence(['0.8.2', '0.9.0'], '0.9.0')
+          process.env.FAKE_NPM_RM_FAIL = '1'
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', FAST))
+            .toThrow(/moved to 0\.9\.0 while it was being removed/u)
+        } finally {
+          teardown()
+        }
+      })
+
+      /* ---- ONE deadline for the whole cleanup (no per-step reset) ---- */
+
+      it('spends ONE deadline: a hung authoritative pre-read uses the budget and never runs rm', () => {
+        install()
+        try {
+          process.env.FAKE_NPM_MODE = 'hang'
+          const budgetMs = 300
+          const started = performance.now()
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', {
+            budgetMs,
+            initialDelayMs: 20,
+            maxDelayMs: 20,
+            sleep: () => {},
+          })).toThrow(/deadline expired during that read|deadline/u)
+          const elapsed = performance.now() - started
+          // Bounded by the budget plus one child spawn/kill cycle.
+          expect(elapsed, `elapsed ${elapsed}ms`).toBeLessThan(budgetMs + 2000)
+          // Exactly one child (the killed pre-read) and ZERO removals.
+          expect(invocations()).toBe(1)
+          expect(rmInvocations()).toBe(0)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('carries the pre-read cost into the post-rm budget instead of resetting it', () => {
+        // The pre-read deliberately burns most of the budget (a slow `view`), and
+        // the tag then never disappears. If the propagation poll restarted its own
+        // six minutes the call would run ~2x the budget; sharing one deadline keeps
+        // the total bounded.
+        install()
+        try {
+          process.env.FAKE_NPM_VIEW_DELAY_MS = '180'
+          setState('0.8.2', '0.8.2', 10_000) // always OUR version: never removed
+          const budgetMs = 450
+          const started = performance.now()
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', {
+            budgetMs,
+            initialDelayMs: 20,
+            maxDelayMs: 20,
+            sleep: () => {},
+          })).toThrow(/does not report|could not read|deadline/u)
+          const elapsed = performance.now() - started
+          // One budget, not two: an independent post-rm budget would exceed 2x.
+          expect(elapsed, `elapsed ${elapsed}ms`).toBeLessThan(budgetMs * 2)
+          // The rm did run, and at least one propagation read happened after it.
+          expect(rmInvocations()).toBe(1)
+          expect(invocations()).toBeGreaterThanOrEqual(3)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('never spawns the outcome read when the mutation consumed the whole budget', () => {
+        // DETERMINISTIC. The mutation burns exactly the budget, so there is nothing
+        // left for the authoritative outcome read. Spawning it anyway (the old
+        // `Math.max(1, …)`) would start a child guaranteed to be killed, and would
+        // report the kill instead of the real cause.
+        let clock = 0
+        const reads: number[] = []
+        const mutationFailure = Object.assign(new Error('npm dist-tag rm failed: timed out'), {
+          classification: 'transient',
+          status: 1,
+          code: 'ETIMEDOUT',
+          signal: 'SIGTERM',
+        })
+        let captured: (Error & {
+          classification?: string, status?: number, code?: string, signal?: string, cause?: unknown
+        }) | undefined
+        try {
+          removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', {
+            budgetMs: 1000,
+            now: () => clock,
+            sleep: (ms: number) => { clock += ms },
+            readDistTag: (_name: string, _tag: string, opts: { timeoutMs?: number } = {}) => {
+              reads.push(opts.timeoutMs ?? -1)
+              clock += 400 // the pre-read alone costs 400ms
+              return '0.8.2'
+            },
+            runMutation: () => {
+              clock += 600 // …and the mutation spends the remaining 600ms
+              throw mutationFailure
+            },
+          })
+        } catch (error) {
+          captured = error as typeof captured
+        }
+        expect(captured, 'the cleanup must fail').toBeDefined()
+        // ONLY the pre-read ran: the outcome read was refused, not spawned.
+        expect(reads).toEqual([1000])
+        // The top level says what actually happened — a timeout — not "unknown".
+        expect(captured!.classification).toBe('transient')
+        expect(captured!.code).toBe('ETIMEDOUT')
+        expect(captured!.signal).toBe('SIGTERM')
+        expect(captured!.status).toBe(1)
+        // …with the mutation itself still reachable.
+        expect(captured!.cause).toBe(mutationFailure)
+        expect(String(captured!.message)).toMatch(/deadline/u)
+      })
+
+      it('lets an AUTH outcome read own the verdict while keeping the mutation', () => {
+        // The mutation says "transient"; the authoritative read says "refused". The
+        // read is what decides, because it is the only one that actually looked.
+        const mutationFailure = Object.assign(new Error('npm dist-tag rm failed: 429'), {
+          classification: 'transient',
+          status: 1,
+          code: 'E429',
+        })
+        const readFailure = Object.assign(new Error('npm view was REFUSED (authentication)'), {
+          classification: 'auth',
+          status: 1,
+          code: 'E401',
+        })
+        let calls = 0
+        let captured: (Error & {
+          classification?: string, status?: number, code?: string, cause?: unknown, mutationError?: unknown
+        }) | undefined
+        try {
+          removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', {
+            budgetMs: 60_000,
+            now: () => 0,
+            sleep: () => {},
+            readDistTag: () => {
+              calls += 1
+              // First read (the pre-read) succeeds; the outcome read refuses.
+              if (calls === 1) return '0.8.2'
+              throw readFailure
+            },
+            runMutation: () => { throw mutationFailure },
+          })
+        } catch (error) {
+          captured = error as typeof captured
+        }
+        expect(captured, 'the cleanup must fail').toBeDefined()
+        expect(captured!.classification).toBe('auth')
+        expect(captured!.status).toBe(1)
+        expect(captured!.code).toBe('E401')
+        // `cause` must BE the read error…
+        expect(captured!.cause).toBe(readFailure)
+        // …and the mutation must not be lost.
+        expect(captured!.mutationError).toBe(mutationFailure)
+      })
+
+      it('reports a HUNG rm as a top-level timeout, not as an unknown failure', () => {
+        // A real child process that never exits: the mutation is killed at the
+        // deadline, and the top-level error must carry that verdict itself
+        // (transient + ETIMEDOUT or a signal) rather than burying it in `cause`.
+        install()
+        try {
+          setState('0.8.2', '0.8.2', 10_000)
+          process.env.FAKE_NPM_RM_HANG = '1'
+          const budgetMs = 600
+          const started = performance.now()
+          let captured: (Error & {
+            classification?: string, code?: string, signal?: string, cause?: unknown
+          }) | undefined
+          try {
+            removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', {
+              budgetMs,
+              initialDelayMs: 20,
+              maxDelayMs: 20,
+              sleep: () => {},
+            })
+          } catch (error) {
+            captured = error as typeof captured
+          }
+          expect(captured, 'the cleanup must fail').toBeDefined()
+          expect(captured!.classification).toBe('transient')
+          expect(
+            captured!.code === 'ETIMEDOUT' || typeof captured!.signal === 'string',
+            `expected ETIMEDOUT or a signal, got code=${String(captured!.code)} signal=${String(captured!.signal)}`,
+          ).toBe(true)
+          expect(captured!.cause).toBeDefined()
+          // Bounded: the hung child was killed inside the budget.
+          expect(performance.now() - started).toBeLessThan(budgetMs + 3000)
+        } finally {
+          teardown()
+        }
+      })
+
+      it('never restarts the budget: each step timeout shrinks from the SAME deadline', () => {
+        // DETERMINISTIC, not timing-dependent: the read seam records the timeout each
+        // step is given and advances a virtual clock. With one shared deadline the
+        // timeouts must shrink; with a per-step reset the poll would get the full
+        // budget again.
+        let clock = 0
+        const timeouts: number[] = []
+        expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', {
+          budgetMs: 1000,
+          now: () => clock,
+          sleep: (ms: number) => { clock += ms },
+          // Always OUR version: the tag never disappears, so the poll runs to the end.
+          readDistTag: (_name: string, _tag: string, opts: { timeoutMs?: number } = {}) => {
+            timeouts.push(opts.timeoutMs ?? -1)
+            clock += 300
+            return '0.8.2'
+          },
+          runMutation: () => { clock += 100; return '' },
+        })).toThrow()
+        // The authoritative read gets the whole budget…
+        expect(timeouts[0]).toBe(1000)
+        // …and the post-rm poll inherits what is LEFT, not a fresh six minutes.
+        expect(timeouts[timeouts.length - 1]).toBeLessThan(1000)
+        // No step is ever given more than the one budget.
+        expect(Math.max(...timeouts)).toBe(1000)
+        // The whole operation fits inside that one budget.
+        expect(clock).toBeLessThanOrEqual(1000)
+      })
+
+      it('refuses to start a child when the deadline is already spent', () => {
+        install()
+        try {
+          setState('0.8.2', '0.8.2', 10_000)
+          // A frozen-at-the-end clock: `createRegistryDeadline` starts at `now()`,
+          // so a `now` that has already burned the budget makes every step refuse.
+          let t = 0
+          expect(() => removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', {
+            budgetMs: 100,
+            now: () => { t += 60; return t },
+            sleep: () => {},
+          })).toThrow(/deadline|registration/u)
+          expect(rmInvocations()).toBe(0)
+        } finally {
+          teardown()
+        }
+      })
+
+      /* ---- the failed rm's error keeps its classification and cause ---- */
+
+      it.each([
+        ['auth', 'E403', 'npm error code E403\nnpm error 403 Forbidden - PUT https://registry.npmjs.org'],
+        ['transient', 'E429', 'npm error code E429\nnpm error 429 Too Many Requests'],
+        ['fatal', 'EUNKNOWN', 'npm error code EUNKNOWN\nnpm error something nobody has seen before'],
+      ] as const)('keeps classification=%s on the failure and a live cause chain', (expected, _label, stderr) => {
+        install()
+        try {
+          setState('0.8.2', '0.8.2', 10_000)
+          process.env.FAKE_NPM_RM_FAIL_WITH = join(sandbox, 'rm-stderr.txt')
+          writeFileSync(process.env.FAKE_NPM_RM_FAIL_WITH, stderr)
+          let captured: (Error & { classification?: string; cause?: unknown; status?: unknown }) | undefined
+          try {
+            removeCandidateTag('@banbolee/dsh-fish-shell', 'next', '0.8.2', { budgetMs: 60_000, sleep: () => {} })
+          } catch (error) {
+            captured = error as typeof captured
+          }
+          expect(captured, 'the cleanup must fail').toBeDefined()
+          // OBJECT-LEVEL, not text matching: the classification survives the wrap.
+          expect(captured!.classification).toBe(expected)
+          // …and the original child error is still reachable by walking `cause`.
+          expect(captured!.cause).toBeDefined()
+          let leaf = captured!.cause as { status?: number, stderr?: string, cause?: unknown }
+          while (leaf.cause !== undefined) leaf = leaf.cause as typeof leaf
+          expect(leaf.status).toBe(1)
+          expect(String(leaf.stderr)).toContain(_label)
+        } finally {
+          teardown()
+        }
+      })
+
     })
   })
 

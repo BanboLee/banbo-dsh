@@ -456,12 +456,35 @@ export function publishedIntegrity(packageName, version, options = {}) {
 /**
  * Read the version a dist-tag currently points at.
  *
+ * A SINGLE view by default contract: the retry policy belongs to the caller, so
+ * `waitForDistTag` can drive it and `preflight` keeps its plain read.
+ *
  * @param {string} packageName published npm name.
  * @param {string} distTag dist-tag name (`latest`, a candidate tag, …).
+ * @param {object} [options] forwarded to {@link viewField} (`timeoutMs`, retries).
  * @returns {string | undefined} the version, or `undefined` when the tag is absent.
  */
-export function distTagVersion(packageName, distTag) {
-  return normaliseViewAnswer(viewField(`${packageName}@${distTag}`, 'version'), `${packageName}@${distTag} version`)
+export function distTagVersion(packageName, distTag, options = {}) {
+  return normaliseViewAnswer(
+    viewField(`${packageName}@${distTag}`, 'version', options),
+    `${packageName}@${distTag} version`,
+  )
+}
+
+/**
+ * Read one dist-tag with a SINGLE registry view.
+ *
+ * The same reason as {@link singleAttemptIntegrity}: `waitForDistTag` owns the
+ * retrying, so the read it calls must not retry again or every outer attempt would
+ * spend three child invocations against a timeout computed once.
+ *
+ * @param {string} packageName published npm name.
+ * @param {string} distTag dist-tag to read.
+ * @param {object} [options] forwarded (`timeoutMs`).
+ * @returns {string | undefined} the version, or `undefined` when absent.
+ */
+function singleAttemptDistTag(packageName, distTag, options = {}) {
+  return distTagVersion(packageName, distTag, { ...options, attempts: 1 })
 }
 
 /**
@@ -597,85 +620,91 @@ function monotonicNow() {
 }
 
 /**
- * Assert the registry's integrity for a just-published version matches ours.
+ * Create the ONE absolute deadline an operation's registry reads share.
  *
- * npm returns success once it has accepted the upload; this is the check that
- * the artefact now readable from the registry is byte-identical to the one this
- * run built. A mismatch fails the package (and therefore the release), because a
- * silently different artefact is exactly what provenance exists to rule out.
+ * A single logical operation can touch the registry several times — an
+ * authoritative pre-read, the mutating command, an outcome read, then a
+ * propagation poll. If each step computed its own budget the operation could take
+ * N x six minutes and the published promise ("this is bounded") would be false.
+ * So the deadline is created once and handed to every step, which subtracts
+ * `remaining()` from it.
  *
- * THE BUDGET IS A WALL-CLOCK DEADLINE, and THIS LOOP IS THE ONLY RETRYER.
- *
- * Both halves are load-bearing:
- *
- *   - the deadline is fixed up front from a monotonic clock, and every read is
- *     measured against it, so time spent inside the child process counts;
- *   - the read call is a SINGLE registry view (`attempts: 1`). If the read retried
- *     internally, each outer iteration would spawn several children whose combined
- *     time exceeds the `timeoutMs` computed once for it, and the real wall clock
- *     would outrun the budget while the arithmetic still looked correct.
- *
- * Each sleep is CLAMPED to the remaining time, and the child process is killed at
- * the deadline, so a hung `npm` cannot outlive the budget.
- *
- * The loop is bounded by the DEADLINE, not by an attempt count. A static fuse
- * would fire early whenever a read costs more than one interval, and would hang
- * when a caller's `sleep` does not advance the clock — so instead the loop detects
- * genuine no-progress and reports it as a broken `now`/`sleep` seam rather than
- * disguising it as an exhausted budget.
- *
- * Only two conditions are retried, and the reason is the same in both cases: the
- * publish has just succeeded, so the registry may not have propagated the version
- * yet.
- *
- *   - the version is not readable YET (a confirmed absence — the readback raced
- *     the registry's own replication);
- *   - the read failed TRANSIENTLY, i.e. the error carries `classification:
- *     'transient'` (429 / connection reset / 5xx / a killed child).
- *
- * Everything else fails on the spot, because waiting cannot change it:
- *
- *   - a readable version with a DIFFERENT integrity;
- *   - a REFUSED read (`auth`) — retrying credentials for six minutes would only
- *     delay the abort and hide the real cause;
- *   - a `fatal` read error;
- *   - an UNCLASSIFIED error — a response shape npm should never produce, a
- *     programming error, a bug in this module. Retrying an unknown failure is how
- *     a real defect gets laundered into "the registry was slow".
- *
- * @param {object} options `package`, `version`, `integrity`, plus optional knobs:
- *   `budgetMs`/`initialDelayMs`/`maxDelayMs` (the schedule), `sleep` (seam),
- *   `now` (seam; defaults to the monotonic clock) and `readIntegrity` (seam;
- *   defaults to the real registry read).
- * @returns {string} the registry's integrity.
- * @throws {Error} when the registry reports a different integrity, refuses the
- *   read, fails unexpectedly, or still does not report the version when the
- *   deadline passes.
+ * @param {object} [options] `budgetMs`, `now` (seam).
+ * @returns {{ now: () => number, started: number, deadline: number,
+ *   remaining: () => number, expired: () => boolean, budgetMs: number }}
  */
-export function assertRegistryIntegrity(options) {
+export function createRegistryDeadline(options = {}) {
+  const { budgetMs = REGISTRY_READBACK_BUDGET_MS, now = monotonicNow } = options
+  const started = now()
+  const deadline = started + budgetMs
+  return {
+    now,
+    started,
+    deadline,
+    budgetMs,
+    remaining: () => deadline - now(),
+    expired: () => deadline - now() <= 0,
+  }
+}
+
+/**
+ * Poll the registry until one observation satisfies `matches`, on a wall-clock
+ * deadline.
+ *
+ * This is the ONE retry loop for every post-mutation readback. Both callers face
+ * the same hazard — npm reports success before the READ path reflects the change —
+ * and both need the same guarantees:
+ *
+ *   - the budget is a MONOTONIC deadline, so time spent inside the child process
+ *     counts and the loop cannot outrun its promise;
+ *   - each observation is a SINGLE registry view (`attempts: 1`): if the read
+ *     retried internally, one outer iteration would spawn several children whose
+ *     combined time exceeds the `timeoutMs` computed once for it;
+ *   - each sleep is CLAMPED to the remainder, and the child is killed at the
+ *     deadline, so a hung `npm` cannot outlive the budget;
+ *   - only an EXPLICITLY transient failure is retried. `auth`, `fatal`, response
+ *     shape errors, unclassified errors and programming errors are thrown at once;
+ *   - the loop is bounded by the DEADLINE, not an attempt count. A static fuse
+ *     would fire early when reads are slow and hang when `sleep` does not advance
+ *     the clock, so instead it detects genuine no-progress and names it.
+ *
+ * What the CALLER decides is only how an observed-but-wrong value is treated:
+ *
+ *   - `onMismatch` may throw (integrity: a readable, different hash is a verdict,
+ *     not a delay);
+ *   - or it may do nothing, letting the loop keep waiting (a dist-tag still
+ *     serving the OLD version, or a tag that still exists after `rm`, is simply
+ *     propagation in progress — treating it as fatal is the bug this fixes).
+ *
+ * @param {object} options `label`, `expected`, `read`, `matches`, and optional
+ *   `onMismatch`, `failureHint`, `budgetMs`/`initialDelayMs`/`maxDelayMs`,
+ *   `sleep`, `now`.
+ * @returns {*} the observed value that matched.
+ * @throws {Error} on a fatal read, a caller-declared mismatch, or deadline expiry.
+ */
+function pollRegistryUntil(options) {
   const {
-    package: packageName,
-    version,
-    integrity,
+    label,
+    expected,
+    read,
+    matches,
+    onMismatch = () => {},
+    failureHint = 'after publish',
     budgetMs = REGISTRY_READBACK_BUDGET_MS,
     initialDelayMs = REGISTRY_READBACK_INITIAL_DELAY_MS,
     maxDelayMs = REGISTRY_READBACK_MAX_DELAY_MS,
     sleep: sleepFn = sleep,
     now = monotonicNow,
-    readIntegrity = singleAttemptIntegrity,
+    // An operation that performs SEVERAL registry reads (a pre-check, the command,
+    // an outcome read, a propagation poll) must spend ONE budget, not one per
+    // step. Passing `deadline`/`started` in lets every step share the same absolute
+    // deadline instead of each restarting a fresh six minutes.
+    started: startedOption,
+    deadline: deadlineOption,
   } = options
-  const started = now()
-  const deadline = started + budgetMs
-  /**
-   * Consecutive iterations in which the clock did not move at all.
-   *
-   * The loop is bounded by the DEADLINE, and that is the only bound it should
-   * need. A static attempt fuse would be wrong in both directions: it fires early
-   * when reads are slow (fewer, longer iterations), and it hangs when a caller's
-   * `sleep` returns without advancing the clock. So instead of guessing a count,
-   * the loop detects the one condition that can actually stall it — a clock that
-   * is not moving — and names it.
-   */
+  const started = startedOption ?? now()
+  const deadline = deadlineOption ?? started + budgetMs
+  /** Consecutive iterations in which the clock did not move at all. */
   let stalled = 0
   let attempts = 0
   let lastError
@@ -688,22 +717,20 @@ export function assertRegistryIntegrity(options) {
     lastError = undefined
     let last
     try {
-      // ONE attempt per iteration: the outer loop is the only retryer, so the
-      // child's own timeout is exactly the time left and the budget arithmetic
-      // stays honest. `viewField`'s internal retries stay for other callers.
-      last = readIntegrity(packageName, version, { timeoutMs: remainingBeforeRead })
+      last = read({ timeoutMs: remainingBeforeRead })
     } catch (error) {
       // ONLY an explicit transient verdict is retryable. Auth, fatal, shape
       // errors and plain programming errors are thrown as they are.
       if (error?.classification !== 'transient') throw error
       lastError = error
+      last = undefined
     }
-    if (last === integrity) return last
-    if (last !== undefined) {
-      // Readable and different: fail now, no amount of waiting changes it.
-      throw new Error(
-        `registry integrity mismatch for ${packageName}@${version}: registry ${last} != packed ${integrity}`,
-      )
+    if (lastError === undefined) {
+      if (matches(last)) return last
+      // `undefined` means "not readable yet", which is always propagation — never
+      // a mismatch. Only a value that IS readable but wrong is handed to the
+      // caller's policy.
+      if (last !== undefined) onMismatch(last)
     }
     const remaining = deadline - now()
     if (remaining <= 0) break
@@ -722,7 +749,7 @@ export function assertRegistryIntegrity(options) {
       stalled += 1
       if (stalled >= 3) {
         throw new Error(
-          `the readback clock is not advancing for ${packageName}@${version}: `
+          `the readback clock is not advancing for ${label}: `
           + `${attempts} attempts and ${stalled} consecutive iterations produced no measurable time, so the deadline can never be reached. `
           + 'This is a broken `now`/`sleep` seam, not a slow registry — refusing to poll forever.',
         )
@@ -735,13 +762,135 @@ export function assertRegistryIntegrity(options) {
   const elapsed = now() - started
   if (lastError !== undefined) {
     throw new Error(
-      `could not read ${packageName}@${version} back from the registry after ${attempts} attempts over ${elapsed}ms: ${String(lastError?.message ?? lastError)}`,
+      `could not read ${label} back from the registry after ${attempts} attempts over ${elapsed}ms: ${String(lastError?.message ?? lastError)}`,
     )
   }
   throw new Error(
-    `the registry does not report ${packageName}@${version} after publish; refusing to continue `
-    + `(waited ${elapsed}ms over ${attempts} attempts — a version can lag that long before it is readable)`,
+    `the registry does not report ${label} as ${expected ?? 'absent'} ${failureHint}; refusing to continue `
+    + `(waited ${elapsed}ms over ${attempts} attempts — a read can lag that long behind a successful command)`,
   )
+}
+
+/**
+ * Assert the registry's integrity for a just-published version matches ours.
+ *
+ * npm returns success once it has accepted the upload; this is the check that
+ * the artefact now readable from the registry is byte-identical to the one this
+ * run built. A mismatch fails the package (and therefore the release), because a
+ * silently different artefact is exactly what provenance exists to rule out.
+ *
+ * The retry/deadline machinery lives in {@link pollRegistryUntil}; what is
+ * specific here is that a readable but DIFFERENT integrity is a VERDICT, not a
+ * propagation delay.
+ *
+ * @param {object} options `package`, `version`, `integrity`, plus optional knobs:
+ *   `budgetMs`/`initialDelayMs`/`maxDelayMs` (the schedule), `sleep` (seam),
+ *   `now` (seam; defaults to the monotonic clock) and `readIntegrity` (seam;
+ *   defaults to the real registry read).
+ * @returns {string} the registry's integrity.
+ * @throws {Error} when the registry reports a different integrity, refuses the
+ *   read, fails unexpectedly, or still does not report the version when the
+ *   deadline passes.
+ */
+export function assertRegistryIntegrity(options) {
+  const {
+    package: packageName,
+    version,
+    integrity,
+    readIntegrity = singleAttemptIntegrity,
+    ...knobs
+  } = options
+  return pollRegistryUntil({
+    ...knobs,
+    label: `${packageName}@${version}`,
+    expected: integrity,
+    read: (readOptions) => readIntegrity(packageName, version, readOptions),
+    matches: (value) => value === integrity,
+    onMismatch: (value) => {
+      // Readable and different: fail now, no amount of waiting changes it.
+      throw new Error(
+        `registry integrity mismatch for ${packageName}@${version}: registry ${value} != packed ${integrity}`,
+      )
+    },
+  })
+}
+
+/**
+ * Wait until a dist-tag resolves to the expected version — or to nothing.
+ *
+ * A dist-tag move is NOT synchronous with the read path. On run 39249407401
+ * `npm dist-tag add @banbolee/dsh-fish-shell@0.8.2 latest` exited 0 and the very
+ * next `npm view …@latest version` still answered `0.8.1`, which the lane treated
+ * as fatal — after the promotion had already happened on the registry. The same
+ * applies in reverse: `npm dist-tag rm` can exit 0 while the tag is still served.
+ *
+ * So "the tag still shows the old version" and "the tag still exists" are
+ * PROPAGATION, and are waited out on the same six-minute deadline as the version
+ * readback. Only auth/fatal/shape/programming errors abort immediately.
+ *
+ * @param {string} packageName published npm name.
+ * @param {string} distTag the dist-tag to watch.
+ * @param {string | undefined} expected the version it must resolve to, or
+ *   `undefined` when the tag must be GONE.
+ * @param {object} [options] the same knobs as {@link pollRegistryUntil}, plus
+ *   `readDistTag` (seam).
+ * @returns {string | undefined} the value that matched.
+ */
+export function waitForDistTag(packageName, distTag, expected, options = {}) {
+  const { readDistTag = singleAttemptDistTag, ...knobs } = options
+  return pollRegistryUntil({
+    ...knobs,
+    label: `${packageName} dist-tag "${distTag}"`,
+    expected,
+    read: (readOptions) => readDistTag(packageName, distTag, readOptions),
+    matches: (value) => value === expected,
+    // A wrong-but-readable tag is propagation, so `onMismatch` deliberately does
+    // nothing and the loop keeps waiting.
+    failureHint: 'after npm dist-tag add/rm',
+  })
+}
+
+/**
+ * Wait for a candidate dist-tag to disappear, WITHOUT accepting someone else's tag.
+ *
+ * This is deliberately NOT `waitForDistTag(…, undefined)`. That function treats
+ * every readable-but-wrong value as propagation, which is right for `latest`
+ * (exactly one release may own it) and WRONG for a candidate tag: if the read
+ * comes back with a version THIS release did not publish, another release has
+ * taken the tag mid-cleanup. Reporting that as "removed" would silently hide a
+ * cross-release race, so the three outcomes are separated here:
+ *
+ *   - `undefined` → removed; done.
+ *   - the version this release published → still propagating; keep waiting.
+ *   - any OTHER readable version → ownership moved; fail immediately.
+ *
+ * @param {string} packageName published npm name.
+ * @param {string} candidateTag the candidate dist-tag.
+ * @param {string} expectedVersion the version this release owns.
+ * @param {object} [options] budget/seam overrides, plus `readDistTag` (seam).
+ * @returns {undefined} when the tag is gone.
+ * @throws {Error} when the tag turns out to belong to another release, or when it
+ *   never disappears inside the budget.
+ */
+export function waitForCandidateTagRemoval(packageName, candidateTag, expectedVersion, options = {}) {
+  const { readDistTag = singleAttemptDistTag, ...knobs } = options
+  return pollRegistryUntil({
+    ...knobs,
+    label: `${packageName} candidate tag "${candidateTag}"`,
+    expected: undefined,
+    read: (readOptions) => readDistTag(packageName, candidateTag, readOptions),
+    matches: (value) => value === undefined,
+    onMismatch: (value) => {
+      // Still our own version: the removal has not become visible yet.
+      if (value === expectedVersion) return
+      throw new Error(
+        `candidate tag "${candidateTag}" on ${packageName} now points at ${value}, not ${expectedVersion} `
+        + 'and not nothing. Another release took the tag while it was being removed; '
+        + 'it must not be reported as removed.',
+      )
+    },
+    failureHint: 'after npm dist-tag rm',
+  })
 }
 
 /**
