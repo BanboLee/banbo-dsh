@@ -34,7 +34,13 @@ import {
 import { RELEASE_PACKAGES, STAGED_PACKAGES, requireReleasePackage } from '../scripts/release/lib/packages.mjs'
 import { assertOutsideWorkspace, releaseMismatch, stageBundle } from '../scripts/release/release.mjs'
 import { MIN_NPM_VERSION, assertNpmCapability, checkNpmVersion, compareVersions } from '../scripts/release/lib/npm-capability.mjs'
-import { absenceNamesSpec, absenceSpecifierOf, classifyNpmFailure, normaliseViewAnswer } from '../scripts/release/lib/registry.mjs'
+import {
+  absenceNamesSpec,
+  absenceSpecifierOf,
+  classifyNpmFailure,
+  normaliseViewAnswer,
+  requestedResourceSpecifierOf,
+} from '../scripts/release/lib/registry.mjs'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -210,6 +216,32 @@ describe('npm view answer normalisation', () => {
 describe('npm failure classification (what "absent" is allowed to mean)', () => {
   const SPEC = '@banbolee/dsh-rtk@0.3.2'
 
+  /**
+   * The REAL `npm view` stderr for an absent version, captured from
+   * `npm view @banbolee/dsh-fish-shell@99.99.99 dist.integrity --json` against the
+   * public registry.
+   *
+   * Two facts about it are load-bearing and were both mis-handled once:
+   *
+   *   - the `No match found for version …` line names ONLY the version, not the
+   *     package, so the full spec must be recovered from the
+   *     `requested resource '<spec>'` line;
+   *   - the template's last sentence ends "…or you do not have permission to
+   *     access it", which is NOT auth evidence — it is printed for every absent
+   *     version. Matching it as auth blocked a real release at preflight.
+   */
+  const REAL_ABSENT_TEMPLATE = [
+    'npm error code E404',
+    'npm error 404 No match found for version 99.99.99',
+    'npm error 404',
+    "npm error 404  The requested resource '@banbolee/dsh-fish-shell@99.99.99' could not be found or you do not have permission to access it.",
+    'npm error 404',
+    'npm error 404 Note that you can also install from a',
+    'npm error 404 tarball, folder, http url, or git url.',
+    'npm error A complete log of this run can be found in: /home/runner/.npm/_logs/2026-10-19T08_56_34_017Z-debug-0.log',
+  ].join('\n')
+  const REAL_ABSENT_SPEC = '@banbolee/dsh-fish-shell@99.99.99'
+
   // These strings are REAL captures from this repository's registry, not invented
   // ones. A normal new version must classify as absent through every shape npm
   // uses, or a publishable release would be blocked; a throttled registry must
@@ -298,6 +330,171 @@ describe('npm failure classification (what "absent" is allowed to mean)', () => 
   it('treats anything else as fatal', () => {
     expect(classifyNpmFailure({ stderr: 'npm error code EACCES\nnpm error permission denied' }, { spec: SPEC })).toBe('fatal')
     expect(classifyNpmFailure({ stderr: '' }, { spec: SPEC })).toBe('fatal')
+  })
+
+  /* ------------------------- the real standard 404 template --- */
+
+  it('classifies the REAL absent-version template as absent, not auth', () => {
+    // The regression from run 39225827349: the template's fixed sentence "…or you
+    // do not have permission to access it" matched a broad auth signature, so a
+    // brand-new version that simply was not published yet blocked the release at
+    // preflight. The no-match line also names only the VERSION, so the spec has to
+    // be recovered from the `requested resource '<spec>'` line.
+    expect(classifyNpmFailure({ stderr: REAL_ABSENT_TEMPLATE }, { spec: REAL_ABSENT_SPEC })).toBe('absent')
+    // …and the version-only shape is recognised by the predicate itself.
+    expect(absenceNamesSpec(REAL_ABSENT_TEMPLATE, REAL_ABSENT_SPEC)).toBe(true)
+    // The extracted token is the bare version, which is why shape 2 exists.
+    expect(absenceSpecifierOf(REAL_ABSENT_TEMPLATE)).toBe('99.99.99')
+  })
+
+  it('does NOT let the template clause alone authorise absence', () => {
+    // The permission sentence must not become absence evidence by itself: with the
+    // no-match line removed, the same template is fatal.
+    const withoutNoMatch = REAL_ABSENT_TEMPLATE
+      .split('\n')
+      .filter((line) => !/No match found for version/u.test(line))
+      .join('\n')
+    expect(classifyNpmFailure({ stderr: withoutNoMatch }, { spec: REAL_ABSENT_SPEC })).toBe('fatal')
+    expect(absenceNamesSpec(withoutNoMatch, REAL_ABSENT_SPEC)).toBe(false)
+  })
+
+  it('keeps a DIFFERENT spec on the same template fatal', () => {
+    // The template is about 99.99.99; asking about 0.8.2 must not inherit it.
+    expect(classifyNpmFailure({ stderr: REAL_ABSENT_TEMPLATE }, { spec: '@banbolee/dsh-fish-shell@0.8.2' })).toBe('fatal')
+    expect(absenceNamesSpec(REAL_ABSENT_TEMPLATE, '@banbolee/dsh-fish-shell@0.8.2')).toBe(false)
+    // Another PACKAGE that shares the version string is equally not ours.
+    expect(classifyNpmFailure({ stderr: REAL_ABSENT_TEMPLATE }, { spec: '@banbolee/dsh-rtk@99.99.99' })).toBe('fatal')
+  })
+
+  it('still lets REAL auth evidence beat a proven absence', () => {
+    // A refused read can look like a 404, so a genuine credential error must win
+    // even when a no-match line is present. Each case keeps the real template and
+    // adds only the auth signal.
+    for (const evidence of [
+      'npm error code E401',
+      'npm error code E403',
+      'npm error code ENEEDAUTH',
+      'npm error code EOTP',
+      'npm error unauthorized',
+      'npm error forbidden',
+      'npm error Access token expired',
+    ]) {
+      expect(
+        classifyNpmFailure({ stderr: `${REAL_ABSENT_TEMPLATE}\n${evidence}` }, { spec: REAL_ABSENT_SPEC }),
+        evidence,
+      ).toBe('auth')
+    }
+  })
+
+  it('keeps mixed auth evidence auth even when the no-match is proven', () => {
+    // Both signals in one answer: the stronger one wins.
+    const mixed = `${REAL_ABSENT_TEMPLATE}\nnpm error code E403\nnpm error 403 Forbidden - PUT https://registry.npmjs.org/…`
+    expect(classifyNpmFailure({ stderr: mixed }, { spec: REAL_ABSENT_SPEC })).toBe('auth')
+  })
+
+  it.each([
+    ['You must be logged in to publish packages', 'npm error You must be logged in to publish packages.'],
+    ['You do not have permission to publish this package', 'npm error You do not have permission to publish this package.'],
+  ])('keeps the real auth phrase "%s" live alongside the 404 template', (_label, evidence) => {
+    // Narrowing the template clause must NOT blind the classifier to genuine
+    // credential failures. Both phrases mean what they say outside the fixed 404
+    // sentence, so a mixed output is auth — even though the no-match is proven.
+    const mixed = `${REAL_ABSENT_TEMPLATE}\n${evidence}`
+    expect(classifyNpmFailure({ stderr: mixed }, { spec: REAL_ABSENT_SPEC })).toBe('auth')
+    // …and each phrase is auth on its own, with no template present at all.
+    expect(classifyNpmFailure({ stderr: evidence }, { spec: REAL_ABSENT_SPEC })).toBe('auth')
+  })
+
+  /* ------------------- binding a version-only no-match to a package --- */
+
+  it('binds a version-only no-match only through the STANDARD requested-resource line', () => {
+    // The positive case is the real template, whose `requested resource` sentence
+    // names our spec on a line of its own.
+    expect(requestedResourceSpecifierOf(REAL_ABSENT_TEMPLATE)).toBe(REAL_ABSENT_SPEC)
+    expect(absenceNamesSpec(REAL_ABSENT_TEMPLATE, REAL_ABSENT_SPEC)).toBe(true)
+    // The bare version alone is not enough to bind.
+    const noResourceLine = REAL_ABSENT_TEMPLATE
+      .split('\n')
+      .filter((line) => !/The requested resource/u.test(line))
+      .join('\n')
+    expect(requestedResourceSpecifierOf(noResourceLine)).toBeUndefined()
+    expect(absenceNamesSpec(noResourceLine, REAL_ABSENT_SPEC)).toBe(false)
+    expect(classifyNpmFailure({ stderr: noResourceLine }, { spec: REAL_ABSENT_SPEC })).toBe('fatal')
+  })
+
+  it('does NOT bind when the requested-resource line names ANOTHER package', () => {
+    // Reviewer counter-example: a foreign package's standard sentence, with our
+    // spec quoted elsewhere in the output. Searching the answer for `'<spec>'`
+    // would have accepted this; anchoring to the sentence does not.
+    const foreign = [
+      'npm error code E404',
+      'npm error 404 No match found for version 99.99.99',
+      "npm error 404  The requested resource '@banbolee/dsh-other@99.99.99' could not be found or you do not have permission to access it.",
+      "npm notice original request: '@banbolee/dsh-fish-shell@99.99.99'",
+    ].join('\n')
+    expect(requestedResourceSpecifierOf(foreign)).toBe('@banbolee/dsh-other@99.99.99')
+    expect(absenceNamesSpec(foreign, REAL_ABSENT_SPEC)).toBe(false)
+    expect(classifyNpmFailure({ stderr: foreign }, { spec: REAL_ABSENT_SPEC })).toBe('fatal')
+  })
+
+  it.each([
+    ['a notice quoting our spec', "npm notice publishing '@banbolee/dsh-fish-shell@99.99.99' next"],
+    ['an echoed original request', "npm notice original request: '@banbolee/dsh-fish-shell@99.99.99'"],
+    ['an arbitrary quoted line', "npm error something else entirely about '@banbolee/dsh-fish-shell@99.99.99'"],
+  ])('does NOT bind on %s alone', (_label, line) => {
+    // Only the STANDARD SENTENCE may bind. Our spec quoted anywhere else says
+    // nothing about what the registry failed to find.
+    const text = [
+      'npm error code E404',
+      'npm error 404 No match found for version 99.99.99',
+      line,
+    ].join('\n')
+    expect(requestedResourceSpecifierOf(text)).toBeUndefined()
+    expect(absenceNamesSpec(text, REAL_ABSENT_SPEC)).toBe(false)
+    expect(classifyNpmFailure({ stderr: text }, { spec: REAL_ABSENT_SPEC })).toBe('fatal')
+  })
+
+  it('does NOT bind on a requested-resource line that is not the standard sentence', () => {
+    // Same words, different sentence shape (e.g. embedded mid-line): still unbound.
+    const notStandard = [
+      'npm error code E404',
+      'npm error 404 No match found for version 99.99.99',
+      "npm warn while handling '@banbolee/dsh-fish-shell@99.99.99' the requested resource was missing",
+    ].join('\n')
+    expect(requestedResourceSpecifierOf(notStandard)).toBeUndefined()
+    expect(absenceNamesSpec(notStandard, REAL_ABSENT_SPEC)).toBe(false)
+  })
+
+  it.each([
+    ['npm notice', 'npm notice'],
+    ['npm warn', 'npm warn'],
+  ])('does NOT bind on a complete standard sentence emitted as %s', (_label, channel) => {
+    // The sentence is IDENTICAL to the real template; only the CHANNEL differs.
+    // A warning or notice is advisory — npm uses those channels for hints and
+    // echoed request details — so binding on one would let an advisory line
+    // authorise a publish. Only `npm error` (or an explicit 404) may bind.
+    const sentence = `The requested resource '${REAL_ABSENT_SPEC}' could not be found or you do not have permission to access it.`
+    const text = [
+      'npm error code E404',
+      'npm error 404 No match found for version 99.99.99',
+      `${channel} ${sentence}`,
+    ].join('\n')
+    expect(requestedResourceSpecifierOf(text)).toBeUndefined()
+    expect(absenceNamesSpec(text, REAL_ABSENT_SPEC)).toBe(false)
+    expect(classifyNpmFailure({ stderr: text }, { spec: REAL_ABSENT_SPEC })).toBe('fatal')
+  })
+
+  it('still binds the real `npm error 404` template and a bare 404 status line', () => {
+    // The positive controls for the tightened pattern: the captured template binds,
+    // and so does the same sentence behind an explicit status with no npm prefix
+    // (a caller that captured the raw registry body).
+    expect(requestedResourceSpecifierOf(REAL_ABSENT_TEMPLATE)).toBe(REAL_ABSENT_SPEC)
+    expect(classifyNpmFailure({ stderr: REAL_ABSENT_TEMPLATE }, { spec: REAL_ABSENT_SPEC })).toBe('absent')
+
+    const sentence = `The requested resource '${REAL_ABSENT_SPEC}' could not be found or you do not have permission to access it.`
+    const bare = ['npm error code E404', 'npm error 404 No match found for version 99.99.99', `404  ${sentence}`].join('\n')
+    expect(requestedResourceSpecifierOf(bare)).toBe(REAL_ABSENT_SPEC)
+    expect(classifyNpmFailure({ stderr: bare }, { spec: REAL_ABSENT_SPEC })).toBe('absent')
   })
 
   it('exposes the absence predicate it uses', () => {

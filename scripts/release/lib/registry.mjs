@@ -65,18 +65,74 @@ const AUTH_SIGNATURES = [
   /\bunauthorized\b/i,
   /\bforbidden\b/i,
   /\bauthentication (?:failed|required)\b/i,
-  /\byou (?:must be logged in|do not have permission)\b/i,
+  // These two are REAL auth phrases npm emits for a publish the caller is not
+  // allowed to make (`You must be logged in to publish packages`,
+  // `You do not have permission to publish this package`). They are restored here
+  // because the fix for the 404 template must not blind the classifier to genuine
+  // credential failures.
+  //
+  // The ONLY reason they are safe again is that {@link withoutStandardTemplateClause}
+  // removes the 404 template's fixed permission sentence from the auth input
+  // BEFORE these run. Outside that one sentence, both phrases mean what they say.
+  /\byou must be logged in\b/i,
+  /\byou do not have permission\b/i,
   /\bincorrect or missing password\b/i,
   /\bAccess token expired\b/i,
 ]
 
 /**
+ * The permission clause npm puts in EVERY standard 404.
+ *
+ * The real template (captured from `npm view @banbolee/dsh-fish-shell@99.99.99`
+ * against the public registry) is:
+ *
+ *     npm error code E404
+ *     npm error 404 No match found for version 99.99.99
+ *     npm error 404  The requested resource '@banbolee/dsh-fish-shell@99.99.99' could not be found
+ *                    or you do not have permission to access it.
+ *
+ * That last sentence is a fixed part of the template: it appears for a version
+ * that simply does not exist, with no authentication problem anywhere in the run.
+ * Matching `you do not have permission` as auth evidence therefore turned the
+ * MOST COMMON correct answer — "this new version is not published yet" — into an
+ * auth failure, and blocked the release before it could publish anything.
+ *
+ * So ONLY this exact sentence is neutralised before the auth signatures are
+ * evaluated; every other occurrence of the phrase stays live. The pattern is
+ * anchored to the whole standard wording, so a genuine
+ * `You do not have permission to publish this package` is NOT touched and still
+ * classifies as auth.
+ */
+const STANDARD_404_PERMISSION_CLAUSE = /could not be found or you do not have permission to access it/gu
+
+/**
+ * Remove the template's permission clause, keeping everything else intact.
+ *
+ * Deliberately narrow: it rewrites the standard sentence's tail to
+ * `could not be found`, which is what the sentence means when there is no auth
+ * problem. A different sentence that merely contains the words "you do not have
+ * permission" is left alone and continues to match {@link AUTH_SIGNATURES}.
+ *
+ * @param {string} text the captured stderr/stdout/message.
+ * @returns {string} the same text without the standard 404 permission sentence.
+ */
+function withoutStandardTemplateClause(text) {
+  return text.replace(STANDARD_404_PERMISSION_CLAUSE, 'could not be found')
+}
+
+/**
  * The one absence phrase that identifies WHAT was not found.
  *
- * `npm view` prints `No match found for version <spec>` for an absent version or
- * dist-tag, and `npm pack` prints `notarget No matching version found for <spec>`.
- * Both name the requested specifier ON THE SAME LINE, which is what makes the
- * answer about OUR request rather than about something else that happened to 404.
+ * `npm view` prints `No match found for version <specifier>` for an absent version
+ * or dist-tag, and `npm pack` prints `notarget No matching version found for
+ * <specifier>`. Two shapes of `<specifier>` occur in practice:
+ *
+ *   - the FULL spec (`@scope/pkg@1.2.3`) — `npm pack`'s `notarget` shape;
+ *   - ONLY the version/tag (`1.2.3`) — `npm view`'s `No match found for version`
+ *     shape, verified against the real CLI.
+ *
+ * Both are handled by {@link absenceNamesSpec}, which pairs the version-only form
+ * with the `requested resource '<full spec>'` line npm prints in the same answer.
  *
  * A bare `E404` is deliberately NOT accepted: a 404 can be an unpublished
  * package, a mis-typed registry path, a scoped-name encoding problem, or a
@@ -115,42 +171,125 @@ export function absenceSpecifierOf(text) {
 }
 
 /**
+ * npm's standard `requested resource` sentence, anchored to a WHOLE ERROR line.
+ *
+ * The real line (captured from `npm view @banbolee/dsh-fish-shell@99.99.99`) is:
+ *
+ *     npm error 404  The requested resource '@banbolee/dsh-fish-shell@99.99.99' could not be found or you do not have permission to access it.
+ *
+ * This is the ONLY thing allowed to bind a version-only no-match to a package,
+ * and it must be an ERROR line. Two accepted shapes:
+ *
+ *   - `npm error <status> The requested resource '<spec>' …` — the real template;
+ *   - `<status> The requested resource '<spec>' …` with an explicit 3-digit
+ *     status, for a caller that captured the raw registry body instead of npm's
+ *     prefixed output.
+ *
+ * `npm warn` and `npm notice` lines are deliberately REJECTED even when they carry
+ * the identical sentence. A warning or notice is advisory: npm uses that channel
+ * for hints, deprecation chatter and echoed request details, and a NOTICE saying
+ * "the requested resource … could not be found" is not the registry's verdict on
+ * the version being published. Binding on it would let an advisory line authorise
+ * a publish, which is the one decision this module must never hand to a hint.
+ *
+ * It is matched as a complete sentence with an explicit capture, NOT by searching
+ * the answer for `'<spec>'`: a quoted spec can appear in a notice, in an echoed
+ * original request, in a "did you mean" hint, or in any other quoted line, and
+ * none of those say anything about what the registry failed to find.
+ */
+const REQUESTED_RESOURCE_LINE = /^\s*(?:npm error\s+|\s*)(?<status>\d{3})\s+The requested resource '(?<spec>[^']+)' could not be found or you do not have permission to access it\.?\s*$/iu
+
+/**
+ * The full specifier named by npm's `requested resource` ERROR line, or `undefined`.
+ *
+ * Line-anchored and channel-restricted: the sentence must occupy the whole line,
+ * be prefixed by `npm error` (or carry an explicit 3-digit status), and be the
+ * standard wording. Anything else — the phrase embedded in a longer sentence, a
+ * different wording, a `npm warn`/`npm notice` variant, a quoted spec somewhere
+ * else — yields `undefined`, and the caller then refuses to bind.
+ *
+ * @param {string} text the captured stderr/stdout/message.
+ * @returns {string | undefined} the specifier the standard sentence names.
+ */
+export function requestedResourceSpecifierOf(text) {
+  if (typeof text !== 'string') return undefined
+  for (const line of text.split(/\r?\n/u)) {
+    const match = REQUESTED_RESOURCE_LINE.exec(line)
+    if (match?.groups?.spec !== undefined) return match.groups.spec
+  }
+  return undefined
+}
+
+/**
  * Whether one failure is a no-match answer about the EXACT requested specifier.
  *
- * The comparison is a full-string equality, not a substring test. Substring
+ * The comparison is a full-string equality, never a substring test. Substring
  * matching is a real hazard here: `0.3.2` is a prefix of `0.3.20`, and
- * `@scope/pkg` is a substring of `@scope/pkg-extra`, so a loose `includes()`
- * would accept another package's or another version's absence as ours — and
- * "ours is absent" is the answer that authorises a publish.
+ * `@scope/pkg` is a substring of `@scope/pkg-extra`, so a loose `includes()` would
+ * accept another package's or another version's absence as ours — and "ours is
+ * absent" is the answer that authorises a publish.
+ *
+ * Two accepted shapes, both of which tie the answer to OUR request:
+ *
+ *   1. the no-match line names the full spec (npm's `notarget` shape);
+ *   2. the no-match line names ONLY the version/tag (npm's `No match found for
+ *      version <v>` shape) AND npm's standard `requested resource '<full spec>'`
+ *      sentence — matched as a WHOLE line — names exactly our spec. That sentence
+ *      is what proves the bare version belongs to the package we asked about
+ *      rather than to some other package sharing the version string.
+ *
+ * Shape 2 is deliberately NOT satisfied by finding `'<spec>'` anywhere in the
+ * answer: an unrelated package's `requested resource` line, a notice quoting our
+ * spec, or an echoed original request must all leave the answer unbound.
  *
  * @param {string} text the captured stderr/stdout/message.
  * @param {string} spec the requested `<package>@<version|tag>`.
- * @returns {boolean} whether the no-match line names exactly `spec`.
+ * @returns {boolean} whether the answer is a no-match about exactly `spec`.
  */
 export function absenceNamesSpec(text, spec) {
   if (typeof spec !== 'string' || spec === '') return false
   const named = absenceSpecifierOf(text)
-  return named !== undefined && named === spec
+  if (named === undefined) return false
+  // Shape 1: the line names the whole specifier.
+  if (named === spec) return true
+  // Shape 2: the line names only the version/tag, and npm's standard
+  // `requested resource` SENTENCE names exactly our specifier.
+  const at = spec.lastIndexOf('@')
+  if (at <= 0) return false
+  const versionPart = spec.slice(at + 1)
+  if (named !== versionPart) return false
+  const resource = requestedResourceSpecifierOf(text)
+  return resource !== undefined && resource === spec
 }
 
 /**
- * Classify one failed `npm` invocation into the three answers this lane needs.
+ * Classify one failed `npm` invocation into the answers this lane needs.
  *
- * PRECEDENCE IS THE POINT, and it is auth → transient → absence → fatal:
+ * PRECEDENCE, and why it is this order:
  *
- *   - an auth failure is never "absent". npm reports some unauthorised reads as
- *     404, and treating that as absence makes the lane publish over a package it
- *     simply cannot see;
- *   - a transient failure (429, 5xx, connection reset) is never "absent" either:
- *     "we could not ask" must not become "it does not exist";
- *   - absence requires a no-match LINE that names the requested specifier
- *     EXACTLY (see {@link absenceNamesSpec}); a bare `E404`/`ETARGET`, a
- *     specifier mentioned only in the echoed command, or another package's
- *     absence is fatal;
- *   - everything else is fatal and propagates.
+ *   1. **A proven no-match about OUR request is `absent`, even when the standard
+ *      404 template is present.** npm's fixed template ends with "…could not be
+ *      found or you do not have permission to access it", which is NOT auth
+ *      evidence — it is printed for every absent version. The proof required here
+ *      is exact: the no-match line must name our spec (or our version together
+ *      with the `requested resource '<our spec>'` line). Anything weaker falls
+ *      through.
+ *   2. **Genuine auth evidence beats absence.** An `E401`/`E403`/`ENEEDAUTH`/
+ *      `EOTP` code, an `unauthorized`/`forbidden` message, or an expired-token
+ *      message means the read was REFUSED — so even if a no-match line is also
+ *      present, the answer is `auth`. npm reports some unauthorised reads as 404,
+ *      and treating that as absence would publish over a package we cannot see.
+ *      The template's permission CLAUSE is stripped before this check so it
+ *      cannot masquerade as such evidence.
+ *   3. **Transient evidence beats absence too** ("we could not ask" must not
+ *      become "it does not exist").
+ *   4. Everything else is `fatal` — including a bare `E404`/`ETARGET`, a
+ *      specifier that appears only in the echoed command, and another package's
+ *      or another version's absence.
  *
- * A mixed answer (e.g. a 404 page that also mentions a timeout) therefore
- * classifies by the stronger signal: auth or transient wins over absence.
+ * Note that steps 1 and 2 are ordered so that a PROVEN absence wins over the
+ * template clause but loses to a real credential error; both directions are
+ * covered by tests with the real captured template.
  *
  * @param {unknown} error the thrown execFileSync error.
  * @param {object} [context] what was being asked for.
@@ -163,19 +302,25 @@ export function classifyNpmFailure(error, context = {}) {
   // `error.message` is EXCLUDED from the absence decision. execFileSync puts the
   // whole command line there (`Command failed: npm view @scope/pkg@1.2.3 …`), so
   // including it would let the REQUESTED spec appear in the "answer" no matter
-  // what the registry said — the exact confusion this function must not make. It
-  // is still consulted for auth/transient, where a message-only signal is safe.
+  // what the registry said — the exact confusion this function must not make.
   const answer = `${stderr}\n${stdout}`
-  const everything = `${answer}\n${String(error?.message ?? '')}`
-
-  // 1. Auth first: a 404 for a package this caller cannot see is not absence.
-  if (AUTH_SIGNATURES.some((pattern) => pattern.test(everything))) return 'auth'
-  // 2. Transient next: the registry did not answer definitively.
-  if (TRANSIENT_SIGNATURES.some((pattern) => pattern.test(everything))) return 'transient'
-
-  // 3. Absence needs a no-match LINE naming the requested specifier exactly.
   const spec = typeof context.spec === 'string' && context.spec !== '' ? context.spec : undefined
-  if (spec !== undefined && absenceNamesSpec(answer, spec)) return 'absent'
+
+  // 1. A PROVEN no-match about our request is absence, even though the standard
+  //    404 template also carries the permission clause.
+  const provenAbsent = spec !== undefined && absenceNamesSpec(answer, spec)
+
+  // 2. Genuine auth evidence, with the template clause neutralised first. A real
+  //    credential error wins over an absence claim, because a refused read can
+  //    look like a 404.
+  const authEvidence = withoutStandardTemplateClause(`${answer}\n${String(error?.message ?? '')}`)
+  if (AUTH_SIGNATURES.some((pattern) => pattern.test(authEvidence))) return 'auth'
+
+  // 3. Transient evidence.
+  if (TRANSIENT_SIGNATURES.some((pattern) => pattern.test(`${answer}\n${String(error?.message ?? '')}`))) return 'transient'
+
+  // 4. The proven absence from step 1.
+  if (provenAbsent) return 'absent'
   return 'fatal'
 }
 
