@@ -237,6 +237,9 @@ function mountBackend(options: { collect?: () => Record<string, string> } = {}):
   ctx.provide('sandbox', { confine: vi.fn() } as never)
   ctx.provide('terminals', { hasOwnerActivity: () => false } as never)
   ctx.provide('sessionProjections', { stateOf: () => undefined } as never)
+  // 0.2.1's official backend resolves the child cwd through this service when
+  // the spawn spec carries no explicit `cwd`; without it `spawn()` throws.
+  ctx.provide('workingDirectory', { ensure: vi.fn(async () => '/ws') } as never)
   ctx.provide('subprocess', {
     spawnTerminal: vi.fn(async (spec: SubprocessTerminalSpawnSpec) => {
       spawned.push(spec)

@@ -10,7 +10,7 @@ command — no need to clone this repository. MIT licensed.
 
 ## Quick install (users)
 
-Prerequisites: `dsh` (0.2.0-rc.2 family), Node.js >= 22, pnpm 9.x.
+Prerequisites: `dsh` (0.2.1-rc.2 family), Node.js >= 22, pnpm 9.x.
 
 Install whichever bundles you need:
 
@@ -126,6 +126,39 @@ corepack pnpm test:e2e:headless
 Requires Node 22, `dsh`, and fish. Override executable locations with
 `DSH_REAL_E2E_DSH_BIN`, `DSH_REAL_E2E_NODE_BIN`, `DSH_REAL_E2E_RTK_BIN`, and
 `DSH_REAL_E2E_CODEGRAPH_BIN`.
+
+### Releasing (maintainers)
+
+Releases go through one manual workflow, [`.github/workflows/release.yml`](./.github/workflows/release.yml),
+and a dispatch always releases **all six bundles at one commit**:
+
+```sh
+gh workflow run release.yml -f release_sha=<40-character SHA on main> -f dry_run=true
+```
+
+`dry_run` defaults to `true`: it packs and validates all six tarballs and uploads
+the release journal without touching the registry. Set `dry_run=false` to
+publish. The lane runs every deterministic gate first, then packs once, publishes
+serially under the `next` candidate tag with `npm publish --provenance --access
+public`, verifies each version's registry integrity, and only after all six
+succeed promotes `latest`, removes the candidate tag, and creates six annotated
+tags plus six GitHub Releases at the same commit.
+
+Authentication is npm Trusted Publishing (OIDC, no long-lived secret); the
+`id-token: write` permission is what signs provenance. Two things must be true on
+npmjs.com for this to work: the Trusted Publisher has to authorise **both publish
+and dist-tag** (the lane moves `latest` and removes the candidate tag with the same
+OIDC identity), and the npm CLI has to be **11.21.0 or newer** — `publish` speaks
+tokenless OIDC from 11.5.1, but `dist-tag` only from 11.21.0, so an older CLI would
+publish all six versions and then fail at the first promotion. The workflow pins
+that version and `preflight` refuses to start on anything older.
+
+A published npm version is immutable, so a partial failure is **never** retried
+blindly: the uploaded journal records what reached the registry. Re-dispatch with
+`prior_run_id` and the journal is verified (same commit, tag and
+versions) and resumed — already-published versions are skipped, `finalize` only
+promotes what has not been promoted yet, and an existing GitHub Release is accepted
+only when its tag, target and title match this dispatch.
 
 ## License
 

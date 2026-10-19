@@ -389,7 +389,7 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
     const managed = computeStandardInventory(renderComposition(templateText, 'probe'))
     expect(managed.digest).toBe(shipped.templateDigest)
     expect(managed.tools).toEqual(shipped.tools)
-    expect(shipped.dshVersion).toMatch(/^0\.2\.0-rc\.\d+$/)
+    expect(shipped.dshVersion).toMatch(/^0\.2\.1-rc\.\d+$/)
   })
 
   // The official `standard` composition lives in the `preset-standard` row of
@@ -451,12 +451,25 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
       expect(shared.length, 'the template must still be a copy of standard').toBeGreaterThan(15)
       expect(managedById.size - shared.length, 'only the 3 added rows may be ours alone').toBe(3)
 
+      // Rows whose config this bundle EXTENDS on purpose. Each entry names the
+      // exact extra key path, so a different drift in the same row still fails.
+      //
+      // `persona.suffix` used to be part of the official `standard` composition
+      // (through 0.2.0-rc.2); 0.2.1 dropped it. This bundle keeps stating its own
+      // working-directory line, which is a deliberate copy-level addition — the
+      // required official key (`prefix`) must still be present verbatim.
+      const deliberateExtras: Readonly<Record<string, readonly string[]>> = {
+        persona: ['suffix'],
+      }
+
       for (const id of shared) {
         const expected = officialById.get(id)!
         const actual = managedById.get(id)!
-        expect(configKeyPaths(actual.config), `row ${id}: config shape drifted from official`).toEqual(
-          configKeyPaths(expected.config),
-        )
+        const extras = deliberateExtras[id] ?? []
+        expect(
+          configKeyPaths(actual.config).filter((path) => !extras.includes(path)),
+          `row ${id}: config shape drifted from official`,
+        ).toEqual(configKeyPaths(expected.config))
         expect(actual.isolate, `row ${id}: isolate drifted from official`).toEqual(expected.isolate)
         expect(actual.disabled, `row ${id}: disabled gate drifted from official`).toEqual(expected.disabled)
       }
@@ -475,7 +488,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
   const options = (root: string, definitions: unknown[], extra: Record<string, unknown> = {}) => ({
     rootDir: root,
     definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-    dshVersion: '0.2.0-rc.2',
+    dshVersion: '0.2.1-rc.2',
     selfVersion: '0.0.0',
     ...extra,
   })
@@ -542,7 +555,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
     expect(abi.agents[0].presetId).toBe('my-lead')
     expect(abi.agents[0].hasMain).toBe(true)
     expect(abi.agents[0].toolName).toBe('agent_my_lead')
-    expect(abi.dshVersion).toBe('0.2.0-rc.2')
+    expect(abi.dshVersion).toBe('0.2.1-rc.2')
     // The marker names no preset count any more: presets are not compiled here.
     expect(JSON.parse(readFileSync(join(result.generationDir, COMPLETE_MARKER), 'utf8')))
       .not.toHaveProperty('presets')
@@ -790,7 +803,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.2.0-rc.2',
+        dshVersion: '0.2.1-rc.2',
         selfVersion: '0.0.0',
       } as never)
 
@@ -841,7 +854,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.2.0-rc.2',
+        dshVersion: '0.2.1-rc.2',
         selfVersion: '0.0.0',
       } as never)
 

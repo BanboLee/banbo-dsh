@@ -119,7 +119,7 @@ below for the authoritative scope before deploying elsewhere.
 
 | Item | Supported | Verified |
 |---|---|---|
-| `@deepseek-ai/*` dsh family | `0.2.0-rc.2` — the exact pins live in the repository root `package.json` (`pnpm.overrides`) | yes: real isolated profiles in the S0 probe runs |
+| `@deepseek-ai/*` dsh family | `0.2.1-rc.2` — the exact pins live in the repository root `package.json` (`pnpm.overrides`) | yes: real isolated profiles in the S0 probe runs |
 | `fish` | `3.7+` | yes on `3.7.1`; lower versions are unverified |
 | Platform | POSIX only: Linux and macOS. Windows is not supported (the `pwsh` family covers it) | Linux: the real lane with `DSH_REAL_FISH_PTY=1` in the `test` job; macOS: the `fish-pty-macos` job runs the real L2 lane, including the `workspace-write` denial outside the workspace |
 | Node.js | `>=22` (`engines.node`) | yes |
@@ -225,7 +225,7 @@ The patch appends one `insert` group, `fish-terminal-group`, at the end of
 |---|---|---|
 | `pty` | `@deepseek-ai/dsh-terminal` | — |
 | `terminal-fish-pty` | `@banbolee/dsh-fish-shell/terminal` | `shellPath: fish`, `shellArgs: ["--no-config","-i","-C", <FISH_PROMPT_SETUP>]`, `timeoutMs: 300000` |
-| `terminal-tools` | `@deepseek-ai/dsh-tool-terminal` | — |
+| `terminal-tools` | `@banbolee/dsh-fish-shell/tool-terminal` | — |
 | `fish-terminal-tools` | `@banbolee/dsh-fish-shell/terminal-tools` | `terminalTools: allow` |
 
 The group row is `cordis:group` with `group: true` and
@@ -282,13 +282,25 @@ an interactive surface exists.
 
 **The bundled `@deepseek-ai/dsh-tool-terminal`.** The `terminal-tools` row
 resolves the official tool package from inside this package, not from the
-profile plane: `@deepseek-ai/dsh-tool-terminal@0.2.0-rc.2` is declared in
+profile plane: `@deepseek-ai/dsh-tool-terminal@0.2.1-rc.2` is declared in
 `dependencies` and `bundledDependencies`, so packing ships it, and its
 transitive dependencies, as real files under `node_modules/` inside the
 tarball. That is what makes an offline profile install work. It must not be
 moved to `peerDependencies`: peer resolution would look for a profile-plane
 copy, which is exactly what this design avoids. Versions, origins and licenses
 are listed in `./THIRD-PARTY-NOTICES.md`.
+
+Since dsh `0.2.1-rc.2` the row names **`@banbolee/dsh-fish-shell/tool-terminal`**
+rather than the bare package. The dsh installation now ships
+`@deepseek-ai/dsh-tool-terminal` itself (through
+`@deepseek-ai/dsh-experimental-terminal-bundle`), and the profile-scope runtime
+resolution only records an entry for a name the installation does *not* already
+supply — so a bare name would select the harness copy and the bundled one would
+never load. `tool-terminal.js` is this package's handle on its own copy: it
+resolves the dependency with `createRequire(import.meta.url)` (the copy beside
+it in a packed tarball, the repository's link to the same pinned version in a
+checkout) and re-exports the plugin surface unchanged. The offline lane asserts
+that the resolved module really lives inside the installed bundle.
 
 ## Security model
 
@@ -475,7 +487,7 @@ bundled dependency and fails with
 `ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`. Check the artefact: the
 tarball must contain
 `package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json`. One
-upstream cause is not ours to fix: `@deepseek-ai/dsh-tool-terminal@0.2.0-rc.2`
+upstream cause is not ours to fix: `@deepseek-ai/dsh-tool-terminal@0.2.1-rc.2`
 declares `exports` entries for `./src/*` that the published tarball does not
 contain, so anything resolving through that subpath fails with
 `ERR_MODULE_NOT_FOUND`.

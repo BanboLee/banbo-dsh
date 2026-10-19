@@ -123,16 +123,29 @@ function baseRootEntries(toolsMode: 'native' | 'code' | 'ptc', workspace: string
     "  name: '@deepseek-ai/dsh-tool-str-replace-editor'",
     '- id: system-prompt',
     "  name: '@deepseek-ai/dsh-system-prompt'",
+    // 0.2.1 split the session working directory out of `dsh-fs` into its own
+    // service, and `@deepseek-ai/dsh-tool-fs` now injects it: without this row
+    // the `write`/`edit`/`read` tools never activate (they stay `pending` on a
+    // service nobody provides), so every composition case silently had no tool
+    // to call. The service injects `fs`, `sessionProjections` and
+    // `systemPrompt`, and it reads a real `Session` (`session.snapshotEvents()`
+    // through the projection registry), so the official `session` row is part of
+    // the same seam. The official base mounts all three with no config.
+    '- id: session',
+    "  name: '@deepseek-ai/dsh-session'",
+    '- id: session-projection',
+    "  name: '@deepseek-ai/dsh-session-projection'",
+    '- id: working-directory',
+    "  name: '@deepseek-ai/dsh-working-directory'",
   ]
   if (mode === 'ptc') {
     // PTC programs run through the node PTC runtime, which injects the sandbox
-    // seams (`fs`, `subprocess`, `sandbox`, `sandboxPolicy`); `sandboxPolicy`
-    // in turn injects `sessionProjections`. `danger-full-access` skips
-    // confinement entirely, matching the unconfined runtime this harness
-    // mounted before the PTC/sandbox seams were split.
+    // seams (`fs`, `subprocess`, `sandbox`, `sandboxPolicy`). `danger-full-access`
+    // skips confinement entirely, matching the unconfined runtime this harness
+    // mounted before the PTC/sandbox seams were split. `session-projection` is
+    // already mounted above (the working-directory service needs it), so it is
+    // not repeated here — two rows with one id would collide in the Loader.
     entries.push(
-      '- id: session-projection',
-      "  name: '@deepseek-ai/dsh-session-projection'",
       '- id: sandbox',
       "  name: '@deepseek-ai/dsh-sandbox-local'",
       '- id: sandbox-policy',

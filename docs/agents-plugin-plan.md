@@ -1277,7 +1277,7 @@ delegateOne(parent, agentId, prompt, mode)
 3. 检查并占用并发槽；
 4. 读取目标最新模型设置；
 5. 校验 live presetId/mainAgentId/generation 与 active catalog 一致，再根据公开 delegationDepth 计算 remainingDepth，组装 persona、toolFilter、agentOptions、统一 maxDepth，并登记本次身份写入（11.1.1：continuable 进 pending 表待写持久 event；one-shot 留待 `start()` 返回后写 live map）；label 只作人类可读展示，格式为 `<agentId>: <description>`，**不得**作为权限判定依据；
-6. 把本次 holder 登记进 HolderRegistry（10.8），再调用官方 `ctx.subagents.start()` 或 `startContinuable()`；continuable 必须在 child 首次模型请求前完成持久写入，one-shot 在 `start()` 返回后用 `run.id` 建立 map 条目；
+6. 把本次 holder 登记进 HolderRegistry（10.8），再调用官方 `ctx.subagents.startActivation()`（`0.2.1-rc.2` 起 `start()`/`startContinuable()` 已删除：预留 `childId` 即 local activation，`delivery` 区分 one-shot `caller` 与 kept `parent`）；continuable 必须在 child 首次模型请求前完成持久写入，one-shot 在 `startActivation()` 返回后用 `childId` 建立 map 条目；
 7. 在完成、失败、取消、deadline 或 dispose 后释放对应 running 槽，收束 holder 并从 registry 注销，最后标准化错误和返回；grace 内未收束时把 holder 留在 registry 并如实标注。
 
 它不负责：
@@ -1325,7 +1325,7 @@ Research、Explorer 的 `continuation` 固定 one-shot。Planner、Executor、Im
 后台 one-shot 生命周期固定为：
 
 1. 工具先向官方 jobs service 注册一个父 Agent 所有的 Task，并返回 `jobId`、agentId 和状态；
-2. Task 使用自己的 AbortController 调用 `ctx.subagents.start()`，保留返回的 `SubagentRun`；
+2. Task 使用自己的 AbortController 调用 `ctx.subagents.startActivation()`，保留返回的 `SubagentActivation`；
 3. Task await `run.result`，把 stopReason/output 映射为一次官方 jobs completion/failure 通知；它不是 continuable child，不发送 subagent settlement notice，也不返回 childId；
 4. 无论完成、错误或取消，`finally` 都 await `run.dispose()` 后才让 Task terminal；
 5. **后台同样受 `backgroundDeadlineMs` 约束**（默认 1800000 / 30 分钟，clamp `[60000, 7200000]`）：到期对 Task signal 发 cancel，并给 `drainGraceMs` 等待 `run.dispose()` 收束。grace 内收束 → Task 以 `killed` terminal；grace 用尽仍未收束 → holder 留在 HolderRegistry 并记 `cleanup_deferred`，Task 以 `failed` terminal 并在 detail 里注明"清理已移交 registry"。**后台路径不能没有 deadline**——没有它，一个挂死的后台 run 会永久占着 `maxConcurrentChildren` 的一个槽，最终耗尽该 root Session 的全部委派容量；
@@ -1378,7 +1378,7 @@ interface BatchArgs {
 - `continuation` **不是** batch 的契约关注点：每个 item 都以 one-shot 执行，目标是否支持续聊不改变这次执行的任何一步，因此这里没有可拒绝的东西（早期版本曾整体拒绝 `optional` 目标，理由见 10.7.1 的纠正）；
 - 两个 `agentId` 是否合法（存在、未退役、有 `child` 形态）属于契约级；它是否**被授权给当前调用者**属于授权级。前者是定义事实，后者是调用上下文事实；
 - `deadlineMs` 是 batch 的**唯一等待边界**；0、负数、NaN、非数字、超上限一律拒绝整个调用，不做静默截断（调用方需要知道自己拿到的是什么语义）；
-- one-shot 使用 `ctx.subagents.start()`；每个 item 一个 holder，`run.dispose()` 在全路径恰好调用一次（由 batch 或 cleanup registry 之一完成，见 10.8）；
+- one-shot 使用 `ctx.subagents.startActivation()`；每个 item 一个 holder，`run.dispose()` 在全路径恰好调用一次（由 batch 或 cleanup registry 之一完成，见 10.8）；
 - `Promise.allSettled`：部分失败不取消其他任务；deadline 到期时停止等待未完成任务；
 - batch 调用本身消耗父 Agent 当前的一次工具调用，每个 child 消耗一层 delegationDepth；
 - 所有 one-shot start 使用 item AbortController 与 batch tool `exec.signal` 融合后的 signal，它是官方启动前后的统一取消通道；
@@ -1552,7 +1552,7 @@ $DSH_HOME/banbo-agents/.children/
 └── <childId-2>.json
 ```
 
-1. **文件名即键**：`<childId>.json`。continuable 的 childId 由调用方预留，因此在调用 `startContinuable()` **之前**就知道写哪个文件；
+1. **文件名即键**：`<childId>.json`。continuable 的 childId 由调用方预留，因此在调用 `startActivation()` **之前**就知道写哪个文件；
 2. **写入原子**：写临时文件 → `fs.rename` 覆盖目标。目标文件此前不存在（childId 唯一），因此不存在"改坏已有记录"的窗口；
 3. **不加锁、不做读改写**：每次创建写的是新文件，两个进程并发创建不同 child 落在不同文件上，天然无冲突。这是刻意选择——方案刚刚在 8.6 删掉了跨进程锁，sidecar 不得把它请回来；
 4. **写入失败必须让该 child 的创建整体失败并回滚**：不允许出现"身份未知但已经在运行的持久 child"；
@@ -1568,8 +1568,8 @@ $DSH_HOME/banbo-agents/.children/
 
 **写入时机**：
 
-1. **continuable**：`delegateOne` 走 continuable 执行路径时，在调用 `startContinuable()` **之前**写 sidecar（batch item 永远是 one-shot，不写 sidecar）。写入失败 = 创建失败，不进入下一步；
-2. **one-shot**：**不落盘**。在 `await ctx.subagents.start()` 返回后，用 `run.id`（= 已发布的 child session id）作为键写入 live map。`start()` 返回时 child 的 `followup` 刚被提交、prompt 组装尚未完成，而身份只在 child 执行 `agent_*` 工具时才被读取——中间隔着至少一次模型往返，时序余量是 step 级而非微秒级；若 Gate A 探针发现该余量不足，改为在 child 的首次 `agent/pre-step` 上补齐；
+1. **continuable**：`delegateOne` 走 continuable 执行路径时，在调用 `startActivation()` **之前**写 sidecar（batch item 永远是 one-shot，不写 sidecar）。写入失败 = 创建失败，不进入下一步；
+2. **one-shot**：**不落盘**。在 `await ctx.subagents.startActivation()` 返回后，用 `childId`（= 已发布的 child session id）作为键写入 live map。`startActivation()` 返回时 child 的 `followup` 刚被提交、prompt 组装尚未完成，而身份只在 child 执行 `agent_*` 工具时才被读取——中间隔着至少一次模型往返，时序余量是 step 级而非微秒级；若 Gate A 探针发现该余量不足，改为在 child 的首次 `agent/pre-step` 上补齐；
 3. **live map 必须及时回收**：条目在该 child 的 run 结算时（与并发槽释放同一处、同一同步段）删除。map 的存活集合因此恒等于"当前活着的 one-shot child 集合"，不随会话历史增长。一个 root Session 生命周期内可以连续创建很多 one-shot；若不在结算时删除，条目会无界累积成内存泄漏。测试必须断言"全部 child 结算后 map.size === 0"；
 4. 身份（sidecar 或内存）可用是 child 后续可以继续发起 `agent_*` 委派的必要条件。
 
@@ -1863,7 +1863,7 @@ settings 外部编辑产生非法结构时，官方 settings service 保留 last
 
 | 事件 | 字段 |
 |---|---|
-| `delegation/start` | `rootSessionId`、`childId`、`agentId`、`mode`（`one-shot` / `continuable`）、`depth`、`background`。**发出时机按模式不同**：continuable 在 `startContinuable()` 接受首轮后即可发出；one-shot 的 `childId` 只有 `start()` 返回后才知道，因此与 live map 写入同一步发出 |
+| `delegation/start` | `rootSessionId`、`childId`、`agentId`、`mode`（`one-shot` / `continuable`）、`depth`、`background`。**发出时机按模式不同**：continuable 在 `startActivation()` 接受首轮后即可发出；one-shot 的 `childId` 由本插件预留，因此与 live map 写入同一步发出，因此与 live map 写入同一步发出 |
 | `delegation/end` | 上列字段 + `stopReason`、`durationMs`、`outcome`（`completed` / `failed` / `empty` / `cancel_requested` / `cleanup_deferred`） |
 | `delegation/rejected` | `agentId`、`reason`（见 13.1.3） |
 | `batch/settled` | `rootSessionId`、`itemCount`、聚合 status、`deadlineMs` |
@@ -1933,7 +1933,7 @@ v1 选择 Host logger。若未来需要把路由与成本数据**展示在 Web U
 10. delegate_batch `maxBatchWidth`、`optional` 目标按 one-shot 执行（不再整体拒绝，且返回值里没有 `childId`）、root Session 并发超限、allSettled、以 `run.result` 为唯一 terminal、deadline、聚合状态真值表、取消和清理；
 11. cleanup registry：`cancel()` 幂等、登记早于启动、正常路径自行注销、超时路径被接管、`drain()` 超时记录未收束清单、Host dispose 后无残留 holder；
 12. preset compiler：generation hash 稳定性（同输入同 hash、路径无关）、已存在 generation 复用不写盘、`complete` 标记缺失的目录永不激活、指针切换原子性、切换后旧 generation 不影响运行中的进程、清理保留 current + 最近 1 代、重复 id 检测（含 8.7 降级下的唯一例外）、**删除后 generated preset 不再出现在新 generation**、`RetiredToolShell` 空壳保留与执行报错、破坏性 ABI shape 修改拒绝；
-13. child identity：**continuable** 在调用 `startContinuable()` 之前把 sidecar 写到 `.children/<childId>.json`，写入原子（temp + rename）、失败导致创建整体回滚；文件缺失 / JSON 损坏 / `version` 不支持 → 身份未知；缺失或损坏的身份只禁止继续委派、不禁止普通工具；身份与官方 descriptor 字段不重复、不同步漂移；**one-shot 不写任何文件**（断言 `.children/` 不因 one-shot 增长），其身份只在 live map 中且 `start()` 返回后立即可查；**batch 并发启动 6 个 one-shot 时，每个 child 的 map 条目必须指向它自己的 agentId**（这是本项的核心回归断言）；**任何路径下断言 Session 日志中不含插件私有事件类型**（Gate A 证否的回归锁）；
+13. child identity：**continuable** 在调用 `startActivation()` 之前把 sidecar 写到 `.children/<childId>.json`，写入原子（temp + rename）、失败导致创建整体回滚；文件缺失 / JSON 损坏 / `version` 不支持 → 身份未知；缺失或损坏的身份只禁止继续委派、不禁止普通工具；身份与官方 descriptor 字段不重复、不同步漂移；**one-shot 不写任何文件**（断言 `.children/` 不因 one-shot 增长），其身份只在 live map 中且 `startActivation()` 返回后立即可查；**batch 并发启动 6 个 one-shot 时，每个 child 的 map 条目必须指向它自己的 agentId**（这是本项的核心回归断言）；**任何路径下断言 Session 日志中不含插件私有事件类型**（Gate A 证否的回归锁）；
 14. **`generation` 只做诊断的回归断言**：编辑 catalog（新增一个无关 Agent）使 generation 变化后，一个未受影响的旧 continuable child **仍可继续委派**；反向断言 generation 变化本身不产生任何拒绝。这条锁定 11.1.1 的"generation 绝不是阻断条件"，防止实现者把它当成版本兼容检查；
 15. 四个时间预算（`foregroundDeadlineMs` / `backgroundDeadlineMs` / `batchDeadlineMs` / `drainGraceMs`）的默认值、clamp 边界和非法值拒绝；且断言**没有任何一条委派路径缺少 deadline**（前台 / 后台 / batch 三者各有其值）；
 16. 可观测性（13.1）：六类结构事件按 13.1.1 的字段发出；`delegation/rejected.reason` 六种原因可区分；**断言日志中不出现 prompt 正文、子 Agent 输出、persona 正文、凭据和绝对路径**（用含敏感标记的 fixture 输入，断言这些标记不出现在捕获的日志里）；Host logger 不产生 Session event。
@@ -2027,7 +2027,7 @@ env NODE_ENV=development npx vitest run plugins/agents/tests/gates/gate-a-target
 | # | 事实 | 影响 |
 |---|---|---|
 | A1 | 依赖族已整体升级到 `0.1.5-rc.2`；lock 中零 rc.1、524 处 rc.2 | `^0.1.5-rc.1` 在预发布版上会漂到 rc.2，因此族内统一必须靠"整体升级 + 锁文件断言"，不能靠 caret |
-| A2 | `@deepseek-ai/dsh-subagent` 的公开导出与 `SubagentRuntime` 方法（`start` / `startContinuable` / `registerProvider` / `getProvider` / `list` / `sendMessage` / `interrupt`）齐全；**`completions` 不存在**（早期草案的笔误，已删除并加负向断言） | §10.4 / §10.5 |
+| A2 | `@deepseek-ai/dsh-subagent` 的公开导出与 `SubagentRuntime` 方法（`startActivation` / `waitForChildren` / `registerProvider` / `getProvider` / `list` / `sendMessage` / `interrupt`）齐全；`start` 与 `startContinuable` 在 `0.2.1-rc.2` **已被删除**，Gate 对二者加**负向断言**；**`completions` 不存在**（早期草案的笔误，已删除并加负向断言） | §10.4 / §10.5 |
 | A3 | `tools.restrict()` 对未知工具名**抛错**而非警告 | `RetiredToolShell` 存在的唯一理由（§4.1 / §11.2） |
 | A3b | `ToolRuntime` 依赖 `systemPrompt` 服务：不先挂载它时 `ctx.plugin` **正常返回、不抛错**，但 `ctx.tools` 永远是 `undefined` | 任何组装工具注册表的代码必须先挂 prompt 服务，否则得到静默空注册表 |
 | A4 | `Session.append()` 拼装的信封是 `{type,seq,time,data,surfaceOp?,sourceEventSeqs?}`，**没有任何途径写入 `ignorable`**；`validateStoredEvents()` 对未知且非 ignorable 的类型**抛错拒绝解释整份日志**；仓库内已知的 log-only 类型（如 `sandbox/mode`）通过同一校验 | **证否了"私有 Session event 承载身份"的原设计**，改用 sidecar（§11.1.1） |
@@ -2035,7 +2035,7 @@ env NODE_ENV=development npx vitest run plugins/agents/tests/gates/gate-a-target
 | A6 | `delegationDepthOf` 取 `options.subagentDepth` 与 `session.header.delegationDepth` 的**最大值**（持久 header 是单调下界）；`resolveChildDepth` 超 cap 抛 `SubagentDepthError` | §10.1 / §10.2 |
 | A7 | `agent/created` 是**可否决**的发布边界：干净派发时 agent 进入 registry 并收到 created；某个同步监听抛错时整次创建失败、registry 中查不到该 agent | §9.3 的激活门必须同步完成且要么全成、要么不发布 |
 | A8 | 用官方 `dsh-agent-loop-testkit` 装配**生产 AgentLoop**（`mountAgentLoopTestDependencies` + `mountAgentLoopTestHarness`，不需要注册 adapter、不联网）后，`agent/created` 在 `agent/session-start` **之前**发出 | §9.3：同步激活门跑在 startup-driving 扩展点之前，因此 persona/restriction 一定在首轮之前生效 |
-| A9 | 官方 `dsh-subagent-spawn-in-process`（`access: public`，注册名 `spawn`）产生的是 **local run**，且 `run.id === run.localAgent.session.id === run.localAgent.id`；`start()` 返回时 child 已发布但日志中**尚无任何 `tool/call`**，随后 `dispose()` 正常收束不挂起 | §11.1.1：one-shot 用 `run.id` 作 live map 键，且 `start()` 返回后确实存在写入窗口 |
+| A9 | 官方 `dsh-subagent-spawn-in-process`（`access: public`，注册名 `spawn`）产生的是 **local activation**：`startActivation({ childId })` 返回的 `childId` 就是被预留的 child session id，且 `ctx.agents.get(childId)` 在返回时已可解析；返回时 child 已发布但日志中**尚无任何 `tool/call`**，随后 `dispose()` 正常收束不挂起 | §11.1.1：one-shot 用 `childId` 作 live map 键，且 `startActivation()` 返回后确实存在写入窗口 |
 
 **Gate A 覆盖边界（如实记录）**：下列事实**已由其它 Gate 或产品测试覆盖**，不再挂在 Gate A 名下——`ctx.jobs` 的真实签名与生命周期归 Gate D，`ctx.settings` 的 revision/last-good 行为归 Gate E，`dshHomePath()` 参与的真实路径表达式求值归 Gate B。
 
@@ -2553,7 +2553,7 @@ CI 提供单独的 `agents:gates` lane，不能把 Gate 混在普通单测中靠
 - ~~**child 形态的注册点**~~ **（已接上，且必须挂在 `agent/created` 上）**：child 的身份在 preset scope 上不可观测——child session header 只有 `agentPreset` / `origin` / `delegationDepth`，没有 agent id，`liveIdentities` 又只存在于 delegation runtime 内部，而"用工具面反推定义"正是 §11.1.1 明令禁止的身份猜测。因此识别来源只能是 delegation runtime 写的 **sidecar**（`readChildIdentity`）。
   **注册点有两处，职责不同**：
   1. **continuable child → `main-runtime` 的 `agent/created` 监听器**（`guardResumedChildScope`）。**这是必需的，不是冗余**：harness 会在 continuable child 空闲时 dispose 它的 activation，下一次 `send_message` 走 `coldResume` 从持久化 descriptor **重建** Agent，而重建只重新应用 persona 与 toolFilter——**创建时装的 guard 会丢**。只按创建时注册会让"被 resume 的持久 child 带着 `write`/`edit` 却没有任何 scope"，且重启后同样如此。挂在 `agent/created` 上则每次 materialize 都重新装，且发生在 child 被 prompt 之前。
-  2. **one-shot child → `delegation.js` 的 `guardChildWriteScope`**，用 `run.localAgent`。one-shot child **不写 sidecar**（不可恢复），listener 无法识别它，所以只能在委派时装。该调用点在 `try` 内、`holder.attach` 之前——放在 `try` 外会在抛错时泄漏已预留的 holder 与并发槽，放在 continuable 分支的 `catch` 里（其语义是"创建失败"）会**删掉一个活着的 child 的 sidecar** 并释放它的 lease。
+  2. **one-shot child → `delegation.js` 的 `guardChildWriteScope`**，用 `ctx.agents.get(activation.childId)`。one-shot child **不写 sidecar**（不可恢复），listener 无法识别它，所以只能在委派时装。该调用点在 `try` 内、`holder.attach` 之前——放在 `try` 外会在抛错时泄漏已预留的 holder 与并发槽，放在 continuable 分支的 `catch` 里（其语义是"创建失败"）会**删掉一个活着的 child 的 sidecar** 并释放它的 lease。
 - **定义变更后的 fail-open**：guard 由**当前**定义推导，而 toolFilter 是创建时冻结的。一个持久化的带 scope child，如果它的定义后来丢了 `child` 形态、或整个文件被删除（§6.3 支持的删除动作），被 resume 时会**带着 `write`/`edit` 而没有任何 guard**。ABI 会阻止"删除已发布的 child 形态"，但不阻止删除文件。彻底修法有两条：sidecar 是不可变的，可以顺带记录创建时的 scope（升到 version 2）；或者在 resume 时，若冻结的 filter 仍授予 `write`/`edit` 而当前形态没有 scope，就直接拒绝恢复。当前**未实现**，行为由 `write-scope.spec.ts` 的具名用例钉住；
 - **listener 里的同步文件 I/O**：`guardResumedChildScope` 每个 subagent 创建都会 `readFileSync` 一次 sidecar。§9.3 要求"同步 listener 中不做文件 I/O"，这里是有意的**例外**：child 的身份只能从 sidecar 得到（header 里只有调用者的 preset），且这个读取有界、吞错、不会 veto 恢复。代价是每个 one-shot child 多一次无用的 syscall（one-shot child 不写 sidecar）；
 - **软链接的 scope 根**：scope 根自身的真实路径必须落在工作区的真实路径内，否则拒绝——**这条关掉的是"逃出工作区"**（`<ws>/.banbo-dsh -> /etc`）。但**工作区内部的**软链接仍会放大有效范围：`<ws>/.banbo-dsh -> <ws>` 会让 `.banbo-dsh/plans/x.md` 落到 `<ws>/plans/x.md`，`-> <ws>/src` 则落到 `<ws>/src/plans/x.md`。这**不是**工作区逃逸，且 Planner 自己没有创建软链接的能力（无 `exec`），所以按"声明的是目录、不是工作区内的位置约束"接受，`write-scope.spec.ts` 用**两条具名用例**分别钉住"逃出工作区被拒"与"工作区内放大被接受"；
@@ -2566,7 +2566,7 @@ CI 提供单独的 `agents:gates` lane，不能把 Gate 混在普通单测中靠
 **"没有 shell" 这个前提由 schema 强制**：同时声明 `writeScope` 与 shell 的形态会被**拒绝挂载**（§4.4 规则 15，错误码 `write-scope-with-shell`），而不是静默失效——因为 shell 可以 `echo x > /etc/y`，完全不经过 `write`/`edit`。`tools` 里查 `exec`，`extraTools` 里查具体 shell 工具名；校验跑在合并后的形态上，所以"用户层重述 `tools` 而内置仍带 scope"这条最容易静默失效的路径会被拒。已核对 Planner 两种形态的工具面里没有别的写入口。
 
 **测试**：`plugins/agents/tests/write-scope.spec.ts` 覆盖允许（scope 内、不存在的嵌套子目录、scope 目录本身、`edit` 与 `write` 等价）、拒绝（同前缀兄弟目录、工作区根、无关目录、`../` 逃逸、绝对路径、非法 `file_path`、无 `cwd`、scope 根指向工作区外）、非 `write`/`edit` 工具不受影响、无 `writeScope` 不受限、软链接内/外/scope 根两种情形、反斜杠与 NUL 规则（只有该规则能拦下的输入）、`realpathSync` 失败分支（ELOOP）、拒绝信息的回显上限，以及 schema 对绝对路径 / `..` / 空值 / 反斜杠的拒绝与 `writeScope: false` 的取消语义。
-**child 侧**：one-shot 的委派时注册由 `delegate-one.spec.ts` 覆盖（前台 one-shot 经 `run.localAgent` 装上守卫并拒绝逃逸、未声明 scope 不注册、远端 child 保持 no-op、守卫注册抛错时已发布的 run 被 dispose 且不泄漏 holder/并发槽）；**continuable child 与 resume 由 `write-scope.spec.ts` 的"resumed children"一组覆盖**——它捕获 `main-runtime` 注册的 `agent/created` listener，用真实 `ToolRuntime` + 合成 sidecar 触发，验证拒绝/允许、无 sidecar 不注册、定义无 scope 不注册、sidecar 指向已删除 agent 时不阻断恢复。**batch 路径**由 `batch.spec.ts` 覆盖（两个 item 中只有声明了 scope 的那个被守卫）。
+**child 侧**：one-shot 的委派时注册由 `delegate-one.spec.ts` 覆盖（前台 one-shot 经 `ctx.agents.get(childId)` 装上守卫并拒绝逃逸、未声明 scope 不注册、远端 child 保持 no-op、守卫注册抛错时已发布的 run 被 dispose 且不泄漏 holder/并发槽）；**continuable child 与 resume 由 `write-scope.spec.ts` 的"resumed children"一组覆盖**——它捕获 `main-runtime` 注册的 `agent/created` listener，用真实 `ToolRuntime` + 合成 sidecar 触发，验证拒绝/允许、无 sidecar 不注册、定义无 scope 不注册、sidecar 指向已删除 agent 时不阻断恢复。**batch 路径**由 `batch.spec.ts` 覆盖（两个 item 中只有声明了 scope 的那个被守卫）。
 **取消语义**由 `write-scope.spec.ts` 的"cancelling a scope"一组覆盖，其中**必须有一条走真实 `loadCatalog`**——`loadCatalog` 会先校验每一层再合并，所以只在 `mergeDefinition` 上测取消会得到一个全绿但功能已死的套件（这条回归真实发生过）。
 
 ### 16.13 ambient 工具：第三方工具按 `exec` 派生继承
@@ -2607,7 +2607,7 @@ ambient  = registered \ 能力词表 \ FORBIDDEN_RUNTIME_TOOLS \ 本插件自己
 
 **来源**：用户要求"**每次审查都该能追问**"，并确认 `review`、`implement`、`planner` 三个都要；随后在一次真实会话复盘中追加 `executor`——那次会话里两次 executor 都是前台 one-shot，第二次"让 5 个 lark skill 的清理持久化"是对第一次工作的**直接延续**，却因为第一个 child 已死而只能新建一个从零确认状态的 child。**四个 Agent 现在都声明 `preferBackground`。**
 
-**硬约束**：**"可追问"与"本轮拿到结果"当前互斥**。前台走 `subagents.start()`（拿到 `SubagentRun`，有 deadline/cleanup），后台 + `optional` 走 `startContinuable()`（**没有 `SubagentRun`、没有 `dispose`**，由官方 continuation manager 持有）。§4.4 的 `optional | false | 前台 one-shot` 是**明确定的行为**，§16.x 的 C9 也确认过"行为正确，只是描述误导"。**根因与 §10.7.1 拒绝 continuable batch 相同。**
+**硬约束**：**"可追问"与"本轮拿到结果"当前互斥**。前台走 `startActivation({ delivery: 'caller' })`（拿到 `SubagentActivation`，有 deadline/cleanup），后台 + `optional` 走 `startActivation({ delivery: 'parent' })`（由官方 activation manager 持有）。§4.4 的 `optional | false | 前台 one-shot` 是**明确定的行为**，§16.x 的 C9 也确认过"行为正确，只是描述误导"。**根因与 §10.7.1 拒绝 continuable batch 相同。**
 
 **实测证据**（10 次 `agent_review` 调用）：前台 7 / 后台 3，child 模式精确 1:1（前台→`one-shot`，后台→`continuable`），且 3 次后台里 2 次是测试脚本明确要求的。**one-shot 是常态**，与"可追问"冲突。
 
@@ -2621,7 +2621,7 @@ ambient  = registered \ 能力词表 \ FORBIDDEN_RUNTIME_TOOLS \ 本插件自己
 
 **代价（如实记录）**：结论**晚一轮**到——协调者先回"已启动"，结算通知到了再给结论。
 
-**测试**：schema（可选、`true` 归一化保留、`false` 归一化消失、非布尔被拒、与 `one-shot` 组合被拒、主形态写它是 `unknown-field`、shipped 恰好是这三个）；委派（前台被拒且不启动不占槽、后台成功且走 `startContinuable`、未声明的仍可前台、描述含 `ALWAYS KEPT` 而未声明的 Agent 不含）；batch（`batch-target-kept` 且不启动不占槽）。三条规则各自变异验证过。
+**测试**：schema（可选、`true` 归一化保留、`false` 归一化消失、非布尔被拒、与 `one-shot` 组合被拒、主形态写它是 `unknown-field`、shipped 恰好是这三个）；委派（前台被拒且不启动不占槽、后台成功且走 `delivery: 'parent'` 的 `startActivation`、未声明的仍可前台、描述含 `ALWAYS KEPT` 而未声明的 Agent 不含）；batch（`batch-target-kept` 且不启动不占槽）。三条规则各自变异验证过。
 
 **未做**：没有改 `continuation`（`review` 已是 `optional`，改它会违反 §4.4 第 13 条的 ABI 兼容规则，必须换新 id）；没有做"前台但保留 child"（那需要为 continuable 重新设计 deadline 与清理语义，即 §10.7.1 说清楚的难点，收益有限而代价大）。
 
@@ -2687,7 +2687,7 @@ ambient  = registered \ 能力词表 \ FORBIDDEN_RUNTIME_TOOLS \ 本插件自己
 **修复（用户拍板五条）**：
 
 1. **默认复用**：改写 D5、新增 D12，把"新建同角色 child 前先 `list_agents` 查一眼"写成新建的**前置动作**；
-2. **四种例外，每种都要说得出理由**：任务无关（新活与那个 child 的工作无关）/ 上下文拖累 / 需要隔离（**要一个不带着旧上下文的干净 child**——不再写"用完即散的一次性 child"：这个 runtime 没有创建同角色 one-shot child 的路径，前台被 `background-required` 拒、后台 `optional` 必然 `startContinuable`、batch 拒绝 kept target，写成一次性等于承诺一个不存在的生命周期）/ **上一轮没交出结论**（失败、被中断或超时——这种 idle child 的上下文不可信；D6 仍要求重新委派，本例外只允许"新起一个"而不是复用那个）；
+2. **四种例外，每种都要说得出理由**：任务无关（新活与那个 child 的工作无关）/ 上下文拖累 / 需要隔离（**要一个不带着旧上下文的干净 child**——不再写"用完即散的一次性 child"：这个 runtime 没有创建同角色 one-shot child 的路径，前台被 `background-required` 拒、后台 `optional` 必然走 `delivery: 'parent'`、batch 拒绝 kept target，写成一次性等于承诺一个不存在的生命周期）/ **上一轮没交出结论**（失败、被中断或超时——这种 idle child 的上下文不可信；D6 仍要求重新委派，本例外只允许"新起一个"而不是复用那个）；
 3. **多种子时选谁**：有多个 idle 同角色 child 时**选上下文最接近这次任务的那个**；
 4. **四态写清**（复审补全）：**idle** → 复用；**正在跑且新活属于同一件事**（同一份工作、同一 MR、同一模块，或上一轮的延续）→ **不新建**，并成一件、等唤醒后用**一次** `send_message` 追加（与 §16.15 同向）；**正在跑但与新活无关** → 可以新建，但要说明命中的例外；**压根没有** → 直接新建。只要存在同角色 child（idle 或 running）而仍要新建，就必须说得出理由。四态同款措辞也渲染进 `agent_<id>` 具名工具描述（`optional` 目标）——旧描述只说"找一个 **idle** 的"，而 child 正在跑时必然没有 idle 匹配，等于**明文允许** persona 禁止的新建；
 5. **改动范围（准确说法）**：不碰 delegation 的执行路径——**无新增校验、无运行时闸门、不改路径选择**，也不写"同角色最多 N 个"；但**运行时按目标类型生成的模型可见 schema 文本确有变化**（`agent_<id>` 的 `description`、`run_in_background` 的 `description`）：ALWAYS KEPT 目标**不再渲染**前台等待段（`A FOREGROUND call waits up to … minutes` 与"or for the foreground deadline … never resumable"整段跳过——运行时在 `background-required` 处就拒了，这段描述的是一个它做不到的调用），只留"结束本轮、等消息唤醒"；描述尾部与非 kept 目标的原文一律保持不变。

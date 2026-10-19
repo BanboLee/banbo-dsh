@@ -52,11 +52,44 @@ async function executeTool(
     callId: `composition-${name}`,
     name,
     arguments: args,
-    ...cwd === undefined ? {} : { agent: { session: { header: { cwd } } } },
+    ...cwd === undefined ? {} : { agent: syntheticAgent(booted, cwd) },
     signal: new AbortController().signal,
   })
   if (result === undefined) throw new Error('missing tools runtime')
   return result
+}
+
+/**
+ * The Agent-shaped caller these cases hand to `tools.execute`.
+ *
+ * 0.2.1 resolves a tool's working directory through the `workingDirectory`
+ * service, which:
+ *   - validates its caller with `agent.ctx.fiber.assertActive()`, and
+ *   - reads the committed directory through `sessionProjections.stateOf()`,
+ *     which needs a REAL `Session` (it walks `session.snapshotEvents()`).
+ *
+ * The PTC transport additionally opens per-call effects on the caller
+ * (`agent.ctx.effect(...)`), so the stub carries that too.
+ *
+ * This lane calls tools directly rather than through a live AgentLoop, so the
+ * stub is a minimal caller double over the profile's own `sessions` service. One
+ * Session per caller keeps the projection state of one case from leaking into
+ * the next — the same isolation a live Agent would give.
+ */
+function syntheticAgent(booted: LspDiagnosticsBooted, cwd: string): unknown {
+  const sessions = (booted.ctx as unknown as { get(key: string): any }).get('sessions')
+  const session = sessions.create(undefined, { meta: { cwd } })
+  return {
+    id: session.id,
+    session,
+    ctx: {
+      fiber: { assertActive: () => {} },
+      // `ctx.effect` registers a disposal on the owning scope; a directly-driven
+      // tool call has no AgentLoop scope, so the effect is invoked immediately
+      // and its disposer discarded — exactly the lifetime of one tool call.
+      effect: (body: unknown) => (typeof body === 'function' ? body() : body),
+    },
+  }
 }
 
 /**
@@ -810,20 +843,13 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
         description: 'Run the test program',
       },
       // The code-mode transport threads the agent down to nested tool calls,
-      // which append dispatch events to the session; mirror the official
-      // ptc.spec fakeAgent seam (header cwd + append) rather than faking parent.
-      // The PTC path also resolves the calling session's sandbox policy, which
-      // folds the session log through `sessionProjections`: the fake session
-      // therefore also carries the log cursor (`snapshotEvents` + `seq`) the
-      // projection cell reads.
-      agent: {
-        session: {
-          header: { cwd: booted.workspace },
-          append: () => {},
-          snapshotEvents: () => [],
-          seq: 0,
-        },
-      },
+      // which append dispatch events to the session. 0.2.1 resolves the nested
+      // write's cwd through the `workingDirectory` service, which validates the
+      // caller with `agent.ctx.fiber.assertActive()` and reads the committed
+      // directory through `sessionProjections.stateOf(session)` — so the caller
+      // needs a REAL Session (with its log cursor) and an inert fiber, exactly
+      // like `syntheticAgent` builds for the non-PTC cases.
+      agent: syntheticAgent(booted, booted.workspace),
       signal: new AbortController().signal,
     })
     expect(result.isError).toBe(false)

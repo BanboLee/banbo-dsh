@@ -274,7 +274,7 @@ function writeTestRoot(profile: string): string {
   const seams = [
     "import { Service } from '@deepseek-ai/cordis'",
     "import { SandboxProvider } from '@deepseek-ai/dsh-sandbox'",
-    "class TestSystemPrompt extends Service { constructor(ctx){ super(ctx, 'systemPrompt') } tools(){ return () => undefined } context(){ return () => undefined } section(){ return () => undefined } getSectionOrder(){ return 0 } }",
+    "class TestSystemPrompt extends Service { constructor(ctx){ super(ctx, 'systemPrompt') } tools(){ return () => undefined } context(){ return () => undefined } section(){ return () => undefined } getSectionOrder(){ return 0 } getContextOrder(){ return 0 } }",
     "class TestSandbox extends SandboxProvider { async confine(argv){ return { argv: [...argv], enforcement: 'full', denialSignatures: ['permission denied'], runnerFailureRules: [{ fatalSignatures: ['fake-runner: '] }] } } }",
     "export default function apply(ctx, config){ if (config.kind === 'systemPrompt') new TestSystemPrompt(ctx); else if (config.kind === 'sandbox') new TestSandbox(ctx); else throw new Error(`unknown test seam ${config.kind}`) }",
   ].join('\n')
@@ -284,6 +284,16 @@ function writeTestRoot(profile: string): string {
     "- id: test-system-prompt\n  name: ./test-seams.mjs\n  config:\n    kind: systemPrompt",
     "- id: tools\n  name: '@deepseek-ai/dsh-tools'\n  config:\n    mode: native",
     "- id: session-projection\n  name: '@deepseek-ai/dsh-session-projection'",
+    // `workingDirectory` injects `fs`, `sessionProjections` and `systemPrompt`
+    // (the last two are already mounted here), so the fs seam comes with it.
+    `- id: fs\n  name: '@deepseek-ai/dsh-fs-local'\n  config:\n    cwd: ${JSON.stringify(profile)}`,
+    // 0.2.1 split the session working directory out of `dsh-fs` into its own
+    // service, and the terminal rows this lane exercises (`terminal.js`, the
+    // official tool-terminal package) inject it. Without this row both stay
+    // PENDING on a service nobody provides: the boot still succeeds and the
+    // shell assertions still pass, so the missing terminal surface would read as
+    // a green run. The official base mounts the same package with no config.
+    "- id: working-directory\n  name: '@deepseek-ai/dsh-working-directory'",
     "- id: sandbox\n  name: ./test-seams.mjs\n  config:\n    kind: sandbox",
     `- id: sandbox-policy\n  name: '@deepseek-ai/dsh-sandbox-policy'\n  config:\n    mode: read-only\n    workspaceRoot: ${JSON.stringify(profile)}`,
     "- id: subprocess\n  name: '@deepseek-ai/dsh-subprocess-local'",

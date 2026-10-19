@@ -47,6 +47,20 @@ afterEach(async () => {
 async function subagentFixture(start: SubagentProvider['start']) {
   const ctx = new Context()
   contexts.push(ctx)
+  // 0.2.1's runtime builds its activation manager from `ctx.agents` and resolves
+  // a child directory through `workingDirectory`. This probe exercises the
+  // provider/ownership contract, not Agent creation, so both are minimal
+  // stand-ins — the parent they report is exactly the one the probe passes in.
+  // The manager walks the durable lineage through `session.header.parentSession`,
+  // so a top-level parent must expose that header (it ends the walk).
+  const parent = { id: 'parent', session: { id: 'parent', header: { parentSession: undefined } } }
+  ctx.provide('agents', { get: (id: string) => (id === parent.id ? parent : undefined) } as never)
+  ctx.provide('workingDirectory', {
+    defaultDirectory: process.cwd(),
+    get: () => process.cwd(),
+    ensure: async () => process.cwd(),
+    set: async () => {},
+  } as never)
   await ctx.plugin(SubagentRuntime)
   const provider: SubagentProvider = {
     name: 'probe',
@@ -55,7 +69,6 @@ async function subagentFixture(start: SubagentProvider['start']) {
     start,
   }
   const remove = ctx.subagents.registerProvider(provider)
-  const parent = { id: 'parent', session: { id: 'parent' } }
   const request = {
     parent,
     prompt: [{ type: 'text' as const, text: 'probe' }],
@@ -65,7 +78,9 @@ async function subagentFixture(start: SubagentProvider['start']) {
 }
 
 function remoteRun(result: Promise<SubagentResult>, dispose = vi.fn(async () => {})): SubagentRun {
-  return { id: 'remote-child' as never, localAgent: undefined, result, dispose }
+  // 0.2.1's `SubagentRun` is the EXTERNAL handle: it carries `id` and no
+  // `localAgent` any more (a local child is a `SubagentActivation` instead).
+  return { id: 'remote-child' as never, result, dispose }
 }
 
 describe('D1 — SubagentRun settlement and provider ownership', () => {
@@ -76,7 +91,7 @@ describe('D1 — SubagentRun settlement and provider ownership', () => {
     fixture.ctx.on('subagent/start', () => { order.push('start') })
     fixture.ctx.on('subagent/end', () => { order.push('end') })
 
-    const run = await fixture.ctx.subagents.start('probe', fixture.request as never)
+    const run = await fixture.ctx.subagents.startActivation({ provider: 'probe', label: 'probe', request: fixture.request as never, signal: new AbortController().signal, delivery: 'caller' })
     run.result.then(() => { order.push('result-observed') })
     expect(order).toEqual(['start'])
 
@@ -91,10 +106,10 @@ describe('D1 — SubagentRun settlement and provider ownership', () => {
     const result = deferred<SubagentResult>()
     const dispose = vi.fn(async () => {})
     const fixture = await subagentFixture(async () => remoteRun(result.promise, dispose))
-    const run = await fixture.ctx.subagents.start('probe', fixture.request as never)
+    const run = await fixture.ctx.subagents.startActivation({ provider: 'probe', label: 'probe', request: fixture.request as never, signal: new AbortController().signal, delivery: 'caller' })
     await Promise.resolve(fixture.remove())
 
-    await expect(fixture.ctx.subagents.start('probe', fixture.request as never))
+    await expect(fixture.ctx.subagents.startActivation({ provider: 'probe', label: 'probe', request: fixture.request as never, signal: new AbortController().signal, delivery: 'caller' }))
       .rejects.toMatchObject({ name: 'SubagentError', code: 'NO_PROVIDER' })
     result.resolve(completed)
     await expect(run.result).resolves.toEqual(completed)
@@ -174,7 +189,10 @@ describe('D2 — LocalJobRegistry cancellation and ownership', () => {
       if (event.type === 'settled') settled.push(`${event.job.id}:${event.job.status}:${event.cause}:${String(event.awaited)}`)
     })
     const id = ctx.jobs.start({
-      kind: 'subagent', label: 'self-abort probe',
+      // 0.2.1 narrowed `JobKind` to the kinds the composing bundle declares, so a
+      // producer's own kind is cast here (the runtime accepts any non-empty
+      // string; only the type map is closed).
+      kind: 'subagent' as never, label: 'self-abort probe',
       run: () => ({ cancel: vi.fn(), done: done.promise }),
     })
 
@@ -193,7 +211,7 @@ describe('D2 — LocalJobRegistry cancellation and ownership', () => {
     const done = deferred<JobOutcome>()
     const reasons: Array<string | undefined> = []
     const id = ctx.jobs.start({
-      kind: 'subagent', label: 'kill probe',
+      kind: 'subagent' as never, label: 'kill probe',
       run: () => ({
         cancel(reason) {
           reasons.push(reason)
@@ -220,7 +238,7 @@ describe('D2 — LocalJobRegistry cancellation and ownership', () => {
     const done = deferred<JobOutcome>()
     const reasons: Array<string | undefined> = []
     const id = ctx.jobs.start({
-      kind: 'subagent', label: 'owner cleanup', owner: 'owner' as never,
+      kind: 'subagent' as never, label: 'owner cleanup', owner: 'owner' as never,
       run: () => ({
         cancel(reason) {
           reasons.push(reason)

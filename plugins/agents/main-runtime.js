@@ -8,8 +8,17 @@
  * temporary Agent back.
  */
 
+import { appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
+
 import { AGENT_ID_PATTERN, deriveToolName, hasWriteScope } from './schema.js'
-import { readChildIdentity } from './identity.js'
+import {
+  childAuthority,
+  emptyComposition,
+  readChildAuthority,
+  writeChildAuthority,
+} from './child-authority.js'
+import { takeChildComposition } from './child-composition.js'
+import { readChildIdentity, readChildIdentityState } from './identity.js'
 import { writeScopeGuardReason } from './path-policy.js'
 import { assertToolSurface, compileAllowlist } from './tool-surface.js'
 
@@ -314,19 +323,201 @@ function guardResumedChildScope(agent, service) {
   agent.ctx.tools.guard((execution) => writeScopeGuardReason(form, execution))
 }
 
+/**
+ * Apply one delegated child's composition in its creation window — on EVERY
+ * materialization, cold resumes included.
+ *
+ * Two sources, in this order:
+ *
+ *   1. **the in-memory handoff** (`child-composition.js`) for a child this
+ *      process is creating right now. This is the only window in which the
+ *      persona and restriction can be applied before the child's first model
+ *      request, and the official manager no longer does it for us (0.2.1 dropped
+ *      `persona`/`toolFilter` from the start request AND from the descriptor).
+ *   2. **the child's own session log** (`child-authority.js`) for a child being
+ *      rebuilt from persisted state. The record is written here, in window (1),
+ *      so it is always present for a banbo child.
+ *
+ * Fail-closed rules, which are why this is one function rather than two paths:
+ *
+ *   - a child whose identity sidecar exists (i.e. a banbo continuable child) but
+ *     whose authority record is `invalid` gets {@link emptyComposition}: no
+ *     persona and an EMPTY allowlist. A corrupt record must never read as "no
+ *     restriction";
+ *   - a child with NO record and NO sidecar is not this bundle's child and is
+ *     left untouched — inventing a restriction there would break ordinary
+ *     subagents;
+ *   - a `writeScope` form is guarded here too, so a resumed child regains its
+ *     path policy along with its surface.
+ *
+ * @param agent - the agent being announced.
+ * @param service - the published catalog service.
+ * @param sessionTools - the official `@deepseek-ai/dsh-session` helpers.
+ * @returns whether this bundle composed the child.
+ */
+function composeDelegatedChild(agent, service, sessionTools, configuredMainAgentId) {
+  const parked = takeChildComposition(agent.id)
+  if (parked !== undefined) {
+    // A FRESH child. The definition is re-read from the CURRENT catalog: a child
+    // whose definition has been deleted or disabled between preparation and
+    // materialization must not be published with a surface nothing authorises.
+    const definition = service.definitions.get(parked.agentId)
+    const policy = service.settings?.policy?.(parked.agentId)
+    const authorised = definition !== undefined
+      && policy?.exists === true
+      && policy?.retired !== true
+      && policy?.effectiveEnabled === true
+    if (!authorised) {
+      // Fail closed: an empty surface and no persona. The child was authorised a
+      // moment ago under a definition that no longer exists, so the only safe
+      // composition is the narrowest one.
+      applyComposition(agent, emptyComposition(parked.agentId), undefined)
+      return true
+    }
+    // Persist BEFORE restricting: the record is what a later cold resume reads,
+    // and a child must never be published with an authority that would not
+    // survive its own restart. `mainAgentId` is the OWNING main, from the caller
+    // identity the delegation resolved — not the child definition's id.
+    writeChildAuthority(
+      agent.session,
+      childAuthority({
+        agentId: parked.agentId,
+        mainAgentId: parked.mainAgentId,
+        persona: parked.persona,
+        toolFilter: parked.toolFilter,
+      }),
+      sessionTools.appendPluginRecord,
+    )
+    applyComposition(agent, { persona: parked.persona, toolFilter: parked.toolFilter }, definition.child)
+    return true
+  }
+
+  // Not created by this process: a cold materialization, or a child that is not
+  // ours at all.
+  //
+  // OWNERSHIP is decided by TWO independent facts, and BOTH are required to call
+  // a child "not ours":
+  //
+  //   - the durable authority record in the child's own log;
+  //   - the durable identity sidecar the delegation runtime wrote.
+  //
+  // A missing record with a PRESENT sidecar is a known banbo child whose
+  // authority was lost (an older build, a truncated log, a migration) — that must
+  // fail CLOSED, not fall through to "third-party child, leave it alone". Only
+  // when the sidecar is genuinely ABSENT is the child not this bundle's, and only
+  // then is it left untouched.
+  //
+  // The sidecar read is TRI-STATE for exactly this reason: a corrupt or
+  // unreadable sidecar means a record exists that cannot be trusted, which is
+  // "known child, fail closed" — never "absent, leave it alone". Collapsing those
+  // into one `undefined` is how a damaged sidecar becomes an unrestricted child.
+  const sidecar = readChildIdentityState(service.rootDir, agent.id)
+  const identity = sidecar.state === 'valid' ? sidecar.identity : undefined
+  const read = readChildAuthority(agent.session, sessionTools.pluginRecordOf)
+
+  if (read.state === 'absent' && sidecar.state === 'absent') {
+    // Neither fact exists: a subagent this bundle never created (or one whose
+    // data is entirely gone). Restricting it would change another plugin's
+    // behaviour, so it is left as authored.
+    return false
+  }
+
+  if (read.state === 'absent') {
+    // The sidecar EXISTS (valid or invalid) but there is no authority record: the
+    // authorisation cannot be reconstructed, so the surface narrows to nothing.
+    const agentId = identity?.agentId ?? 'unknown'
+    applyComposition(agent, emptyComposition(agentId), service.definitions.get(agentId)?.child)
+    return true
+  }
+
+  if (read.state === 'invalid') {
+    // A record of this type exists but does not validate. Never "no restriction".
+    const agentId = identity?.agentId ?? 'unknown'
+    applyComposition(agent, emptyComposition(agentId), service.definitions.get(agentId)?.child)
+    return true
+  }
+
+  // `valid`: the record must be BOUND to the durable identity and to the live
+  // main before its allowlist may be applied. Each check below is an independent
+  // way a record could have been transplanted, replayed, or left behind by a
+  // different release:
+  //
+  //   1. a sidecar must exist (a valid record with no identity is unbound);
+  //   2. `authority.agentId` must equal `sidecar.agentId` — otherwise the record
+  //      belongs to a different child definition;
+  //   3. `authority.mainAgentId` must equal `sidecar.mainAgentId` — otherwise the
+  //      record was written under a different owning main;
+  //   4. that same main must be the CONFIGURED main of this process — otherwise a
+  //      record from another deployment would be honoured;
+  //   5. the definition must still exist and be enabled.
+  //
+  // Any failure is `emptyComposition`: the narrowest surface, not the recorded one.
+  const authority = read.authority
+  // The reliable source of "which main owns this preset" is the ROW config that
+  // mounted this runtime, not a field on the shared catalog service (which is
+  // one object serving every preset).
+  const configuredMain = configuredMainAgentId
+  const definition = identity === undefined ? undefined : service.definitions.get(identity.agentId)
+  const policy = identity === undefined ? undefined : service.settings?.policy?.(identity.agentId)
+  const bound = identity !== undefined
+    && authority.agentId === identity.agentId
+    && authority.mainAgentId === identity.mainAgentId
+    && identity.mainAgentId === configuredMain
+    && definition !== undefined
+    && policy?.exists === true
+    && policy?.retired !== true
+    && policy?.effectiveEnabled === true
+
+  if (!bound) {
+    const agentId = identity?.agentId ?? authority.agentId
+    applyComposition(agent, emptyComposition(agentId), service.definitions.get(agentId)?.child)
+    return true
+  }
+
+  applyComposition(agent, { persona: authority.persona, toolFilter: { allow: authority.allow } }, definition.child)
+  return true
+}
+
+/**
+ * Install one composition on an agent's own context: persona section, exact tool
+ * restriction, and the write-scope guard for a form that declares one.
+ *
+ * Kept separate so the fresh-creation path and the cold-resume path cannot drift
+ * apart: a restriction applied on one and forgotten on the other is exactly the
+ * widening this file exists to prevent.
+ *
+ * @param agent - the agent to compose.
+ * @param composition - `persona` text and `toolFilter.allow`.
+ * @param form - the definition's `child` form, for the write-scope decision.
+ */
+function applyComposition(agent, composition, form) {
+  agent.ctx.systemPrompt.section({
+    name: 'deployment:persona-prefix',
+    order: agent.ctx.systemPrompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX'),
+    text: composition.persona,
+  })
+  agent.ctx.tools.restrict(composition.toolFilter)
+  if (hasWriteScope(form)) agent.ctx.tools.guard((execution) => writeScopeGuardReason(form, execution))
+}
+
 /** Preset-standing plugin entry. */
 export default function apply(ctx, config) {
   installIdentitySection(ctx)
   ctx.on('agent/created', ({ agent }) => {
     if (agent.session.header.origin === 'subagent') {
-      // §16.12: a delegated child must be guarded on EVERY materialization, not
+      // §16.12: a delegated child must be composed on EVERY materialization, not
       // only when the delegation created it. The harness disposes an idle
       // continuable activation and rebuilds the child from its persisted
-      // descriptor on the next `send_message`, and that rebuild re-applies only
-      // the persona and tool filter — so a guard installed at creation time is
-      // gone, leaving a durable child with `write`/`edit` and no scope. A child
-      // cannot be identified from its session header, so the sidecar written by
-      // the delegation runtime is the sanctioned source (§11.1.1).
+      // descriptor on the next `send_message` — and in 0.2.1 that descriptor no
+      // longer carries the persona or the tool filter at all, so a cold child
+      // would otherwise come back with the preset's full surface.
+      //
+      // `composeDelegatedChild` owns both directions and the fail-closed rule
+      // between them: the in-memory handoff for a fresh child (it writes the
+      // durable record as it applies the composition), the child's own session
+      // log for a resumed one, and an EMPTY surface when the record exists but
+      // cannot be trusted.
+      if (composeDelegatedChild(agent, ctx.banboAgents, { appendPluginRecord, pluginRecordOf }, config.agentId)) return
       guardResumedChildScope(agent, ctx.banboAgents)
       return
     }

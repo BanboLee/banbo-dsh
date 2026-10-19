@@ -19,8 +19,7 @@ function runFixture() {
   const disposed = deferred<void>()
   return {
     run: {
-      id: 'child-1',
-      localAgent: undefined,
+      childId: 'child-1',
       result: result.promise,
       dispose: vi.fn(() => disposed.promise),
     },
@@ -42,7 +41,7 @@ describe('RunHolder', () => {
     holder.attach(fixture.run as never)
     fixture.result.resolve({ output: [], stopReason: 'completed' })
     await expect(holder.result).resolves.toEqual({ output: [], stopReason: 'completed' })
-    expect(holder.id).toBe('child-1')
+    expect(holder.childId).toBe('child-1')
   })
 
   it('makes cancellation and settlement idempotent and disposes exactly once', async () => {

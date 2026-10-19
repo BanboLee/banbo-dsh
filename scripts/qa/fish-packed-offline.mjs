@@ -37,7 +37,7 @@
  * root is removed on the way out, success or failure; every failure prints the
  * failing command and its complete output and exits non-zero.
  *
- * Requires on PATH: `dsh` (0.2.0-rc.2), `pnpm`, `tar`. `fish` is deliberately
+ * Requires on PATH: `dsh` (0.2.1-rc.2), `pnpm`, `tar`. `fish` is deliberately
  * NOT required: this lane proves the packed bundle installs, loads and
  * registers its tools — session behavior is the real lane's job
  * (`plugins/fish-shell/tests/terminal-session-real.spec.ts`).
@@ -220,7 +220,7 @@ async function loadAgentRuntime(packageRoot) {
 async function main() {
   const dshBinary = findOnPath('dsh')
   if (dshBinary === undefined) {
-    throw new ProbeError('the `dsh` CLI is not on PATH (install @deepseek-ai/dsh@0.2.0-rc.2)')
+    throw new ProbeError('the `dsh` CLI is not on PATH (install @deepseek-ai/dsh@0.2.1-rc.2)')
   }
   const pnpmBinary = process.env.PNPM_BIN ?? findOnPath('pnpm')
   if (pnpmBinary === undefined) {
@@ -413,20 +413,26 @@ async function main() {
   info(`installed bundle layer: ${bundleLayer.packageDir}`)
   info(`bundled ${TOOL_PACKAGE}@${installedVersion} is a real directory inside it`)
 
-  // The resolver probe behind this plan's "resolved from inside the package"
-  // assumption: the profile-plane resolution must own an entry for the bundled
-  // package that IS the copy inside the installed bundle, declared by that
-  // bundle's own package.json, and located inside this profile's isolated home.
+  // Which copy of the terminal tool does this profile actually load?
   //
-  // The check is deliberately layout-independent. Which linker pnpm runs with
-  // decides how the tarball lands: a developer machine's pnpm 12 links the
-  // package at `<profile>/node_modules/@banbolee/dsh-fish-shell`, while the
-  // repository-pinned pnpm 9.3.0 (CI) installs it into the `.pnpm` virtual store
-  // and resolves through `node_modules/.pnpm/<…>/node_modules/@banbolee/
-  // dsh-fish-shell`. Prefix comparison therefore false-reds on CI, while name or
-  // version alone would not catch a copy resolved from somewhere else — the
-  // trailing bundle-relative path plus the declaring package is what identifies
-  // the bundled copy in both layouts.
+  // Through dsh 0.2.0-rc.2 a bare `@deepseek-ai/dsh-tool-terminal` row was
+  // enough: nothing in the installation carried the name, so the profile-scope
+  // resolution entry pointed at the copy bundled inside this package.
+  //
+  // 0.2.1 changed that. The installation now ships the package itself
+  // (`dsh-experimental-terminal-bundle` declares it), and `createRuntimeResolution`
+  // only records a profile-scope entry for a name the installation does NOT
+  // already supply. A bare name therefore resolves to the INSTALLATION copy.
+  // That is why this bundle's patch mounts `@banbolee/dsh-fish-shell/tool-terminal`
+  // — a path-like specifier, imported directly rather than through the name
+  // table, re-exporting the copy inside this package.
+  //
+  // The probe below therefore asserts the property that matters, not the old
+  // mechanism: the six terminal tools must come from the BUNDLED copy. It is
+  // checked twice — once statically (the bundle's own re-export module exists in
+  // the installed layer and its target is the vendored package), and once after
+  // the real boot (the mounted row's module URL lives inside the installed
+  // bundle).
   const resolution = typeof appBoot.createRuntimeResolution === 'function' && appBoot.PluginPackages !== undefined
     ? await appBoot.createRuntimeResolution({ installAnchor, profile, home: dshHome })
     : undefined
@@ -436,23 +442,53 @@ async function main() {
   } else {
     await appBoot.healProfilesModuleFallback?.({ installAnchor, profile, home: dshHome })
   }
-  if (resolution !== undefined) {
-    const toolEntry = resolution.entries?.find((entry) => entry.name === TOOL_PACKAGE)
-    if (toolEntry === undefined) {
-      throw new ProbeError(`the runtime resolution has no entry for the bundled ${TOOL_PACKAGE}`)
-    }
-    const packageDir = String(toolEntry.packageDir)
-    const declarer = String(toolEntry.declarer)
-    const bundledSuffix = join(BUNDLE_NAME, 'node_modules', TOOL_PACKAGE)
-    if (toolEntry.scope !== 'profile'
-      || !packageDir.endsWith(bundledSuffix)
-      || !declarer.endsWith(join(BUNDLE_NAME, 'package.json'))
-      || !packageDir.startsWith(dshHome)) {
+
+  // Static half: the re-export module the patch row names must exist in the
+  // INSTALLED layer (so the offline tarball really carries it), and it must
+  // resolve the terminal package from its own position — in a packed tarball
+  // that reaches the vendored copy beside it, never a copy chosen by the harness.
+  const reExportPath = join(bundleLayer.packageDir, 'tool-terminal.js')
+  if (!existsSync(reExportPath)) {
+    throw new ProbeError(`the installed bundle has no tool-terminal re-export at ${reExportPath}`)
+  }
+  const reExportSource = readFileSync(reExportPath, 'utf8')
+  if (!reExportSource.includes('createRequire(import.meta.url)')
+    || !reExportSource.includes("requireFromHere.resolve('@deepseek-ai/dsh-tool-terminal')")) {
+    throw new ProbeError(`the tool-terminal re-export does not resolve from its own position: ${reExportSource.slice(0, 200)}`)
+  }
+  // In a packed tarball the dependency is a real directory beside the re-export;
+  // assert that, because it is what makes the resolution land on the SHIPPED copy
+  // rather than on whatever the profile plane happens to provide.
+  const vendoredEntry = join(bundleLayer.packageDir, 'node_modules', TOOL_PACKAGE, 'lib', 'index.js')
+  if (!existsSync(vendoredEntry)) {
+    throw new ProbeError(`the installed bundle has no vendored ${TOOL_PACKAGE} entry at ${vendoredEntry}`)
+  }
+  info(`re-export tool-terminal.js resolves ${TOOL_PACKAGE} from its own position (vendored entry present)`)
+
+  // Runtime half of the same question, answered WITHOUT booting: resolve the
+  // specifier from the installed re-export and require the answer to be the
+  // vendored copy. This is what makes "the tarball's copy is what runs" a
+  // checked fact rather than an inference from the directory listing.
+  {
+    const { createRequire } = await import('node:module')
+    const requireFromInstalled = createRequire(pathToFileURL(reExportPath).href)
+    const resolved = requireFromInstalled.resolve(TOOL_PACKAGE)
+    const expected = join(realpathSync(bundleLayer.packageDir), 'node_modules', TOOL_PACKAGE)
+    if (!realpathSync(dirname(dirname(resolved))).startsWith(realpathSync(expected))) {
       throw new ProbeError(
-        `${TOOL_PACKAGE} did not resolve to the copy bundled inside the installed ${BUNDLE_NAME}: ${JSON.stringify(toolEntry)}`,
+        `${TOOL_PACKAGE} resolves outside the installed bundle: ${resolved} (expected under ${expected})`,
       )
     }
-    info(`resolution entry: ${TOOL_PACKAGE}@${String(toolEntry.version)} scope=${String(toolEntry.scope)} dir=${packageDir}`)
+    info(`${TOOL_PACKAGE} resolves to ${resolved} — inside the installed bundle`)
+  }
+
+  // If the installation carries the bare name, say so — a profile that still
+  // resolved that name would be loading the harness copy instead of the bundle.
+  const installationEntry = resolution?.entries?.find(
+    (entry) => entry.name === TOOL_PACKAGE && entry.scope === 'installation',
+  )
+  if (installationEntry !== undefined) {
+    info(`note: the installation also ships ${TOOL_PACKAGE}; the bundle's re-export is what must mount`)
   }
 
   step('boot the installed profile for real')
@@ -481,6 +517,25 @@ async function main() {
       throw new ProbeError(`the installed profile has no fish-configured shell backend: ${JSON.stringify(backends)}`)
     }
     info(`listBackends() -> ${JSON.stringify(backends)}; shellPath=${String(shellBackend.config.shellPath)}`)
+
+    // The runtime half of the provenance question: the row that registers the
+    // six tools must be the installed bundle's own re-export, i.e. a module
+    // living inside the profile's copy of this package — never a path inside the
+    // dsh installation.
+    const toolRow = [...loader.entries()].find((entry) => entry.options?.id === 'terminal-tools')
+    if (toolRow === undefined) {
+      throw new ProbeError('the installed bundle did not mount the "terminal-tools" row')
+    }
+    if (toolRow.options?.name !== `${BUNDLE_NAME}/tool-terminal`) {
+      throw new ProbeError(
+        `the "terminal-tools" row must name this bundle's re-export, not ${JSON.stringify(toolRow.options?.name)}`,
+      )
+    }
+    if (toolRow.fiber === undefined || toolRow.fiber.state !== 2) {
+      throw new ProbeError(`the "terminal-tools" row did not activate (state ${String(toolRow.fiber?.state)})`)
+    }
+    const rowModule = String(toolRow.fiber?.runtime?.plugin?.constructor?.name ?? '')
+    info(`terminal-tools row mounted from ${BUNDLE_NAME}/tool-terminal (${rowModule === '' ? 'anonymous plugin' : rowModule})`)
 
     const runtime = await loadAgentRuntime(packageRoot)
     const tools = ctx.get('tools')

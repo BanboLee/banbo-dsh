@@ -20,21 +20,21 @@ naming one.
 
 | Package | Version | License | Location inside the tarball |
 |---|---|---|---|
-| `@deepseek-ai/dsh-tool-terminal` | `0.2.0-rc.2` | MIT | `package/node_modules/@deepseek-ai/dsh-tool-terminal/` |
-| `@deepseek-ai/schemastery` | `3.18.4` | MIT | `package/node_modules/@deepseek-ai/schemastery/` |
-| `@deepseek-ai/cosmokit` | `1.8.5` | MIT | `package/node_modules/@deepseek-ai/cosmokit/` |
+| `@deepseek-ai/dsh-tool-terminal` | `0.2.1-rc.2` | MIT | `package/node_modules/@deepseek-ai/dsh-tool-terminal/` |
+| `@deepseek-ai/schemastery` | `3.18.5` | MIT | `package/node_modules/@deepseek-ai/schemastery/` |
+| `@deepseek-ai/cosmokit` | `1.8.6` | MIT | `package/node_modules/@deepseek-ai/cosmokit/` |
 | `@standard-schema/spec` | `1.1.0` | MIT | `package/node_modules/@standard-schema/spec/` |
 
 Dependency edges, as declared by the packaged manifests:
 
-- `@deepseek-ai/dsh-tool-terminal@0.2.0-rc.2` → `@deepseek-ai/schemastery ~3.18.4`
-- `@deepseek-ai/schemastery@3.18.4` → `@standard-schema/spec ^1.1.0`, `@deepseek-ai/cosmokit ~1.8.5`
-- `@standard-schema/spec@1.1.0` and `@deepseek-ai/cosmokit@1.8.5` → no runtime dependencies
+- `@deepseek-ai/dsh-tool-terminal@0.2.1-rc.2` → `@deepseek-ai/schemastery ~3.18.5`
+- `@deepseek-ai/schemastery@3.18.5` → `@standard-schema/spec ^1.1.0`, `@deepseek-ai/cosmokit ~1.8.6`
+- `@standard-schema/spec@1.1.0` and `@deepseek-ai/cosmokit@1.8.6` → no runtime dependencies
 
 Those four packages are the complete `node_modules/` inventory of the packed
 tarball; each of them includes its `LICENSE` file.
 
-## `@deepseek-ai/dsh-tool-terminal` 0.2.0-rc.2 — MIT
+## `@deepseek-ai/dsh-tool-terminal` 0.2.1-rc.2 — MIT
 
 - Origin: `git+https://github.com/deepseek-ai/deepseek-harness.git`, directory
   `packages/terminal/tool-terminal` (from the packaged `package.json`
@@ -46,7 +46,7 @@ tarball; each of them includes its `LICENSE` file.
   `dependencies` + `bundledDependencies` entry of this package, not as a peer,
   so it resolves from inside this package.
 
-## `@deepseek-ai/schemastery` 3.18.4 — MIT
+## `@deepseek-ai/schemastery` 3.18.5 — MIT
 
 - Origin: `git+https://github.com/deepseek-ai/deepseek-harness.git`, directory
   `vendor/schemastery` (from the packaged `package.json` `repository`).
@@ -56,7 +56,7 @@ tarball; each of them includes its `LICENSE` file.
 - Role here: transitive runtime dependency of
   `@deepseek-ai/dsh-tool-terminal`.
 
-## `@deepseek-ai/cosmokit` 1.8.5 — MIT
+## `@deepseek-ai/cosmokit` 1.8.6 — MIT
 
 - Origin: `git+https://github.com/deepseek-ai/deepseek-harness.git`, directory
   `vendor/cosmokit` (from the packaged `package.json` `repository`).

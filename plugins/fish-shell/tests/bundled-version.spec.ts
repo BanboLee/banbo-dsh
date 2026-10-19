@@ -17,6 +17,10 @@ import { describe, expect, it } from 'vitest'
 const BUNDLED_PACKAGE = '@deepseek-ai/dsh-tool-terminal'
 const manifestPath = fileURLToPath(new URL('../package.json', import.meta.url))
 const installedManifestPath = fileURLToPath(new URL(`../node_modules/${BUNDLED_PACKAGE}/package.json`, import.meta.url))
+const patchPath = fileURLToPath(new URL('../cordis.patch.yml', import.meta.url))
+const reExportPath = fileURLToPath(new URL('../tool-terminal.js', import.meta.url))
+const toolTerminalUrl = new URL('../tool-terminal.js', import.meta.url).href
+const vendoredEntryUrl = new URL(`../node_modules/${BUNDLED_PACKAGE}/lib/index.js`, import.meta.url).href
 
 interface Manifest {
   version?: string
@@ -46,5 +50,30 @@ describe('bundled @deepseek-ai/dsh-tool-terminal version', () => {
     expect(existsSync(installedManifestPath), `${BUNDLED_PACKAGE} is not installed in plugins/fish-shell/node_modules`).toBe(true)
     const installed = readManifest(installedManifestPath)
     expect(installed.version).toBe(pin)
+  })
+
+  it('mounts its own copy through the tool-terminal re-export, never the bare name', async () => {
+    // 0.2.1 ships `@deepseek-ai/dsh-tool-terminal` in the dsh installation too,
+    // and a bare name then resolves to the INSTALLATION copy. The patch must
+    // therefore name this package's own handle, and that handle must resolve the
+    // dependency from its own position.
+    const patch = readFileSync(patchPath, 'utf8')
+    expect(patch).toContain("name: '@banbolee/dsh-fish-shell/tool-terminal'")
+    expect(patch).not.toMatch(/name:\s*'@deepseek-ai\/dsh-tool-terminal'/)
+
+    const manifest = readManifest(manifestPath) as Manifest & { exports?: Record<string, string> }
+    expect(manifest.exports?.['./tool-terminal']).toBe('./tool-terminal.js')
+
+    const reExport = readFileSync(reExportPath, 'utf8')
+    expect(reExport).toContain('createRequire(import.meta.url)')
+    expect(reExport).toContain("requireFromHere.resolve('@deepseek-ai/dsh-tool-terminal')")
+
+    // The plugin surface is re-exported unchanged: a row naming this subpath must
+    // look exactly like a row naming the package itself.
+    const reExported = await import(toolTerminalUrl)
+    const vendored = await import(vendoredEntryUrl)
+    for (const key of ['apply', 'inject', 'name', 'Config']) {
+      expect(reExported[key], `re-export lost ${key}`).toBe(vendored[key])
+    }
   })
 })

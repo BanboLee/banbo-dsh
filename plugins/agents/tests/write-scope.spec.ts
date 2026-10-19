@@ -19,9 +19,11 @@ import { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
+import { SessionStore, appendPluginRecord } from '@deepseek-ai/dsh-session'
 import type { ToolExecutionInput, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 
 import { loadCatalog, mergeDefinition } from '../catalog.js'
+import { CHILD_AUTHORITY_RECORD } from '../child-authority.js'
 import { writeChildIdentity } from '../identity.js'
 import mainRuntime, { activateMainAgent } from '../main-runtime.js'
 import { WRITE_TOOLS, writeScopeGuardReason } from '../path-policy.js'
@@ -746,6 +748,9 @@ describe('main-runtime wiring — the mounted definition is what is enforced', (
     const ctx = new Context()
     await ctx.plugin(SystemPrompt, { personaPrefix: 'global persona' })
     await ctx.plugin(ToolRuntime, { mode: 'native' })
+    // A real Session: the resume path reads the durable authority record through
+    // the official plugin-record API, and a stub would silently read as "absent".
+    await ctx.plugin(SessionStore)
     const host = await ctx.plugin({ name: 'resume-host', inject: ['tools', 'systemPrompt'], apply() {} })
     for (const name of ['read', 'write', 'edit']) host.ctx.tools.register(toolDefinition(name) as never)
 
@@ -795,15 +800,28 @@ describe('main-runtime wiring — the mounted definition is what is enforced', (
     mainRuntime(listenerCtx as never, { agentId: 'planner' })
 
     const workspace = scratchDir()
+    const session = ctx.sessions.create(undefined, { meta: { cwd: workspace, origin: 'subagent' } })
+    // The durable authority record is what the resume path reads; without it a
+    // sidecar-only child is the fail-closed "authority lost" case, not a
+    // "re-apply the recorded surface" case. Write it whenever a sidecar exists.
+    if (options.sidecar !== false) {
+      appendPluginRecord(session, CHILD_AUTHORITY_RECORD as never, {
+        version: 1,
+        agentId: options.agentId ?? 'planner',
+        mainAgentId: 'planner',
+        persona: '# Planner child',
+        allow: ['read', 'write', 'edit'],
+      } as never)
+    }
     const agent: {
       id: string
       options: Record<string, unknown>
-      session: { header: { agentPreset: string, origin: string, cwd: string }, snapshotEvents: () => unknown[] }
+      session: typeof session
       ctx: Context
     } = {
       id: childId,
       options: {},
-      session: { header: { agentPreset: 'planner', origin: 'subagent', cwd: workspace }, snapshotEvents: () => [] },
+      session,
       ctx: undefined as never,
     }
     const scoped = createScope(host.ctx, agent as never)
@@ -829,14 +847,17 @@ describe('main-runtime wiring — the mounted definition is what is enforced', (
     await expect(call(agent, 'write', 'src/index.ts')).resolves.toMatchObject({ isError: false })
   })
 
-  it('pins the fail-open residual when the sidecar names an agent with no scope', async () => {
-    // DOCUMENTS A RESIDUAL, NOT A DESIRED OUTCOME. The guard comes from the
-    // CURRENT definition while the tool filter is frozen at creation, so a
-    // durable scoped child resumed after its definition loses the child form —
-    // or the whole file is deleted, a supported action (§6.3) — comes back with
-    // write/edit and no guard. Recorded in §16.12 with the two ways to close it.
+  it('fails closed when the sidecar names an agent the catalog no longer has', async () => {
+    // This used to DOCUMENT a fail-open residual: the guard came from the CURRENT
+    // definition, so a durable scoped child resumed after its definition was
+    // deleted came back with `write`/`edit` and no guard (§16.12).
+    //
+    // That residual is now closed. A child whose recorded definition is gone from
+    // the live catalog gets `emptyComposition`: no persona and an EMPTY allowlist,
+    // so `write` is not merely unguarded — it is not in the surface at all. The
+    // assertion therefore flips from "the write succeeds" to "the tool is gone".
     const { agent } = await resumeHarness({ scope: '.banbo-dsh/plans', agentId: 'deleted-agent' })
-    await expect(call(agent, 'write', 'src/index.ts')).resolves.toMatchObject({ isError: false })
+    await expect(call(agent, 'write', 'src/index.ts')).resolves.toMatchObject({ isError: true })
   })
 })
 

@@ -101,8 +101,19 @@
             shellArgs: ["--no-config","-i","-C","function fish_greeting; end; function fish_prompt; printf '\\x1b]133;D;%s\\x07' $status; echo -n 'dsh> '; end; function fish_right_prompt; end;"]
             timeoutMs: 300000
 
+        # 0.2.1 changed which copy a bare package name selects. The dsh
+        # installation now ships `@deepseek-ai/dsh-tool-terminal` itself
+        # (`dsh-experimental-terminal-bundle` declares it), and the profile-scope
+        # runtime resolution only records a name the installation does NOT
+        # already supply — so naming the package here would resolve to the
+        # INSTALLATION copy and this bundle's own bundled copy would never be
+        # used. `@banbolee/dsh-fish-shell/tool-terminal` is this package's
+        # re-export of the copy it ships; a path-like specifier is imported
+        # directly instead of through the name table, so the vendored copy is
+        # what mounts. `tests/bundle.spec.ts` and
+        # `scripts/qa/fish-packed-offline.mjs` pin that.
         - id: terminal-tools
-          name: '@deepseek-ai/dsh-tool-terminal'
+          name: '@banbolee/dsh-fish-shell/tool-terminal'
 
         - id: fish-terminal-tools
           name: '@banbolee/dsh-fish-shell/terminal-tools'

@@ -1,156 +1,363 @@
 name: Release
 
-# Publishing is MANUAL ONLY: this workflow is never triggered by a push or a
-# pull request, so nothing reaches the registry without a human dispatch.
-# `dry_run` defaults to true — a dispatch packs and validates the artefact, and
-# only an explicit `dry_run: false` really publishes.
+# Publishing is MANUAL ONLY, and it is a six-package operation: this repository
+# ships `rtk`, `codegraph-mcp`, `fish-shell`, `lsp-diagnostics`,
+# `llm-pi-ai-with-session` and `agents`, and a release means all six at one
+# commit. Nothing reaches the registry without a human dispatch.
+#
+# The dispatch names an EXACT COMMIT (`release_sha`). That is not a convenience:
+# a tag or branch name can move between the moment a human decides to release and
+# the moment the runner checks out, and a release must publish the code somebody
+# actually reviewed.
+#
+# `dry_run` defaults to true. A dry run packs, validates and journals all six
+# artefacts and touches nothing else; only an explicit `dry_run: false` publishes.
 on:
   workflow_dispatch:
     inputs:
+      release_sha:
+        description: 'Full 40-character commit SHA on main to release (must equal the checkout)'
+        required: true
+        type: string
       dry_run:
-        description: 'Pack and verify without publishing; set to false to publish for real'
+        description: 'Pack and verify only; set to false to publish for real'
         type: boolean
         default: true
+      prior_run_id:
+        description: 'Optional: run id of a previous dispatch of THIS release, whose journal is resumed'
+        required: false
+        type: string
+        default: ''
 
-# `contents: read` is all the checkout needs.
+# `contents: write` is required: the lane creates six annotated tags and six
+# GitHub Releases at the end. Without it the publish would succeed and the release
+# would stay untagged.
 #
-# `id-token: write` is what lets the run request the GitHub OIDC token that npm
-# provenance is signed with. It is minted per run, so there is no long-lived
-# secret behind provenance itself.
+# `id-token: write` is what lets the run request the GitHub OIDC token npm
+# provenance is signed with. It is minted per run, so no long-lived secret backs
+# provenance itself.
 permissions:
-  contents: read
+  contents: write
   id-token: write
+
+# ONE release at a time, and never cancel one that is running.
+#
+# This is a correctness constraint, not a courtesy: the lane publishes six
+# immutable versions under ONE candidate dist-tag and then promotes `latest`. Two
+# overlapping dispatches would interleave those steps — the second could publish
+# `0.3.2` while the first is promoting `latest`, and the shared candidate tag
+# would end up describing a mixture of two releases. `cancel-in-progress: false`
+# is the other half: cancelling mid-publish would abandon a run after some
+# versions reached the registry, which is exactly the partial state the journal
+# exists to describe (and recover from) rather than to create on purpose.
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
 
 env:
   # Keep pnpm in development mode so devDependencies (vitest and the plugin
-  # bundles' @deepseek-ai family) are installed for the checks below; a
+  # bundles' @deepseek-ai family) are installed for the gates below; a
   # NODE_ENV=production install would silently skip them.
   NODE_ENV: development
+  # The registry dist-tag a real publish uses. A candidate tag is what makes the
+  # release atomic-ish: nothing is visible as `latest` until all six versions are
+  # published and verified, so a partial failure never moves `latest` onto a
+  # release a user cannot install.
+  RELEASE_CANDIDATE_TAG: next
+  # The Node/pnpm pair this lane is verified against, named explicitly so a
+  # runner image change cannot silently move the release toolchain.
+  RELEASE_NODE_VERSION: '22'
+  RELEASE_PNPM_VERSION: '9.3.0'
+  # npm CLI. This is a CORRECTNESS input, not a convenience: the lane publishes
+  # with tokenless OIDC trusted publishing, and `npm dist-tag add|rm` only gained
+  # OIDC support in **11.21.0** (verified by unpacking the published CLIs:
+  # 11.20.0 has no OIDC in `lib/commands/dist-tag.js`, 11.21.0 does; in 12.x the
+  # first is 12.2.0). Pinning 11.6.2 — the publish-only floor — would publish all
+  # six versions and then fail at the first dist-tag call, leaving six immutable
+  # versions under a candidate tag that can never be promoted.
+  RELEASE_NPM_VERSION: '11.21.0'
+  # The DSH/TUI versions this lane's gates boot against, and the fish binary the
+  # composition and fish lanes need. They are pinned HERE rather than inherited
+  # from the runner so a runner image change cannot silently move the harness the
+  # packed bundles are verified against.
+  RELEASE_DSH_VERSION: '0.2.1-rc.2'
+  RELEASE_DSH_TUI_VERSION: '0.16.1'
+  # Where the journal and the packed tarballs live. The journal is uploaded even
+  # when the run fails, so a partial failure leaves evidence behind.
+  RELEASE_ARTIFACTS: release-artifacts
+  RELEASE_JOURNAL: release-artifacts/release-journal.json
+  # Empty by DEFAULT, so a fresh dispatch (no `prior_run_id`) never expands an
+  # undefined variable. The `Locate the prior journal` step overwrites this in
+  # `$GITHUB_ENV` only when a resume actually found its artifact.
+  RELEASE_PRIOR_JOURNAL: ''
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # `fetch-depth: 0` and `fetch-tags: true` are load-bearing: the lane checks
+      # the commit is on `main`, and it creates tags at the end.
+      - name: Checkout the exact release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          # A release never runs against a modified checkout; the preflight
+          # asserts this again from the tree itself.
+          persist-credentials: false
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9.3.0
+          version: ${{ env.RELEASE_PNPM_VERSION }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ env.RELEASE_NODE_VERSION }}
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
+
+      # `setup-node` writes an `.npmrc` that points npm at the registry but does
+      # not decide the npm CLI version; the release needs a specific one because
+      # tokenless trusted publishing requires >= 11.5.1 for `publish` and
+      # >= 11.21.0 for `dist-tag` (see RELEASE_NPM_VERSION above).
+      - name: Pin the npm CLI
+        run: |
+          set -euo pipefail
+          npm install --global "npm@${RELEASE_NPM_VERSION}"
+          node --version
+          npm --version
+          pnpm --version
+
+      # The gates below boot REAL isolated DSH profiles through the `dsh` CLI and
+      # run the agents platform Gate B/F probes, which resolve
+      # `@deepseek-ai/dsh-app-boot` and `dsh-tui` beside the global `dsh`. Without
+      # these the probes SKIP, which on a release runner would mean the gates that
+      # inspect a packed tarball never actually ran.
+      #
+      # Order matters: dsh first (the TUI declares a peer on it), then the TUI.
+      - name: Install the pinned DSH CLI
+        run: |
+          set -euo pipefail
+          npm install --global "@deepseek-ai/dsh@${RELEASE_DSH_VERSION}"
+          dsh --version
+
+      # `0.16.1` is the first dsh-tui whose peers include `0.2.1-rc.2`.
+      - name: Install the pinned DSH TUI
+        run: |
+          set -euo pipefail
+          npm install --global "@deepseek-harness-tui/dsh-tui@${RELEASE_DSH_TUI_VERSION}" --no-audit --no-fund
+
+      # fish-shell is the only shell the composition profiles mount, so without the
+      # binary those specs fail with `spawn fish ENOENT` wrapped in
+      # SandboxUnavailableError — on the release runner, that would look like a
+      # broken release rather than a missing prerequisite.
+      - name: Install fish
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y fish
+
+      # Annotated tags need an identity, and the tag push at the end needs
+      # credentials. Both are configured HERE, before any publish, because they are
+      # used by the LAST step of an irreversible sequence; `preflight` re-checks
+      # both so a mis-wiring fails before the first tarball is built.
+      #
+      # The token is scoped to this step's remote URL and never exported: `git
+      # push` reads it from the remote, so it cannot leak into a child process that
+      # does not need it.
+      - name: Configure the release git identity and push credentials
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          # Print the redacted form so a log never carries the token.
+          git remote get-url origin | sed -E 's#(https://)[^@/]*@#\1***@#'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Nothing may reach the registry unless the deterministic suite is green.
-      # `pnpm test` never runs tsc, so the plugin tsconfigs are checked
-      # separately (AGENTS.md).
+      # Every deterministic gate runs BEFORE anything is packed. A release is the
+      # one operation this repository cannot undo (npm versions are immutable), so
+      # "the suite was green" must be a precondition of packing, not a hope.
       - name: Run the deterministic test suite
         run: pnpm test
 
       - name: Typecheck every plugin tsconfig
         run: pnpm typecheck
 
-      # The bundle is PUBLISHED FROM A STAGED COPY, never from the checkout.
-      # The package ships `@deepseek-ai/dsh-tool-terminal` through
-      # `bundledDependencies`, and in the repository's isolated (symlinked)
-      # node_modules the bundled dependency's transitive deps resolve through
-      # `.pnpm`, so npm records them as `package/../../node_modules/.pnpm/...`
-      # members — a tarball whose members escape the package root (40 of them,
-      # verified locally). A hoisted install on a copy outside the workspace
-      # makes those paths resolve inside the package instead: the same staging
-      # the repository's packed-offline lane uses, and the only shape whose
-      # members all live under `package/`.
+      - name: Build the agents bundle artifacts
+        run: pnpm build:agents
+
+      # The agents platform gates and the packed-artifact lane run in their own
+      # job in CI (they boot real isolated profiles). A release repeats them here
+      # because they are the only checks that inspect a PACKED tarball.
+      - name: Run the agents platform gates
+        run: pnpm test:agents:gates
+
+      # A previous dispatch of this release may have died mid-publish. Its journal
+      # is the ONLY trustworthy record of which versions already reached the
+      # registry (npm versions are immutable, so a re-run must skip those and
+      # publish only the remainder).
       #
-      # `--config.package-import-method=copy` is load-bearing, not a tweak:
-      # pnpm's default import method materializes store files as HARDLINKS, and
-      # when the staged tree keeps them the packing step writes hardlink members
-      # (`hrw-r--r-- … link to …`) that npmjs REJECTS with
-      # `415 Unsupported Media Type … Hard link is not allowed` (hit during the
-      # 0.8.0 publish: schemastery/LICENSE and cosmokit/LICENSE were two links to
-      # one inode). Copying keeps the staged tree hardlink-free, and the guard
-      # below asserts that it stayed that way.
-      - name: Stage the bundle outside the workspace with the hoisted linker
+      # FAIL CLOSED when an id WAS supplied. Naming a prior run is an explicit
+      # statement that this dispatch CONTINUES it, so a failed download or a
+      # missing journal must abort rather than silently start a fresh journal:
+      # "I could not read what already happened" is not "nothing happened", and a
+      # fresh journal would either try to re-publish (impossible) or report the
+      # release as clean while six versions may already be on the registry.
+      #
+      # Only the ABSENCE of an id means a fresh start, and that is a different
+      # branch: both steps below are skipped entirely, so `RELEASE_PRIOR_JOURNAL`
+      # is never set and preflight starts a new journal.
+      - name: Download the prior release journal (resume support)
+        if: ${{ inputs.prior_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: release-journal-final
+          path: prior-release
+          run-id: ${{ inputs.prior_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Locate the prior journal
+        if: ${{ inputs.prior_run_id != '' }}
         run: |
           set -euo pipefail
-          STAGE="$(mktemp -d)"
-          echo "STAGE=$STAGE" >> "$GITHUB_ENV"
-          cp -R plugins/fish-shell "$STAGE/pkg"
-          rm -rf "$STAGE/pkg/node_modules"
-          (cd "$STAGE/pkg" && pnpm install --prod --config.node-linker=hoisted --config.package-import-method=copy --config.auto-install-peers=false)
+          if [ ! -f prior-release/release-journal.json ]; then
+            echo "::error::prior_run_id=${{ inputs.prior_run_id }} was supplied, but its release-journal-final artifact is missing or unreadable at prior-release/release-journal.json."
+            echo "Refusing to continue: a resume must be able to read what the earlier dispatch already published."
+            echo "Dispatch without prior_run_id only if this really is a NEW release."
+            exit 1
+          fi
+          echo "found the prior journal for run ${{ inputs.prior_run_id }}"
+          echo "RELEASE_PRIOR_JOURNAL=prior-release/release-journal.json" >> "$GITHUB_ENV"
 
-      # Cheap precondition for the publish below, and the only place the
-      # REGISTRY's structural rules are checked (nothing here can be found by
-      # `npm publish --dry-run`: a dry run never uploads, so the registry never
-      # applies them — that is exactly how the 415 below reached a real publish):
-      #   * every member lives under `package/` and none contains a `..`
-      #     component — a member like `package/../../node_modules/.pnpm/...`
-      #     still starts with `package/`, so both checks are needed;
-      #   * no member is a HARDLINK (npmjs 415 "Hard link is not allowed");
-      #   * a symlink member, if one ever appears, resolves inside `package/`:
-      #     an absolute target or any `..` component is rejected (npm tarballs
-      #     carry no symlinks at all, so the conservative rule costs nothing and
-      #     a permissive one would be the wrong default on a publish gate).
-      - name: Assert the tarball is publishable (no escaping members, no hardlinks)
+      # Fail closed on the dispatch itself: the commit must be the checkout, on
+      # main, from a clean tree; the npm CLI must be able to do tokenless
+      # publish AND dist-tag; git must have an identity and a push remote. Then
+      # classify every version against the registry so a re-dispatch of an
+      # already-published version is diagnosed up front instead of failing halfway
+      # through the publish loop.
+      #
+      # `--prior-journal` is what makes a re-dispatch of a PARTIAL release resume
+      # instead of restart: the previous run's journal is downloaded by the step
+      # above, verified against this dispatch (same SHA, tag, versions), and
+      # adopted. A prior journal that cannot be resumed but records published
+      # versions is a hard failure — a fresh journal must never hide them.
+      #
+      # The flag is passed ONLY when a journal was located. Passing an empty
+      # `--prior-journal ""` would reach the script as a present-but-empty value,
+      # and expanding an UNDEFINED variable under `set -u` aborts the step before
+      # node ever runs — which is exactly what a first, non-resume dispatch does.
+      # A bash ARRAY is the portable way to express "zero or one argument": an
+      # empty array expands to nothing at all, even with `set -u`.
+      - name: Preflight the dispatch
         run: |
           set -euo pipefail
-          mkdir -p "$STAGE/check"
-          (cd "$STAGE/pkg" && npm pack --pack-destination "$STAGE/check" --provenance=false >/dev/null)
-          members="$(tar -tzf "$STAGE"/check/*.tgz)"
-          if printf '%s\n' "$members" | grep -qE '(^|/)\.\.(/|$)' || printf '%s\n' "$members" | grep -qv '^package/'; then
-            echo 'error: tarball members escape the package root:' >&2
-            printf '%s\n' "$members" | grep -E '(^|/)\.\.(/|$)' >&2
-            exit 1
+          prior_args=()
+          if [ -n "${RELEASE_PRIOR_JOURNAL:-}" ]; then
+            prior_args=(--prior-journal "${RELEASE_PRIOR_JOURNAL}")
           fi
-          listing="$(tar -tvzf "$STAGE"/check/*.tgz)"
-          hardlinks="$(printf '%s\n' "$listing" | grep -E '^h' || true)"
-          if [ -n "$hardlinks" ]; then
-            echo 'error: tarball contains hardlink members; npmjs rejects them with 415 Hard link is not allowed:' >&2
-            printf '%s\n' "$hardlinks" >&2
-            exit 1
-          fi
-          symlink_targets="$(printf '%s\n' "$listing" | grep -E '^l' | sed -E 's/^.* -> //' || true)"
-          if [ -n "$symlink_targets" ]; then
-            escaping_links="$(printf '%s\n' "$symlink_targets" | grep -E '^/|(^|/)\.\.(/|$)' || true)"
-            if [ -n "$escaping_links" ]; then
-              echo 'error: symlink members must resolve inside the package root (absolute target or `..` component):' >&2
-              printf '%s\n' "$escaping_links" >&2
-              exit 1
-            fi
-          fi
-          printf '%s\n' "$members" | grep -E '^package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json$'
+          node scripts/release/release.mjs preflight \
+            --sha "${{ inputs.release_sha }}" \
+            --dry-run "${{ inputs.dry_run }}" \
+            --candidate-tag "${RELEASE_CANDIDATE_TAG}" \
+            "${prior_args[@]}" \
+            --journal "${RELEASE_JOURNAL}"
 
-      # The default path: pack the bundle and print what would be uploaded
-      # (`npm publish --dry-run` lists the tarball contents) without touching
-      # the registry. Provenance is switched off here on purpose — the dry run
-      # must not depend on an OIDC exchange to be a useful smoke check.
-      - name: Verify the packed artefact (dry run)
-        if: ${{ inputs.dry_run }}
-        run: cd "$STAGE/pkg" && npm publish --dry-run --provenance=false
+      # All six packages are packed ONCE, validated fail-closed, and recorded in
+      # the journal. fish-shell is packed from a staged tree because its bundled
+      # dependency cannot be packed from the workspace's symlinked node_modules.
+      - name: Pack and validate all six tarballs
+        run: |
+          set -euo pipefail
+          node scripts/release/release.mjs pack \
+            --journal "${RELEASE_JOURNAL}" \
+            --artifacts "${RELEASE_ARTIFACTS}"
 
-      # The real publish, reachable only through an explicit `dry_run: false`.
-      # `publishConfig.provenance` is already true; `--provenance` is passed
-      # explicitly so the requirement is visible in the run. Provenance needs
-      # the OIDC token from `id-token: write` above (npm builds the attestation
-      # from the GITHUB_* environment), which is why a workstation publish has
-      # to use `--no-provenance` (plugins/fish-shell/README.md).
+      # The journal and tarballs are uploaded whatever happened, including a run
+      # that died mid-publish: that is what makes a partial failure diagnosable
+      # rather than inferred from a red X.
+      - name: Upload the release journal and tarballs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: ${{ env.RELEASE_ARTIFACTS }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Summarise the packed release
+        run: node scripts/release/release.mjs report --journal "${RELEASE_JOURNAL}"
+
+      # The real publish. Reachable only through an explicit `dry_run: false`.
       #
-      # Authentication is deliberately not wired to a secret here. The two
-      # supported paths are:
-      #   * npm TRUSTED PUBLISHING configured on npmjs.com for this repository
-      #     and workflow (tokenless, OIDC-based). It needs npm CLI >= 11.5.1, so
-      #     if the runner's bundled npm is older, install a newer one first.
-      #   * a granular access token passed as `NODE_AUTH_TOKEN`
-      #     (`# env:` / `#   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}`).
-      # 2FA on the npm account or organization is a publish prerequisite: npm
-      # checks it registry-side, this repository cannot verify it, and provenance
-      # does not replace it.
-      - name: Publish @banbolee/dsh-fish-shell
+      # Authentication is deliberately not wired to a secret. The supported path
+      # is npm TRUSTED PUBLISHING configured on npmjs.com for this repository and
+      # workflow (tokenless, OIDC-based); a granular access token can be supplied
+      # instead by uncommenting the `env:` block below.
+      # 2FA on the account or organization is a publish prerequisite: npm checks
+      # it registry-side, this repository cannot verify it, and provenance does
+      # not replace it.
+      - name: Publish all six packages under the candidate tag
         if: ${{ !inputs.dry_run }}
-        run: cd "$STAGE/pkg" && npm publish --provenance --access public
+        # env:
+        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          node scripts/release/release.mjs publish \
+            --journal "${RELEASE_JOURNAL}" \
+            --artifacts "${RELEASE_ARTIFACTS}"
+
+      # Promotion happens only after ALL SIX versions are published and verified:
+      # `latest` is a single pointer per package, so moving it early would expose
+      # a release that cannot be completed. This step also drops the candidate
+      # tag and creates the six annotated tags at the release commit.
+      #
+      # `--dry-run` is passed through even though this step only runs on a real
+      # dispatch: it is the script's own defence, so a mis-wired workflow (or a
+      # manual invocation) cannot promote on a dry run.
+      - name: Promote latest and create the annotated tags
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          node scripts/release/release.mjs finalize \
+            --journal "${RELEASE_JOURNAL}" \
+            --artifacts "${RELEASE_ARTIFACTS}" \
+            --sha "${{ inputs.release_sha }}" \
+            --dry-run "${{ inputs.dry_run }}"
+          # The tag list is produced by the script, so the names pushed here are
+          # the same names it created — never a second, hand-written list.
+          git push origin --no-follow-tags \
+            $(cut -f1 "${RELEASE_ARTIFACTS}/release-tags.tsv")
+
+      # One GitHub Release per package, all at the same commit. This is a script
+      # subcommand rather than a shell loop because it must be IDEMPOTENT for a
+      # resumed dispatch: a run that created four releases and died on the fifth
+      # has to finish, and `gh release create` fails outright on an existing one.
+      # The script verifies an existing release against this dispatch (tag,
+      # target, title) and refuses to reuse an identity that belongs to something
+      # else.
+      - name: Create the six GitHub Releases
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node scripts/release/release.mjs releases \
+            --journal "${RELEASE_JOURNAL}" \
+            --artifacts "${RELEASE_ARTIFACTS}" \
+            --sha "${{ inputs.release_sha }}"
+
+      - name: Upload the final release journal
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-journal-final
+          path: ${{ env.RELEASE_JOURNAL }}
+          if-no-files-found: warn
+          retention-days: 90

@@ -1,6 +1,6 @@
 /** Single named delegation lifecycle — plan §10.3–§10.5/§11.1.1. */
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -98,7 +98,8 @@ function runFixture() {
   const result = deferred<any>()
   const dispose = vi.fn(async () => {})
   return {
-    run: { id: 'child-one', localAgent: undefined, result: result.promise, dispose },
+    // 0.2.1's `SubagentActivation` carries `childId` (no `id`, no `localAgent`).
+    run: { childId: 'child-one', result: result.promise, dispose },
     result,
     dispose,
   }
@@ -121,10 +122,13 @@ function runtime(options: {
   const liveIdentities = new Map()
   const continuableLeases = new Map()
   const subagents = {
-    start: vi.fn(async () => fixture.run),
-    startContinuable: vi.fn(async (spec) => {
+    // 0.2.1 exposes ONE creation entry point. `delivery` distinguishes the two
+    // shapes this bundle uses: `caller` for a one-shot (no parent notice) and
+    // `parent` for a kept continuable child.
+    startActivation: vi.fn(async (spec: any) => {
+      if (spec.delivery === 'caller') return fixture.run
       expect(readChildIdentity(service.rootDir, spec.childId)).toMatchObject({ agentId: 'worker' })
-      return { childId: spec.childId, messageId: 'message-1' }
+      return { childId: spec.childId, messageId: 'message-1', result: Promise.resolve(), dispose: vi.fn() }
     }),
   }
   // The delegation runtime looks a continuable child's live Agent up here to
@@ -164,10 +168,13 @@ describe('foreground one-shot', () => {
   it('registers identity immediately after publication, returns output, and cleans every owner', async () => {
     const rt = runtime()
     const pending = call(rt)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
     // The subagent list renders the target's display name, never the raw id.
-    expect(rt.subagents.start).toHaveBeenCalledWith(DELEGATION_PROVIDER, expect.objectContaining({
+    expect(rt.subagents.startActivation).toHaveBeenCalledWith(expect.objectContaining({
+      provider: DELEGATION_PROVIDER,
       label: 'Worker: bounded task',
+      childId: 'reserved-child',
+      delivery: 'caller',
     }))
     expect(rt.holders.size).toBe(1)
     expect(rt.budgets.running('root-session')).toBe(1)
@@ -190,7 +197,7 @@ describe('foreground one-shot', () => {
     // holder, or the live identity.
     const rt = runtime()
     const pending = call(rt)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
 
     rt.fixture.result.reject(new Error('infrastructure-fault'))
     await expect(pending).rejects.toThrow(/infrastructure-fault/)
@@ -207,7 +214,7 @@ describe('foreground one-shot', () => {
   it('returns a failed terminal with partial text for non-completed stop reasons', async () => {
     const rt = runtime()
     const pending = call(rt)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalled())
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalled())
     rt.fixture.result.resolve({
       stopReason: 'max-tokens',
       output: [{ type: 'text', text: 'partial' }],
@@ -225,7 +232,7 @@ describe('foreground one-shot', () => {
     let waits = 0
     const rt = runtime({ delay: () => (++waits === 1 ? deadline.promise : grace.promise) })
     const pending = call(rt)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalled())
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalled())
     deadline.resolve()
     await expect(pending).resolves.toMatchObject({ status: 'cancel_requested' })
     expect(rt.fixture.dispose).toHaveBeenCalledTimes(1)
@@ -241,7 +248,7 @@ describe('foreground one-shot', () => {
     })
     rt.fixture.run.dispose = vi.fn(() => new Promise<void>(() => {}))
     const pending = call(rt)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalled())
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalled())
     deadline.resolve()
     await Promise.resolve()
     grace.resolve()
@@ -253,7 +260,7 @@ describe('foreground one-shot', () => {
 
   it('releases a reservation when start rejects before publication', async () => {
     const rt = runtime()
-    rt.subagents.start.mockRejectedValueOnce(new Error('provider unavailable'))
+    rt.subagents.startActivation.mockRejectedValueOnce(new Error('provider unavailable'))
     await expect(call(rt)).rejects.toThrow(/provider unavailable/)
     expect(rt.holders.size).toBe(0)
     expect(rt.budgets.running('root-session')).toBe(0)
@@ -262,15 +269,16 @@ describe('foreground one-shot', () => {
 })
 
 describe('optional background → continuable', () => {
-  it('writes the sidecar before startContinuable and holds budget until subagent/end', async () => {
+  it('writes the sidecar before startActivation and holds budget until subagent/end', async () => {
     const rt = runtime({ continuation: 'optional' })
     await expect(call(rt, true)).resolves.toMatchObject({
       kind: 'continuable', agentId: 'worker', childId: 'reserved-child', status: 'started',
     })
-    expect(rt.subagents.start).not.toHaveBeenCalled()
-    expect(rt.subagents.startContinuable).toHaveBeenCalledTimes(1)
-    expect(rt.subagents.startContinuable).toHaveBeenCalledWith(expect.objectContaining({
+    expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1)
+    expect(rt.subagents.startActivation).toHaveBeenCalledWith(expect.objectContaining({
       label: 'Worker: bounded task',
+      childId: 'reserved-child',
+      delivery: 'parent',
     }))
     expect(readChildIdentity(rt.service.rootDir, 'reserved-child')).toMatchObject({
       agentId: 'worker', mainAgentId: 'lead', rootSessionId: 'root-session',
@@ -283,7 +291,7 @@ describe('optional background → continuable', () => {
 
   it('rolls back sidecar and budget when creation fails', async () => {
     const rt = runtime({ continuation: 'optional' })
-    rt.subagents.startContinuable.mockRejectedValueOnce(new Error('cannot create'))
+    rt.subagents.startActivation.mockRejectedValueOnce(new Error('cannot create'))
     await expect(call(rt, true)).rejects.toThrow(/cannot create/)
     expect(readChildIdentity(rt.service.rootDir, 'reserved-child')).toBeUndefined()
     expect(rt.budgets.running('root-session')).toBe(0)
@@ -292,8 +300,10 @@ describe('optional background → continuable', () => {
   it('optional foreground remains one-shot', async () => {
     const rt = runtime({ continuation: 'optional' })
     const pending = call(rt, false)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
-    expect(rt.subagents.startContinuable).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
+    // Same entry point, one-shot delivery: a foreground call must never take the
+    // kept (parent-delivered) path even for an `optional` Agent.
+    expect(rt.subagents.startActivation).toHaveBeenCalledWith(expect.objectContaining({ delivery: 'caller' }))
     rt.fixture.result.resolve({ stopReason: 'completed', output: [] })
     await expect(pending).resolves.toMatchObject({ kind: 'foreground', status: 'empty' })
   })
@@ -303,7 +313,7 @@ describe('one-shot background job', () => {
   it('rejects before creating a child when jobs are unavailable', async () => {
     const rt = runtime()
     await expect(call(rt, true)).rejects.toThrow(/jobs|background/i)
-    expect(rt.subagents.start).not.toHaveBeenCalled()
+    expect(rt.subagents.startActivation).not.toHaveBeenCalled()
     expect(rt.budgets.running('root-session')).toBe(0)
   })
 
@@ -324,7 +334,7 @@ describe('one-shot background job', () => {
     await expect(call(rt, true)).resolves.toEqual({
       kind: 'background', agentId: 'worker', jobId: 'subagent-1', status: 'started',
     })
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
     rt.fixture.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'background done' }] })
     await expect(hooks.done).resolves.toEqual({ status: 'completed', output: 'background done' })
     expect(rt.fixture.dispose).toHaveBeenCalledTimes(1)
@@ -342,7 +352,7 @@ describe('one-shot background job', () => {
     }
     const rt = runtime({ jobs })
     await call(rt, true)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
 
     rt.fixture.result.reject(new Error('infrastructure-fault'))
     await expect(hooks.done).resolves.toMatchObject({ status: 'failed' })
@@ -367,7 +377,7 @@ describe('one-shot background job', () => {
     let waits = 0
     const rt = runtime({ jobs, delay: () => (++waits === 1 ? deadline.promise : grace.promise) })
     await call(rt, true)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
 
     deadline.resolve()
     await expect(hooks.done).resolves.toMatchObject({
@@ -390,7 +400,7 @@ describe('one-shot background job', () => {
     const rt = runtime({ jobs, delay: () => (++waits === 1 ? deadline.promise : grace.promise) })
     rt.fixture.run.dispose = vi.fn(() => new Promise<void>(() => {}))
     await call(rt, true)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
 
     deadline.resolve()
     await Promise.resolve()
@@ -416,14 +426,14 @@ describe('an always-kept Agent refuses the foreground', () => {
     const rt = runtime({ continuation: 'optional', preferBackground: true })
     await expect(call(rt)).rejects.toThrow(/run_in_background: true/)
     await expect(call(rt)).rejects.toThrow(/followed up/)
-    expect(rt.subagents.start, 'nothing may be started on the refused path').not.toHaveBeenCalled()
+    expect(rt.subagents.startActivation, 'nothing may be started on the refused path').not.toHaveBeenCalled()
     expect(rt.budgets.running('root-session'), 'and no slot may be taken').toBe(0)
   })
 
   it('accepts the background call and keeps the child', async () => {
     const rt = runtime({ continuation: 'optional', preferBackground: true })
     await expect(call(rt, true)).resolves.toMatchObject({ kind: 'continuable', status: 'started' })
-    expect(rt.subagents.startContinuable).toHaveBeenCalledTimes(1)
+    expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1)
   })
 
   it('leaves an Agent that does not declare it free to run in the foreground', async () => {
@@ -459,7 +469,7 @@ describe('a scoped child form confines its own writes', () => {
   it('installs the child form scope on a foreground one-shot child and denies an escape', async () => {
     const rt = runtime({ writeScope: SCOPE })
     const guards: Array<(execution: unknown) => string | undefined> = []
-    rt.fixture.run.localAgent = localChild(guards) as never
+    rt.agents.get = vi.fn(() => localChild(guards)) as never
 
     await call(rt)
     await vi.waitFor(() => expect(guards).toHaveLength(1))
@@ -490,15 +500,32 @@ describe('a scoped child form confines its own writes', () => {
   it('registers nothing when the form declares no scope', async () => {
     const rt = runtime()
     const guards: Array<(execution: unknown) => string | undefined> = []
-    rt.fixture.run.localAgent = localChild(guards) as never
+    rt.agents.get = vi.fn(() => localChild(guards)) as never
 
     await call(rt)
     expect(guards).toHaveLength(0)
   })
 
-  it('registers nothing for a non-local run, which must stay a supported no-op', async () => {
+  it('refuses to publish a scoped child it cannot guard, instead of leaving it unguarded', async () => {
+    // `ctx.agents.get()` answers `undefined` when the child is not (or no longer)
+    // live. A scoped form then has no layer to attach its guard to, and the only
+    // two options are "publish it unguarded" (a `write`/`edit` hole outside the
+    // declared scope) or "refuse". Refusing is the fail-closed answer, and it is
+    // what this test pins: the delegation fails, nothing stays published, and the
+    // concurrency slot is released so the caller can retry.
     const rt = runtime({ writeScope: SCOPE })
-    rt.fixture.run.localAgent = undefined
+    rt.agents.get = vi.fn(() => undefined) as never
+
+    await expect(call(rt)).rejects.toThrow(/cannot install the write scope/)
+    expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1)
+    expect(rt.budgets.running('root-session')).toBe(0)
+  })
+
+  it('still delegates when the form declares no scope and the child is unresolvable', async () => {
+    // The guard only exists for a scoped form; without one there is nothing to
+    // install, so an unresolvable child must not turn into a failure.
+    const rt = runtime()
+    rt.agents.get = vi.fn(() => undefined) as never
 
     await expect(call(rt)).resolves.toMatchObject({ kind: 'foreground' })
   })
@@ -509,12 +536,62 @@ describe('a scoped child form confines its own writes', () => {
     // only disposes an ATTACHED run. It must therefore be disposed by hand, and
     // the reserved holder and the concurrency slot must still be released.
     const rt = runtime({ writeScope: SCOPE })
-    rt.fixture.run.localAgent = {
+    rt.agents.get = vi.fn(() => ({
       ctx: { tools: { guard: () => { throw new Error('harness shape changed') } } },
-    } as never
+    })) as never
 
     await expect(call(rt)).rejects.toThrow(/harness shape changed/)
     expect(rt.fixture.dispose).toHaveBeenCalledTimes(1)
+    expect(rt.holders.size).toBe(0)
+    expect(rt.budgets.running('root-session')).toBe(0)
+    expect(rt.liveIdentities.size).toBe(0)
+  })
+})
+
+/* --------------------------------------------- ownership cleanup on faults --- */
+
+describe('a fault in telemetry or the sidecar leaks no ownership', () => {
+  it('survives a logger that throws on every event', async () => {
+    // The logger is host-provided and its sink is not this plugin's contract: a
+    // closed stream or a full disk must not turn a successful delegation into a
+    // failed one, and must not skip the cleanup that follows the log call.
+    const base = runtime()
+    const rt = { ...base, logger: {
+      info: () => { throw new Error('logger sink is broken') },
+      warn: () => { throw new Error('logger sink is broken') },
+    } }
+
+    // The terminal status is whatever the run itself reported; what this test
+    // pins is that a throwing logger does not change it into a failure and does
+    // not strand any owner.
+    const result = await call(rt)
+    expect(result.kind).toBe('foreground')
+    expect(rt.budgets.running('root-session')).toBe(0)
+    expect(rt.holders.size).toBe(0)
+    expect(rt.liveIdentities.size).toBe(0)
+    expect(rt.observations.size).toBe(0)
+  })
+
+  it('releases every owner when the sidecar write fails on a continuable start', async () => {
+    // A continuable start provisions its sidecar BEFORE the official start. If
+    // that write fails there is nothing to publish, and the concurrency slot must
+    // not stay reserved — otherwise one bad data root would permanently consume
+    // the root's width budget.
+    const rt = runtime({ continuation: 'optional' })
+    // A regular FILE where the children directory would go: every sidecar write
+    // under it fails, which is the data-root damage this test simulates.
+    writeFileSync(join(rt.service.rootDir, '.children'), 'not a directory')
+
+    await expect(call(rt, true)).rejects.toThrow()
+    expect(rt.subagents.startActivation).not.toHaveBeenCalled()
+    expect(rt.budgets.running('root-session')).toBe(0)
+  })
+
+  it('releases every owner when the official start rejects after the reservation', async () => {
+    const rt = runtime()
+    rt.subagents.startActivation = vi.fn(async () => { throw new Error('provider refused') }) as never
+
+    await expect(call(rt)).rejects.toThrow(/provider refused/)
     expect(rt.holders.size).toBe(0)
     expect(rt.budgets.running('root-session')).toBe(0)
     expect(rt.liveIdentities.size).toBe(0)

@@ -354,22 +354,26 @@ describe('a child capability resolves against the composition, not the caller fi
           },
         },
       }
-      const start = vi.fn(async () => ({
-        id: 'child-run',
-        localAgent: undefined,
-        result: Promise.resolve({ stopReason: 'completed', output: [] }),
-        dispose: vi.fn(async () => {}),
-      }))
-      // §16.14: `review`, `implement` and `planner` declare `preferBackground`,
-      // so the edges that target them run through the continuable path. The test
-      // still has to exercise their capability resolution — refusing them would
-      // prove the policy but not the resolution it exists to protect.
-      const startContinuable = vi.fn(async (spec: { childId: string }) => ({
-        childId: spec.childId,
-        messageId: 'message-1',
-      }))
+      // 0.2.1 has ONE creation entry point. The two execution shapes are told
+      // apart by `delivery`: `caller` is the one-shot path and `parent` is the
+      // kept continuable child (§16.14), which is exactly the split this test
+      // has to keep exercising.
+      const startActivation = vi.fn(async (spec: { childId?: string, delivery: string }) => (
+        spec.delivery === 'caller'
+          ? {
+              childId: 'child-run',
+              result: Promise.resolve({ stopReason: 'completed', output: [] }),
+              dispose: vi.fn(async () => {}),
+            }
+          : {
+              childId: spec.childId,
+              messageId: 'message-1',
+              result: Promise.resolve({ stopReason: 'completed', output: [] }),
+              dispose: vi.fn(async () => {}),
+            }
+      ))
       host.ctx.provide('banboAgents', service)
-      host.ctx.provide('subagents', { start, startContinuable })
+      host.ctx.provide('subagents', { startActivation })
       host.ctx.provide('agents', { get: () => undefined })
       host.ctx.provide('jobs', { start: vi.fn() })
 
@@ -463,9 +467,13 @@ describe('a child capability resolves against the composition, not the caller fi
         }
       }
 
-      // One-shot edges reach `start`; the kept ones reach `startContinuable`.
-      expect(start).toHaveBeenCalledTimes(edges.length - keptEdges)
-      expect(startContinuable).toHaveBeenCalledTimes(keptEdges)
+      // One-shot edges reach `startActivation` with caller delivery; the kept
+      // ones reach it with parent delivery.
+      const calls = startActivation.mock.calls as unknown as Array<[{ delivery: string }]>
+      const oneShot = calls.filter(([spec]) => spec.delivery === 'caller')
+      const kept = calls.filter(([spec]) => spec.delivery === 'parent')
+      expect(oneShot).toHaveLength(edges.length - keptEdges)
+      expect(kept).toHaveLength(keptEdges)
       expect(keptEdges, 'the shipped team must declare at least one always-kept Agent').toBeGreaterThan(0)
     } finally {
       await ctx.fiber.dispose()

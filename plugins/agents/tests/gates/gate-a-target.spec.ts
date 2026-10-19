@@ -69,12 +69,12 @@ afterEach(() => {
 /* ------------------------------------------------------------------ A1 --- */
 
 describe('A1 — dependency family is uniform', () => {
-  it('the workspace lockfile resolves no 0.1.7-rc.2 package alongside 0.2.0-rc.2', () => {
+  it('the workspace lockfile resolves no 0.1.7-rc.2 package alongside 0.2.1-rc.2', () => {
     const lock = readFileSync(join(repoRoot, 'pnpm-lock.yaml'), 'utf8')
     const previous = lock.match(/0\.1\.7-rc\.2/g) ?? []
-    const family = lock.match(/0\.2\.0-rc\.2/g) ?? []
+    const family = lock.match(/0\.2\.1-rc\.2/g) ?? []
     // Mixing prereleases inside one family is the exact failure this probe
-    // exists to catch: `^0.2.0-rc.2` cannot express "stay on rc.2", so a
+    // exists to catch: `^0.2.1-rc.2` cannot express "stay on rc.2", so a
     // caret range silently drifts to the newest rc.x — and a package left
     // behind on the previous family is the other half of the same drift.
     expect(previous).toHaveLength(0)
@@ -95,7 +95,7 @@ describe('A1 — dependency family is uniform', () => {
 
     expect(family.length).toBeGreaterThan(0)
     for (const [name, range] of family) {
-      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.0-rc\.2$/)
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.1-rc\.2$/)
     }
   })
 })
@@ -112,7 +112,7 @@ describe('A2 — required public API surface exists', () => {
       'SubagentRunId',
       'SUBAGENT_DESCRIPTOR_VERSION',
       'foldSubagentDescriptor',
-      'settleRun',
+      'settleRunResult',
     ] as const
     for (const name of required) {
       expect(typeof (subagent as Record<string, unknown>)[name], `missing export ${name}`).not.toBe('undefined')
@@ -123,10 +123,15 @@ describe('A2 — required public API surface exists', () => {
     expect((subagent as Record<string, unknown>)['completions']).toBeUndefined()
   })
 
-  it('the subagent runtime class exposes start / startContinuable / interrupt', () => {
+  it('the subagent runtime class exposes the 0.2.1 activation surface', () => {
     const runtime = subagent.SubagentRuntime as unknown as { prototype: Record<string, unknown> }
-    for (const method of ['start', 'startContinuable', 'registerProvider', 'getProvider', 'list', 'sendMessage', 'interrupt']) {
+    for (const method of ['startActivation', 'waitForChildren', 'registerProvider', 'getProvider', 'list', 'sendMessage', 'interrupt']) {
       expect(typeof runtime.prototype[method], `missing SubagentRuntime#${method}`).toBe('function')
+    }
+    // 0.2.1 removed the two creation entry points this bundle used to call;
+    // their return type (`SubagentRun` with `id`/`localAgent`) is gone with them.
+    for (const method of ['start', 'startContinuable']) {
+      expect(runtime.prototype[method], `SubagentRuntime#${method} was removed upstream`).toBeUndefined()
     }
   })
 
@@ -464,6 +469,17 @@ describe('A9 — one-shot run identity and its post-start keying window', () => 
     const ctx = new Context()
     try {
       await mountAgentLoopTestDependencies(ctx)
+      // 0.2.1's SubagentRuntime injects `workingDirectory`: a local activation
+      // resolves the child's cwd through `ensure()` and then SEEDS it with
+      // `set()`. The stock fixture supplies only the read half, so this probe
+      // provides both over one fixed directory.
+      const directory = process.cwd()
+      ctx.provide('workingDirectory', {
+        defaultDirectory: directory,
+        get: () => directory,
+        ensure: async () => directory,
+        set: async () => {},
+      } as never)
       const harness = await mountAgentLoopTestHarness(ctx)
       await ctx.plugin(subagent.SubagentRuntime)
       // The official in-process spawn provider is the one-shot backend the
@@ -476,25 +492,37 @@ describe('A9 — one-shot run identity and its post-start keying window', () => 
       )
 
       const controller = new AbortController()
-      const run = await ctx.subagents.start('spawn', {
-        parent,
-        prompt: [{ type: 'text', text: 'gate-a9 prompt' }],
+      // 0.2.1's creation entry point. A local child is selected by reserving its
+      // id, and `delivery: 'caller'` keeps the completion notice away from the
+      // parent — the shape this bundle's one-shot path uses.
+      const activation = await ctx.subagents.startActivation({
+        provider: 'spawn',
+        label: 'gate-a9',
+        childId: 'gate-a9-child' as never,
+        request: {
+          parent,
+          prompt: [{ type: 'text', text: 'gate-a9 prompt' }],
+        },
         signal: controller.signal,
+        delivery: 'caller',
       } as never)
 
-      // The seam contract: a local run's `id` MUST equal the child session id.
-      expect(run.localAgent).toBeDefined()
-      expect(run.id).toBe(run.localAgent!.session.id)
-      expect(run.id).toBe(run.localAgent!.id)
+      // The seam contract: the reserved id IS the child session id, and the
+      // child Agent is reachable through the live registry.
+      expect(activation.childId).toBe('gate-a9-child')
+      const child = ctx.agents.get(activation.childId)
+      expect(child).toBeDefined()
+      expect(child!.session.id).toBe(activation.childId)
 
-      // The window the live map relies on: when `start()` has returned, the
-      // child is published but has not yet executed a tool call, so a key
-      // written now is readable before the child can read its own identity.
-      const events = run.localAgent!.session.snapshotEvents()
+      // The window the live map relies on: when `startActivation()` has
+      // returned, the child is published but has not yet executed a tool call,
+      // so a key written now is readable before the child can read its own
+      // identity.
+      const events = child!.session.snapshotEvents()
       expect(events.some((event) => event.type === 'tool/call')).toBe(false)
 
       controller.abort('gate-a9 done')
-      await run.dispose()
+      await activation.dispose()
     } finally {
       await ctx.fiber.dispose()
     }

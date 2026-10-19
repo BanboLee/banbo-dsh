@@ -90,7 +90,7 @@ describe('QA profile tool wrappers', () => {
 // ── QA packing contract for the global dsh-tui installation ──────────────────
 
 const TUI_PACKAGE = '@deepseek-harness-tui/dsh-tui'
-const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.12.0`'
+const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.16.1`'
 
 /**
  * The vendored bundles the PUBLISHED manifest curates in its own

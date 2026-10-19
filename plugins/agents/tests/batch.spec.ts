@@ -109,11 +109,11 @@ function runtime(fixtures: Fixture[], delay?: (ms: number) => Promise<void>, loc
   const liveIdentities = new Map()
   let index = 0
   const subagents = {
-    start: vi.fn(async () => {
+    // 0.2.1 has one creation entry point and the activation carries `childId`.
+    startActivation: vi.fn(async () => {
       const fixture = fixtures[index++]
       fixture.run = {
-        id: fixture.id,
-        localAgent: localAgent === undefined ? undefined : localAgent(),
+        childId: fixture.id,
         result: fixture.result.promise,
         dispose: fixture.dispose,
       }
@@ -128,10 +128,16 @@ function runtime(fixtures: Fixture[], delay?: (ms: number) => Promise<void>, loc
     continuableLeases: new Map(),
     observations: new Map(),
     subagents,
+    // A child form that declares a \`writeScope\` now REQUIRES a resolvable child
+    // Agent: publishing a scoped child unguarded is refused. The default stub is
+    // therefore a guard sink, which is what a real host resolves for a local
+    // child; a test that needs "no child" passes \`localAgent\` explicitly.
+    agents: { get: vi.fn(() => (localAgent === undefined ? { ctx: { tools: { guard: () => () => {} } } } : localAgent())) },
     configuredMainAgentId: 'lead',
     composedPreset: 'lead-preset',
     registered,
     isToolVisible: () => true,
+    createChildId: () => 'reserved-child',
     delay,
   }
 }
@@ -153,7 +159,7 @@ describe('contract preflight rejects the whole call before any start', () => {
     for (const entries of [[], [...tasks, tasks[0], tasks[1]]]) {
       const rt = runtime([])
       await expect(call(rt, { tasks: entries })).rejects.toThrow(/maxBatchWidth|tasks|1.*3/i)
-      expect(rt.subagents.start).not.toHaveBeenCalled()
+      expect(rt.subagents.startActivation).not.toHaveBeenCalled()
     }
   })
 
@@ -161,7 +167,7 @@ describe('contract preflight rejects the whole call before any start', () => {
     for (const deadlineMs of [0, -1, 1.5, 59_999, 1_800_001, Number.NaN, '60000']) {
       const rt = runtime([])
       await expect(call(rt, { deadlineMs }), String(deadlineMs)).rejects.toThrow(/deadline/i)
-      expect(rt.subagents.start).not.toHaveBeenCalled()
+      expect(rt.subagents.startActivation).not.toHaveBeenCalled()
     }
   })
 
@@ -175,7 +181,7 @@ describe('contract preflight rejects the whole call before any start', () => {
     for (const entries of invalid) {
       const rt = runtime([])
       await expect(call(rt, { tasks: entries }), JSON.stringify(entries)).rejects.toThrow()
-      expect(rt.subagents.start).not.toHaveBeenCalled()
+      expect(rt.subagents.startActivation).not.toHaveBeenCalled()
       expect(rt.budgets.running('root')).toBe(0)
     }
   })
@@ -217,7 +223,7 @@ describe('contract preflight rejects the whole call before any start', () => {
     await expect(call(rt, { tasks: [{ agentId: 'kept', prompt: 'x', description: 'x' }] }))
       .rejects.toThrow(/run_in_background: true/)
     // The refusal is contract-level: nothing starts, and no slot is taken.
-    expect(rt.subagents.start).not.toHaveBeenCalled()
+    expect(rt.subagents.startActivation).not.toHaveBeenCalled()
     expect(rt.budgets.running('root-session')).toBe(0)
   })
 
@@ -226,34 +232,35 @@ describe('contract preflight rejects the whole call before any start', () => {
     const rt = runtime(fixtures)
     rt.budgets.acquire('root', 2, 3)
     await expect(call(rt)).rejects.toThrow(/maxConcurrentChildren|exceed/i)
-    expect(rt.subagents.start).not.toHaveBeenCalled()
+    expect(rt.subagents.startActivation).not.toHaveBeenCalled()
     expect(rt.budgets.running('root')).toBe(2)
   })
 })
 
 describe('a continuable (optional) target is a legal batch item', () => {
-  it('accepts it and runs it through the one-shot path, never startContinuable', async () => {
+  it('accepts it and runs it through the one-shot path, never the continuable one', async () => {
     // Batch executes EVERY item with `startOneShot`, so a target's
     // `continuation` never applies to this execution mode: an `optional` Agent
     // runs exactly as it does on a foreground single call. The removed
     // `batch-target-continuable` guard rejected the AGENT, not an execution mode.
+    //
+    // 0.2.1 has one creation entry point, so the execution shape is told apart
+    // by `delivery`: a one-shot is `caller` (no parent notice), a kept
+    // continuable child is `parent`.
     const fixture = runFixture('optional-child')
     const rt = runtime([fixture])
-    const startContinuable = vi.fn(async () => {
-      throw new Error('batch must never create a continuable child')
-    })
-    ;(rt.subagents as any).startContinuable = startContinuable
     const pending = call(rt, { tasks: [{ agentId: 'optional', prompt: 'optional task', description: 'O' }] })
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
     fixture.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'optional done' }] })
     await expect(pending).resolves.toEqual({
       status: 'completed',
       deadlineMs: 150,
       items: [{ agentId: 'optional', status: 'completed', result: 'optional done', stopReason: 'completed' }],
     })
-    expect(rt.subagents.start, 'the optional target must reach a terminal state through the one-shot path')
+    expect(rt.subagents.startActivation, 'the optional target must reach a terminal state through the one-shot path')
       .toHaveBeenCalledTimes(1)
-    expect(startContinuable, 'batch must never take the continuable path').not.toHaveBeenCalled()
+    expect(rt.subagents.startActivation, 'batch must never take the continuable path')
+      .toHaveBeenCalledWith(expect.objectContaining({ delivery: 'caller' }))
     expect(fixture.dispose).toHaveBeenCalledTimes(1)
     expect(rt.budgets.running('root')).toBe(0)
   })
@@ -267,7 +274,7 @@ describe('authorization-level failures are per item', () => {
       { agentId: 'not-allowed', prompt: 'no', description: 'denied' },
       { agentId: 'a', prompt: 'yes', description: 'allowed' },
     ] })
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
     fixture.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'ok' }] })
     await expect(pending).resolves.toEqual({
       status: 'partial_failed',
@@ -286,7 +293,7 @@ describe('allSettled and aggregation truth table', () => {
     const b = runFixture('child-b')
     const rt = runtime([a, b])
     const pending = call(rt)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(2))
     expect(rt.liveIdentities.get('child-a')).toMatchObject({ agentId: 'a' })
     expect(rt.liveIdentities.get('child-b')).toMatchObject({ agentId: 'b' })
     a.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'A done' }] })
@@ -311,7 +318,7 @@ describe('allSettled and aggregation truth table', () => {
     const a = runFixture('child-a')
     const rt = runtime([a])
     const pending = call(rt, { tasks: [tasks[0]] })
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
     expect(rt.holders.size).toBe(1)
     expect(rt.liveIdentities.size).toBe(1)
 
@@ -330,7 +337,7 @@ describe('allSettled and aggregation truth table', () => {
     const b = runFixture('child-b')
     const rt = runtime([a, b])
     const pending = call(rt)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(2))
     a.result.resolve({ stopReason: 'error', output: [{ type: 'text', text: 'partial' }], diagnostic: 'boom' })
     b.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'B done' }] })
     await expect(pending).resolves.toMatchObject({
@@ -345,12 +352,12 @@ describe('allSettled and aggregation truth table', () => {
   it('start rejection is an item failure, not a whole-call rejection', async () => {
     const a = runFixture('child-a')
     const rt = runtime([a])
-    rt.subagents.start.mockRejectedValueOnce(new Error('start failed')).mockImplementationOnce(async () => {
+    rt.subagents.startActivation.mockRejectedValueOnce(new Error('start failed')).mockImplementationOnce(async () => {
       a.run = { id: a.id, result: a.result.promise, dispose: a.dispose }
       return a.run
     })
     const pending = call(rt)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(2))
     a.result.resolve({ stopReason: 'completed', output: [] })
     await expect(pending).resolves.toMatchObject({
       status: 'partial_failed',
@@ -371,7 +378,7 @@ describe('deadline, abort, and cleanup handoff', () => {
     const b = runFixture('child-b')
     const rt = runtime([a, b], () => (++waits === 1 ? deadline.promise : grace.promise))
     const pending = call(rt, { deadlineMs: 60_000 })
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(2))
     a.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'A' }] })
     deadline.resolve()
     const timeoutResult = await pending
@@ -393,7 +400,7 @@ describe('deadline, abort, and cleanup handoff', () => {
     a.dispose = vi.fn(() => new Promise<void>(() => {}))
     const rt = runtime([a], () => (++waits === 1 ? deadline.promise : grace.promise))
     const pending = call(rt, { tasks: [tasks[0]], deadlineMs: 60_000 })
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
     deadline.resolve()
     await Promise.resolve()
     grace.resolve()
@@ -413,9 +420,9 @@ describe('deadline, abort, and cleanup handoff', () => {
     let waits = 0
     const late = runFixture('late-child')
     const rt = runtime([late], () => (++waits === 1 ? deadline.promise : grace.promise))
-    rt.subagents.start.mockImplementationOnce(() => published.promise)
+    rt.subagents.startActivation.mockImplementationOnce(() => published.promise)
     const pending = call(rt, { tasks: [tasks[0]], deadlineMs: 60_000 })
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(1))
     deadline.resolve()
     await Promise.resolve()
     grace.resolve()
@@ -439,7 +446,7 @@ describe('deadline, abort, and cleanup handoff', () => {
     const b = runFixture('child-b')
     const rt = runtime([a, b], () => new Promise<void>(() => {}))
     const pending = call(rt, { signal: controller.signal })
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(2))
     a.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'A' }] })
     await Promise.resolve()
     controller.abort('user')
@@ -470,7 +477,7 @@ describe('a scoped batch target is guarded like any other one-shot child (§16.1
     }))
 
     const pending = call(rt)
-    await vi.waitFor(() => expect(rt.subagents.start).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(rt.subagents.startActivation).toHaveBeenCalledTimes(2))
     expect(guards).toHaveLength(1)
 
     const cwd = mkdtempSync(join(tmpdir(), 'banbo-batch-scope-'))

@@ -81,7 +81,11 @@ describe('@banbolee/dsh-fish-shell bundle patch', () => {
     expect(children.map(row => [row.id, row.name])).toEqual([
       ['pty', '@deepseek-ai/dsh-terminal'],
       ['terminal-fish-pty', '@banbolee/dsh-fish-shell/terminal'],
-      ['terminal-tools', '@deepseek-ai/dsh-tool-terminal'],
+      // NOT the bare `@deepseek-ai/dsh-tool-terminal`: 0.2.1's installation
+      // ships that name itself, and a bare name would then resolve to the
+      // INSTALLATION copy instead of the one this tarball bundles. The subpath
+      // below is this package's re-export of its own vendored copy.
+      ['terminal-tools', '@banbolee/dsh-fish-shell/tool-terminal'],
       ['fish-terminal-tools', '@banbolee/dsh-fish-shell/terminal-tools'],
     ])
 

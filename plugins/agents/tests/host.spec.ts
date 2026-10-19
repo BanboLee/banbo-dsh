@@ -148,12 +148,12 @@ describe('dependencyFamilyVersion — the locked harness range (§11.2)', () => 
 
   it('refuses a manifest whose harness dependencies disagree', () => {
     expect(() => dependencyFamilyVersion({
-      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.0-rc.2', '@deepseek-ai/dsh-agent': '^0.1.8' },
+      peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.1-rc.2', '@deepseek-ai/dsh-agent': '^0.1.8' },
     })).toThrow(/family|uniform|one range/i)
   })
 
   it('is content, not a host path — the same manifest gives the same answer', () => {
-    const manifest = { peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.0-rc.2' } }
+    const manifest = { peerDependencies: { '@deepseek-ai/dsh-tools': '^0.2.1-rc.2' } }
     expect(dependencyFamilyVersion(manifest)).toBe(dependencyFamilyVersion(manifest))
   })
 })
@@ -162,9 +162,9 @@ describe('dependencyFamilyVersion — the locked harness range (§11.2)', () => 
 
 const repoRoot = resolve(pluginRoot, '..', '..')
 /** The runtime the declared family names — the version the range must admit. */
-const TARGET_DSH_VERSION = '0.2.0-rc.2'
+const TARGET_DSH_VERSION = '0.2.1-rc.2'
 /** The runtime the family was upgraded FROM: the negative control. */
-const PREVIOUS_DSH_VERSION = '0.2.0-rc.1'
+const PREVIOUS_DSH_VERSION = '0.2.0-rc.2'
 
 /**
  * Load a module from THIS workspace's installed tree.
@@ -188,24 +188,26 @@ function optionalInstalledModule(id: string): unknown {
 }
 
 describe('dependencyFamilyVersion — the declared range admits the target runtime', () => {
-  it('accepts 0.2.0-rc.2 through the platform evaluator, with semver as the fallback', () => {
+  it('accepts 0.2.1-rc.2 through the platform evaluator, with semver as the fallback', () => {
     const manifest: object = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'))
     const appBoot = optionalInstalledModule('@deepseek-ai/dsh-app-boot') as {
       evaluatePluginCompatibility: (
         manifest: object,
         exemptions?: Readonly<Record<string, readonly string[]>>,
         runtimeVersion?: string,
-      ) => { peers: Record<string, string> } | undefined
+      ) => { requirements: Record<string, string> } | undefined
     } | undefined
     if (appBoot !== undefined) {
       // The evaluator the plugin manager refuses a plugin with, so agreeing
       // with it is the one non-approximate statement about the declaration.
       expect(appBoot.evaluatePluginCompatibility(manifest, {}, TARGET_DSH_VERSION)).toBeUndefined()
       // A probe that cannot fail proves nothing: the same manifest against the
-      // previous runtime must be rejected, peer by peer.
+      // previous runtime must be rejected, requirement by requirement.
       const stale = appBoot.evaluatePluginCompatibility(manifest, {}, PREVIOUS_DSH_VERSION)
       expect(stale).toBeDefined()
-      expect(Object.keys(stale?.peers ?? {}).length).toBeGreaterThan(0)
+      // 0.2.1 renamed the reported field from `peers` to `requirements`; the
+      // failure object still names every unmet dsh dependency and its range.
+      expect(Object.keys(stale?.requirements ?? {}).length).toBeGreaterThan(0)
       return
     }
     // Documented fallback when the platform module is absent: plain `semver`

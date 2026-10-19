@@ -8,7 +8,7 @@ DeepSeek Harness（DSH）插件集合：6 个开箱即用的插件，全部发�
 
 ## 快速安装（用户）
 
-前置条件：已安装 `dsh`（0.2.0-rc.2 族）、Node.js ≥ 22、pnpm 9.x。
+前置条件：已安装 `dsh`（0.2.1-rc.2 族）、Node.js ≥ 22、pnpm 9.x。
 
 想装哪个装哪个：
 
@@ -108,6 +108,20 @@ corepack pnpm test:e2e:headless
 ```
 
 需要 Node 22、`dsh`、fish；可用 `DSH_REAL_E2E_DSH_BIN` / `DSH_REAL_E2E_NODE_BIN` / `DSH_REAL_E2E_RTK_BIN` / `DSH_REAL_E2E_CODEGRAPH_BIN` 覆盖可执行文件位置。
+
+### 发布（维护者）
+
+发布只走一条手动 workflow：[`.github/workflows/release.yml`](./.github/workflows/release.yml)，一次 dispatch **在同一 commit 上发布全部六个包**：
+
+```sh
+gh workflow run release.yml -f release_sha=<40-character SHA on main> -f dry_run=true
+```
+
+`dry_run` 默认 `true`：只打包、校验六个 tarball 并上传 release journal，不碰 registry。要真正发布时传 `dry_run=false`。车道先跑全部确定性门禁，再一次性打包，随后用 `next` candidate tag 串行执行 `npm publish --provenance --access public` 并逐包核验 registry integrity；**六包全部成功后**才提升 `latest`、删除 candidate tag，并在同一 commit 上创建六个 annotated tag 与六个 GitHub Release。
+
+认证走 npm Trusted Publishing（OIDC，无长期 secret），`id-token: write` 权限就是 provenance 的签名来源。npmjs.com 上必须同时满足两件事：Trusted Publisher 要**同时授权 publish 与 dist-tag**（本车道用同一个 OIDC 身份移动 `latest`、删除 candidate tag），npm CLI 必须是 **11.21.0 或更新**——`publish` 自 11.5.1 起支持 tokenless OIDC，但 `dist-tag` 直到 11.21.0 才支持，旧版本会发完六个版本再卡在第一次 promotion。workflow 固定该版本，`preflight` 遇到更旧的版本直接拒绝启动。
+
+已发布的 npm 版本不可变，所以 partial failure **绝不盲目重发**：上传的 journal 记录实际到达 registry 的内容。用 `prior_run_id` 重新 dispatch 时，旧 journal 会被核验（同一 commit、tag 与版本）后接管续跑——已发布的版本跳过，`finalize` 只提升尚未提升的包，已存在的 GitHub Release 只有在其 tag、target 与 title 都与本次 dispatch 一致时才被接受。
 
 ## License
 

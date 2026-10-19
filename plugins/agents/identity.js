@@ -275,17 +275,53 @@ function parseIdentity(text) {
  * consumes: it means "do not authorize further delegation from this child",
  * never "throw and abort recovery".
  *
+ * Prefer {@link readChildIdentityState} when the CALLER must distinguish "no
+ * record" from "a record I could not trust": this function deliberately collapses
+ * both, and the composition path needs the difference (a corrupt record must fail
+ * closed, a genuinely absent one must not touch a third-party child).
+ *
  * @param rootDir - the plugin data root.
  * @param childId - the durable child session id.
  * @returns the identity, or `undefined` when it cannot be established.
  */
 export function readChildIdentity(rootDir, childId) {
-  if (!isSafeChildId(childId)) return undefined
+  const read = readChildIdentityState(rootDir, childId)
+  return read.state === 'valid' ? read.identity : undefined
+}
+
+/**
+ * Read one child's identity, reporting WHY it could not be used.
+ *
+ * Three states, and the difference is load-bearing for authorization:
+ *
+ *   - `absent` — the sidecar file does not exist (`ENOENT`). This is the only
+ *     state that means "this bundle never created the child", so it is the only
+ *     one that may leave a subagent untouched;
+ *   - `invalid` — the file EXISTS but cannot be trusted: corrupt JSON, an unknown
+ *     version, a wrong key set, an unreadable file (`EACCES`, `EISDIR`, an I/O
+ *     error). A caller must fail CLOSED here: the child was created by this
+ *     bundle (the file is there), and its authorisation cannot be reconstructed;
+ *   - `valid` — the parsed identity.
+ *
+ * Collapsing `invalid` into `absent` is how a corrupt sidecar becomes a silently
+ * unrestricted child, so the two are separate values rather than a `undefined`.
+ *
+ * @param rootDir - the plugin data root.
+ * @param childId - the durable child session id.
+ * @returns {{ state: 'absent' } | { state: 'invalid', reason: string } | { state: 'valid', identity: object }}
+ */
+export function readChildIdentityState(rootDir, childId) {
+  if (!isSafeChildId(childId)) return { state: 'invalid', reason: 'unusable child id' }
   let text
   try {
     text = readFileSync(childIdentityPath(rootDir, childId), 'utf8')
-  } catch {
-    return undefined
+  } catch (error) {
+    // ONLY "the file is not there" is absence. Every other read failure means a
+    // record may exist that we cannot inspect, which must fail closed.
+    if (error?.code === 'ENOENT') return { state: 'absent' }
+    return { state: 'invalid', reason: `unreadable sidecar: ${String(error?.code ?? error?.message ?? error)}` }
   }
-  return parseIdentity(text)
+  const identity = parseIdentity(text)
+  if (identity === undefined) return { state: 'invalid', reason: 'corrupt or unsupported sidecar payload' }
+  return { state: 'valid', identity }
 }

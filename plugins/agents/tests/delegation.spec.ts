@@ -383,16 +383,21 @@ describe('buildDelegationRequest', () => {
   }
 
   it('builds the exact official one-shot request without encoding identity in label', () => {
-    const { prepared, request, signal } = requestFor(service())
+    const { prepared, request } = requestFor(service())
+    // 0.2.1 moved the label and the cancellation signal out of the request and
+    // dropped `persona`/`toolFilter` from it entirely; the child's composition
+    // is parked separately and applied in the child's own creation window.
     expect(request).toMatchObject({
       label: 'Worker: parser implementation',
-      prompt: [{ type: 'text', text: 'Implement the parser.' }],
-      signal,
-      maxDepth: 2,
-      persona: '# Worker\n',
-      toolFilter: prepared.toolFilter,
-      agentOptions: prepared.agentOptions,
+      request: {
+        prompt: [{ type: 'text', text: 'Implement the parser.' }],
+        maxDepth: 2,
+        agentOptions: prepared.agentOptions,
+      },
     })
+    expect(request.request).not.toHaveProperty('persona')
+    expect(request.request).not.toHaveProperty('toolFilter')
+    expect(request.request).not.toHaveProperty('signal')
     expect(request.label).not.toContain('root-session')
     expect(request.label).not.toContain('current-generation')
   })

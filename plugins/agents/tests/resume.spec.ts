@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Context } from '@deepseek-ai/cordis'
 import { SessionStore } from '@deepseek-ai/dsh-session'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { apply as JsonlSessionPersistence } from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { delegationDepthOf, resolveChildDepth } from '@deepseek-ai/dsh-subagent'
 
 import { RootBudgetRegistry } from '../budget.js'
@@ -82,7 +82,7 @@ function fixture(options: { edge?: boolean; enabled?: boolean } = {}) {
   const result = Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'leaf done' }] })
   const dispose = vi.fn(async () => {})
   const subagents = {
-    start: vi.fn(async () => ({ id: 'leaf-run', localAgent: undefined, result, dispose })),
+    startActivation: vi.fn(async () => ({ childId: 'leaf-run', result, dispose })),
   }
   const runtime = {
     service,
@@ -95,6 +95,7 @@ function fixture(options: { edge?: boolean; enabled?: boolean } = {}) {
     composedPreset: 'lead-preset',
     registered: new Set(['read', 'read_image', 'agent_leaf', 'delegate_batch']),
     isToolVisible: () => true,
+    createChildId: () => 'reserved-child',
   }
   const parent = {
     id: 'resumed-worker',
@@ -180,7 +181,7 @@ describe('cold-resume authorization', () => {
     await expect(delegate(value)).resolves.toMatchObject({
       agentId: 'leaf', status: 'completed', result: 'leaf done',
     })
-    expect(value.subagents.start).toHaveBeenCalledTimes(1)
+    expect(value.subagents.startActivation).toHaveBeenCalledTimes(1)
     expect(value.dispose).toHaveBeenCalledTimes(1)
     expect(value.runtime.budgets.running('root-session')).toBe(0)
   })
@@ -188,13 +189,13 @@ describe('cold-resume authorization', () => {
   it('rejects a currently removed edge before provider start', async () => {
     const value = fixture({ edge: false })
     await expect(delegate(value)).rejects.toThrow(/allowedChildren|authoris/i)
-    expect(value.subagents.start).not.toHaveBeenCalled()
+    expect(value.subagents.startActivation).not.toHaveBeenCalled()
   })
 
   it('rejects a currently disabled target before provider start', async () => {
     const value = fixture({ enabled: false })
     await expect(delegate(value)).rejects.toThrow(/disabled/i)
-    expect(value.subagents.start).not.toHaveBeenCalled()
+    expect(value.subagents.startActivation).not.toHaveBeenCalled()
   })
 
   it('fails closed for corrupt or unsupported sidecars without blocking ordinary tools', async () => {
@@ -202,7 +203,7 @@ describe('cold-resume authorization', () => {
       const value = fixture()
       writeFileSync(childIdentityPath(value.rootDir, 'resumed-worker'), text)
       await expect(delegate(value)).rejects.toThrow(/identity|sidecar/i)
-      expect(value.subagents.start).not.toHaveBeenCalled()
+      expect(value.subagents.startActivation).not.toHaveBeenCalled()
       // The delegation layer installs no global ordinary-tool guard: the
       // rejection is scoped to this call and leaves no budget, holder or
       // identity behind, so the very next healthy delegation still works.

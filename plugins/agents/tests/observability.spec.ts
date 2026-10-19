@@ -71,8 +71,8 @@ function fixture() {
     logger,
     now: vi.fn(() => 1_000),
     subagents: {
-      start: vi.fn(async () => ({
-        id: 'child-1', localAgent: undefined, result: result.promise,
+      startActivation: vi.fn(async () => ({
+        childId: 'child-1', result: result.promise,
         dispose: vi.fn(async () => {}),
       })),
     },
@@ -84,6 +84,7 @@ function fixture() {
     composedPreset: 'lead-preset',
     registered: new Set(['read', 'read_image', 'agent_worker', 'delegate_batch']),
     isToolVisible: () => true,
+    createChildId: () => 'reserved-child',
   }
   const parent = {
     id: 'root-session', options: {},
@@ -161,7 +162,7 @@ describe('delegation lifecycle records', () => {
       runInBackground: false,
       signal: new AbortController().signal,
     })
-    await vi.waitFor(() => expect(value.runtime.subagents.start).toHaveBeenCalled())
+    await vi.waitFor(() => expect(value.runtime.subagents.startActivation).toHaveBeenCalled())
     value.runtime.now.mockReturnValue(1_275)
     value.result.resolve({
       stopReason: 'completed', output: [{ type: 'text', text: 'OUTPUT_SECRET' }],
@@ -214,7 +215,7 @@ describe('delegation lifecycle records', () => {
       tasks: [{ agentId: 'worker', prompt: 'BATCH_PROMPT_SECRET', description: 'BATCH_DESCRIPTION_SECRET' }],
       signal: new AbortController().signal,
     })
-    await vi.waitFor(() => expect(value.runtime.subagents.start).toHaveBeenCalled())
+    await vi.waitFor(() => expect(value.runtime.subagents.startActivation).toHaveBeenCalled())
     value.result.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'BATCH_OUTPUT_SECRET' }] })
     await pending
     expect(value.logger.info).toHaveBeenCalledWith('banbo-agents: batch/settled', {

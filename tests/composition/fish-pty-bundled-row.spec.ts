@@ -137,7 +137,7 @@ const TERMINAL_TOOL_NAMES = [
   'terminal_close',
   'terminal_list',
 ] as const
-const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.0-rc.2`'
+const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.1-rc.2`'
 const FISH_HINT = 'install it (`apt-get install fish` on Linux, `brew install fish` on macOS)'
 
 function findOnPath(name: string): string | undefined {
@@ -667,41 +667,67 @@ describe(
       qaRoot = ''
     }, 120_000)
 
-    it('resolves the name from the profile plane inside this bundle, never from the installation', () => {
+    it('records which copy a bare name selects now, and that the bundle mounts its own', () => {
       const current = requireLane()
       expect(current.layers).toEqual(expect.arrayContaining([BASE_BUNDLE, FISH_BUNDLE]))
       expect(current.profileDir.startsWith(`${current.dshHome}/`)).toBe(true)
       expect(current.dshHome.startsWith(tmpdir())).toBe(true)
 
-      const matches = current.resolutionEntries.filter((entry) => entry.name === TOOL_TERMINAL)
-      // The plan's own assumption: nothing in the dsh installation carries the
-      // bundled package, so no installation-scope entry may exist.
-      expect(matches.filter((entry) => entry.scope === 'installation')).toEqual([])
-      expect(matches, `exactly one profile-scope entry, got ${JSON.stringify(matches)}`).toHaveLength(1)
-      const entry = matches[0] as ResolutionEntry
-      expect(entry.scope).toBe('profile')
-      if (entry.packageDir === undefined) throw new Error(`the ${TOOL_TERMINAL} resolution entry carries no packageDir`)
-
-      // The contract: the profile-plane name resolves to the copy THIS BUNDLE
-      // ships (its own `node_modules`) and is declared by the bundle's own
-      // manifest. It is asserted relative to the composed bundle LAYER rather
-      // than to the profile directory, because that layer's provenance depends
-      // on how the suite is launched (see the header): under `pnpm
-      // test:composition` NODE_PATH makes the installation-first bundle lookup
-      // find pnpm's workspace link, so the layer is the checkout; under a bare
-      // `node … vitest.mjs` run it is the profile's installed copy. Both must
-      // resolve the name INSIDE the bundle, and never from the installation.
       const bundleDir = realpathSync(current.fishPackageDir)
-      expect(entry.declarer, `declarer ${entry.declarer}`).toBe(join(bundleDir, 'package.json'))
-      expect(realpathSync(entry.packageDir), `packageDir ${entry.packageDir}`).toBe(
-        realpathSync(join(bundleDir, 'node_modules', TOOL_TERMINAL)),
-      )
+
+      // WHAT CHANGED IN 0.2.1, and why this test no longer asserts the old shape.
+      //
+      // This lane was written when nothing in the dsh installation carried
+      // `@deepseek-ai/dsh-tool-terminal`: a profile-plane row naming it got the
+      // copy bundled inside this package, through the profile-scope resolution
+      // entry. 0.2.1 ships the package in the installation itself
+      // (`dsh-experimental-terminal-bundle`), and `createRuntimeResolution` only
+      // records a profile-scope entry for a name the installation does NOT
+      // already supply. A bare name therefore selects the INSTALLATION copy —
+      // upstream behaviour, not a defect here — which is exactly why this
+      // bundle's own row can no longer name it bare.
+      const matches = current.resolutionEntries.filter((entry) => entry.name === TOOL_TERMINAL)
+      const installationEntry = matches.find((entry) => entry.scope === 'installation')
+      const profileEntry = matches.find((entry) => entry.scope === 'profile')
+      if (installationEntry !== undefined) {
+        // The installation copy is what a bare name resolves to. Asserted so the
+        // reason for the re-export below stays visible to a future reader.
+        expect(installationEntry.packageDir).toBeDefined()
+        expect(profileEntry, 'a name the installation supplies cannot also carry a profile entry').toBeUndefined()
+      } else {
+        // An installation without the experimental terminal bundle: the original
+        // mechanism still applies, and the bundled copy is the profile entry.
+        expect(profileEntry).toBeDefined()
+        expect(realpathSync(profileEntry!.packageDir!)).toBe(
+          realpathSync(join(bundleDir, 'node_modules', TOOL_TERMINAL)),
+        )
+      }
+
+      // THE CONTRACT THIS BUNDLE OWNS: its own patch mounts the copy it ships,
+      // through the re-export subpath, never the bare name. `tool-terminal.js`
+      // lives inside the package and resolves the dependency from its own
+      // position, so the copy this package declares is the one that runs — in a
+      // packed tarball that is `./node_modules/…` beside it, in a workspace
+      // checkout it is the repository's link to the same pinned version.
+      const loader = service<LoaderService>(current.ctx, 'loader')
+      const bundleRow = [...loader.entries()].find((entry) => entry.options?.id === 'terminal-tools')
+      expect(bundleRow, 'the bundle patch must mount a "terminal-tools" row').toBeDefined()
+      expect(bundleRow?.options?.name).toBe(`${FISH_BUNDLE}/tool-terminal`)
+
+      const reExportPath = join(bundleDir, 'tool-terminal.js')
+      expect(existsSync(reExportPath), `missing re-export ${reExportPath}`).toBe(true)
+      const reExportSource = readFileSync(reExportPath, 'utf8')
+      expect(reExportSource, 'the re-export must resolve from its own position').toContain('createRequire(import.meta.url)')
+      expect(reExportSource).toContain("requireFromHere.resolve('@deepseek-ai/dsh-tool-terminal')")
     }, 60_000)
 
     it('mounts the profile-plane row, which stays pending on the entry-local terminals service — so nothing registers twice', () => {
       const current = requireLane()
       const row = current.row
       expect(row, `the profile patch must mount the "${ROW_ID}" row`).toBeDefined()
+      // The PROBE row is this lane's own: it deliberately names the bare package
+      // at the profile plane (that is the shape §9-8 asked about), which is NOT
+      // what the bundle's own `terminal-tools` row does — see the case above.
       expect(row?.options?.name).toBe(TOOL_TERMINAL)
       expect(row?.disabled).toBe(false)
       // Resolution is not activation. The tool package injects `terminals`,

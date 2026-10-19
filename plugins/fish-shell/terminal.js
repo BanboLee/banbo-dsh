@@ -97,14 +97,16 @@ export { Config }
 export const name = 'terminal-home'
 /**
  * Required services: verbatim the official backend's list. The inherited
- * `spawn()` needs all four; declaring the same list keeps activation identical
- * to the official row.
+ * `spawn()` needs all five — 0.2.1 added `workingDirectory`, which the official
+ * backend resolves the child's cwd through — and declaring the same list keeps
+ * activation identical to the official row.
  */
 export const inject = [
   'terminals',
   'sandboxPolicy',
   'sessionProjections',
   'subprocess',
+  'workingDirectory',
 ]
 
 /** Environment variable holding the profile facts the registry snapshots. */

@@ -67,7 +67,7 @@ function fakeContext() {
   const effects: Array<() => any> = []
   const ctx = {
     banboAgents: service(),
-    subagents: { start: vi.fn(), startContinuable: vi.fn() },
+    subagents: { startActivation: vi.fn() },
     // The delegation runtime resolves a continuable child's live Agent from this
     // registry to install the child form's `writeScope` guard (§16.12).
     agents: { get: vi.fn(() => undefined) },
@@ -143,20 +143,20 @@ describe('stable tool registration', () => {
     await expect(harness.tools[1].execute({ prompt: 'x', description: 'x' }, {
       agent: agent(), signal: new AbortController().signal,
     })).rejects.toThrow(/retired|restore/i)
-    expect(harness.ctx.subagents.start).not.toHaveBeenCalled()
-    expect(harness.ctx.subagents.startContinuable).not.toHaveBeenCalled()
+    expect(harness.ctx.subagents.startActivation).not.toHaveBeenCalled()
   })
 
   it('active named tool forwards the exact exec agent and signal', async () => {
     const harness = fakeContext()
     const requests: any[] = []
     const result = deferred()
-    // A well-formed run, so the assertions below cannot pass because the mock
-    // returned `undefined` and something downstream threw a TypeError.
-    // `start(provider, request)` takes two arguments.
-    harness.ctx.subagents.start = vi.fn(async (_provider: string, request: any) => {
-      requests.push(request)
-      return { id: 'child-1', localAgent: undefined, result: result.promise, dispose: vi.fn(async () => {}) }
+    // A well-formed activation, so the assertions below cannot pass because the
+    // mock returned `undefined` and something downstream threw a TypeError.
+    // 0.2.1's `startActivation(spec)` carries the parent inside `spec.request`
+    // and the cancellation signal on the spec itself.
+    harness.ctx.subagents.startActivation = vi.fn(async (spec: any) => {
+      requests.push(spec)
+      return { childId: spec.childId, result: result.promise, dispose: vi.fn(async () => {}) }
     })
     delegationRuntime(harness.ctx as never, { agentId: 'lead' })
     const parent = agent()
@@ -168,10 +168,10 @@ describe('stable tool registration', () => {
     )
     await vi.waitFor(() => expect(requests).toHaveLength(1))
     // The exact live Agent, not a plugin-scope stand-in.
-    expect(requests[0].parent).toBe(parent)
+    expect(requests[0].request.parent).toBe(parent)
 
     // The exec signal owns cancellation: aborting it must reach the signal the
-    // provider actually received.
+    // manager actually received.
     controller.abort('exec cancelled')
     await vi.waitFor(() => expect(requests[0].signal.aborted).toBe(true))
 
@@ -188,7 +188,7 @@ describe('stable tool registration', () => {
     await expect(harness.tools[2].execute({ tasks: [] }, {
       agent: parent, signal: controller.signal,
     })).rejects.toThrow(/tasks|maxBatchWidth/i)
-    expect(harness.ctx.subagents.start).not.toHaveBeenCalled()
+    expect(harness.ctx.subagents.startActivation).not.toHaveBeenCalled()
   })
 })
 

@@ -5,6 +5,44 @@ All notable changes to `@banbolee/dsh-fish-shell` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-10-19
+
+This is a **patch** release (`0.8.1` → `0.8.2`): the bundle now targets the
+`0.2.1-rc.2` DSH family.
+
+### Changed
+
+- The `@deepseek-ai/*` dependency family moves to `0.2.1-rc.2` (dsh
+  `0.2.1-rc.2`): the peer and dev ranges are `^0.2.1-rc.2`, and the bundled
+  `@deepseek-ai/dsh-tool-terminal` pin is `0.2.1-rc.2`. `0.8.1` cannot be
+  installed against a `0.2.1-rc.2` harness.
+- The family's peer baseline moves with it: `@deepseek-ai/cordis` `~4.0.5` and
+  `@deepseek-ai/schemastery` `~3.18.5`.
+- The `terminal-tools` row now mounts
+  `@banbolee/dsh-fish-shell/tool-terminal` instead of the bare
+  `@deepseek-ai/dsh-tool-terminal`. dsh `0.2.1-rc.2` ships that package in the
+  installation itself (through `@deepseek-ai/dsh-experimental-terminal-bundle`),
+  and the profile-scope runtime resolution only records a name the installation
+  does not already supply — so the bare name would have selected the harness copy
+  and this bundle's own bundled copy would never have loaded. `tool-terminal.js`
+  is the bundle's handle on the copy it ships and re-exports the same plugin
+  surface.
+- `terminal.js`'s inject list gains `workingDirectory`: `0.2.1-rc.2` moved the
+  session working directory into its own service, and the inherited official
+  `BashTerminalBackend.spawn()` resolves the child cwd through it.
+
+### Removed
+
+- `@deepseek-ai/dsh-invariants` is no longer a devDependency: upstream stopped
+  publishing it after `0.2.0-rc.2` (every package's `lib/types/invariant.*` and
+  its peer declaration were removed with it).
+
+### Documentation
+
+- README (both languages) names the `0.2.1-rc.2` family in the support matrix and
+  explains the bundled-copy resolution; `THIRD-PARTY-NOTICES.md` follows the
+  bundled pin.
+
 ## [0.8.1] - 2026-10-14
 
 This is a **patch** release (`0.8.0` → `0.8.1`): the bundle now targets the

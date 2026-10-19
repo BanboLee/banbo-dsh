@@ -5,3 +5,9 @@ dist/
 # Local-only agent execution evidence (plans, task logs, review reports).
 # Never committed; run the plan/evidence verifiers manually on the authoring machine.
 /.omo
+# Release lane artefacts (packed tarballs, the journal, a downloaded prior journal).
+# They are uploaded as workflow artifacts, never committed: leaving them tracked
+# would make the checkout dirty between `pack` and `publish`, which `preflight`
+# refuses on purpose.
+release-artifacts/
+prior-release/

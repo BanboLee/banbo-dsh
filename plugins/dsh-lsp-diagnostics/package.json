@@ -1,7 +1,16 @@
 {
   "name": "@banbolee/dsh-lsp-diagnostics",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Automatic post-write and model-callable read-only LSP diagnostics for existing files in DeepSeek Harness.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BanboLee/banbo-dsh.git",
+    "directory": "plugins/dsh-lsp-diagnostics"
+  },
+  "homepage": "https://github.com/BanboLee/banbo-dsh/tree/main/plugins/dsh-lsp-diagnostics#readme",
+  "bugs": {
+    "url": "https://github.com/BanboLee/banbo-dsh/issues"
+  },
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -28,31 +37,30 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.4",
-    "@deepseek-ai/dsh-fs": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-subprocess": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2"
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-fs": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-subprocess": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "~4.0.4",
-    "@deepseek-ai/dsh-agent": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-agent-loop": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-attachment": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-fs": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-fs-local": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-invariants": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-scope": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-session": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-session-persistence": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-subprocess": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-subprocess-local": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-system-prompt": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-tool-fs": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-tool-str-replace-editor": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-user-approval": "^0.2.0-rc.2"
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-agent": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-agent-loop": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-attachment": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-fs": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-fs-local": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-scope": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-session-persistence": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-subprocess": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-subprocess-local": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tool-fs": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tool-str-replace-editor": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-user-approval": "^0.2.1-rc.2"
   },
   "keywords": [
     "dsh",

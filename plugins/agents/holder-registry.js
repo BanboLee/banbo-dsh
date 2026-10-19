@@ -16,7 +16,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-/** One pre-registered one-shot run owner. */
+/** One pre-registered one-shot activation owner. */
 export class RunHolder {
   #controller = new AbortController()
   #run
@@ -36,7 +36,8 @@ export class RunHolder {
 
   get signal() { return this.#controller.signal }
   get result() { return this.#result.promise }
-  get id() { return this.#run?.id }
+  /** The published activation's child id; `undefined` until publication. */
+  get childId() { return this.#run?.childId }
 
   /** Mark the exact point at which a provider start promise becomes live. */
   beginStart() {
@@ -47,7 +48,7 @@ export class RunHolder {
     this.state = 'starting'
   }
 
-  /** Publish the official run into this already-owned holder exactly once. */
+  /** Publish the official activation into this already-owned holder exactly once. */
   attach(run) {
     const publishable = this.#startPending || this.state === 'reserved'
     if (!publishable || this.#failed || this.#run !== undefined || this.state === 'settled') {
@@ -82,7 +83,7 @@ export class RunHolder {
     return true
   }
 
-  /** Invoke official disposal once, including for a run published late. */
+  /** Invoke official disposal once, including for an activation published late. */
   #disposeRun(run) {
     if (this.#disposal !== undefined) return this.#disposal
     try {

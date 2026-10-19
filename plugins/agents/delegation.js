@@ -14,6 +14,7 @@ import { resolveChildDepth } from '@deepseek-ai/dsh-subagent'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
 import { RootBudgetRegistry } from './budget.js'
+import { releaseChildComposition, reserveChildComposition } from './child-composition.js'
 import { DEADLINE_REACHED, raceWithDeadline } from './deadline.js'
 import { HolderRegistry } from './holder-registry.js'
 import {
@@ -29,7 +30,7 @@ import { compileAllowlist } from './tool-surface.js'
 /** Stable in-process provider installed by the official base composition. */
 export const DELEGATION_PROVIDER = 'spawn'
 export const name = 'banbo-delegation'
-export const inject = ['banboAgents', 'subagents', 'jobs', 'tools', 'agentPresets']
+export const inject = ['banboAgents', 'subagents', 'jobs', 'tools', 'agentPresets', 'agents']
 
 export const Config = {
   '~standard': {
@@ -86,8 +87,28 @@ export function rejectionReason(error) {
 
 const runtimeNow = (runtime) => runtime.now?.() ?? Date.now()
 
+/**
+ * Emit one structured log line, never letting the logger break the delegation.
+ *
+ * The logger is host-provided (`ctx.logger`) and its sink is not part of this
+ * plugin's contract: a transport that throws — a closed stream, a full disk, a
+ * broken IPC bridge — would otherwise turn a *successful* start or a completed
+ * cleanup into a failed delegation, or skip the cleanup that follows the log
+ * call. Telemetry is best-effort by definition, so a throw is swallowed here and
+ * nowhere else.
+ *
+ * @param runtime - the delegation runtime (carries `logger`).
+ * @param event - the event name, logged as `banbo-agents: <event>`.
+ * @param fields - structured fields.
+ */
 function logInfo(runtime, event, fields) {
-  runtime.logger?.info?.(`banbo-agents: ${event}`, fields)
+  try {
+    runtime.logger?.info?.(`banbo-agents: ${event}`, fields)
+  } catch {
+    // Deliberately silent: reporting a logging failure through the same broken
+    // logger is not possible, and throwing would corrupt the delegation state
+    // machine this call sits inside.
+  }
 }
 
 function logRejected(runtime, agentId, error) {
@@ -373,17 +394,23 @@ export function prepareDelegation(options) {
  * The label is display-only (§11.1.1): it carries the target's `displayName`
  * for the subagent list, falling back to the raw id, and is never parsed for
  * identity.
+ *
+ * 0.2.1 moved the label and the cancellation signal OUT of the request (they
+ * are `SubagentActivationSpec` fields now) and stopped accepting `toolFilter`
+ * and `persona` on it. The child's persona and tool surface are therefore
+ * applied by this bundle in the child's own creation window
+ * (`child-composition.js` + the `agent/created` listener in `main-runtime`),
+ * which is where the provider used to apply them.
  */
 export function buildDelegationRequest(prepared, options) {
   return Object.freeze({
     label: `${prepared.targetDefinition.displayName ?? prepared.targetAgentId}: ${options.description}`,
-    prompt: Object.freeze([{ type: 'text', text: options.prompt }]),
-    parent: options.parent,
-    signal: options.signal,
-    maxDepth: prepared.maxDepth,
-    toolFilter: prepared.toolFilter,
-    persona: prepared.persona,
-    ...(prepared.agentOptions === undefined ? {} : { agentOptions: prepared.agentOptions }),
+    request: Object.freeze({
+      prompt: Object.freeze([{ type: 'text', text: options.prompt }]),
+      parent: options.parent,
+      maxDepth: prepared.maxDepth,
+      ...(prepared.agentOptions === undefined ? {} : { agentOptions: prepared.agentOptions }),
+    }),
   })
 }
 
@@ -504,6 +531,66 @@ function cleanupOneShotOnSettlement(runtime, holder, childId, lease) {
 }
 
 /**
+ * Release every piece of ownership ONE delegation acquired, in one place.
+ *
+ * This is the single owner of "the call is over" for both start paths. Before it
+ * existed the same four steps were open-coded at eight call sites, and each one
+ * was an independent chance to forget a step — which is exactly how a live child,
+ * a holder entry or a concurrency slot survives a failed delegation.
+ *
+ * The order is deliberate and each step is individually exception-isolated, so a
+ * failure in one cannot skip the rest:
+ *
+ *   1. `identity` — the live-identity entry, dropped only when the child really
+ *      settled (a still-running child keeps its identity so it cannot be
+ *      delegated to twice);
+ *   2. `composition` — a parked handoff whose child never materialized;
+ *   3. `sidecar` — a sidecar whose child never published (see `rollback`);
+ *   4. `holder` — settle it, which is what disposes the official activation;
+ *   5. `lease` — the concurrency slot, released LAST so the budget cannot be
+ *      reused by another delegation while this child is still being torn down.
+ *
+ * @param runtime - the delegation runtime.
+ * @param options - the exact resources this delegation owns.
+ * @returns {Promise<void>} resolves once every step has been attempted.
+ */
+async function releaseOwnership(runtime, options) {
+  const { childId, holder, lease, identity, identityRoot, settled = true, observation = false } = options
+
+  // 1. live identity
+  try {
+    if (settled) runtime.liveIdentities.delete(childId)
+  } catch {}
+
+  // 2. parked composition (a child that never materialized)
+  try {
+    releaseChildComposition(childId)
+  } catch {}
+
+  // 3. sidecar rollback (a continuable child that never published)
+  try {
+    if (identity !== undefined && identityRoot !== undefined) {
+      rollbackChildIdentity(identityRoot, childId, identity)
+    }
+  } catch {}
+
+  // 4. holder settlement — the official activation's only disposal owner
+  try {
+    if (holder !== undefined) await holder.settle()
+  } catch {}
+
+  // 5. concurrency slot
+  try {
+    lease?.release()
+  } catch {}
+
+  // The observation entry has no other owner once the end-log path is skipped.
+  try {
+    if (observation) observationMap(runtime).delete(childId)
+  } catch {}
+}
+
+/**
  * Enforce a scoped child form's `writeScope` on the CHILD's own tool layer
  * (§16.12).
  *
@@ -520,48 +607,98 @@ function cleanupOneShotOnSettlement(runtime, holder, childId, lease) {
  * `prepared` record this delegation already holds. Identity is never guessed
  * from a label, a persona or a tool set (§11.1.1).
  *
+ * A `runtime.agents` that is absent (a host without the official agents
+ * registry) is NOT silently tolerated when the form needs a guard: the child
+ * would then run with `write`/`edit` and no scope, which is the exact hole this
+ * function closes. The caller converts that into a failed start, so the
+ * delegation is refused rather than published unguarded.
+ *
  * Call it only where a throw unwinds correctly: never after publication outside
  * the owning try, and never inside a catch that means "creation failed".
+ *
+ * @param prepared - the immutable policy record for this delegation.
+ * @param child - the child's own Agent, when the registry can resolve it.
+ * @throws {Error} when the form needs a guard and there is no Agent to guard.
  */
 function guardChildWriteScope(prepared, child) {
   const form = prepared.targetDefinition.child
-  if (child === undefined || !hasWriteScope(form)) return
+  if (!hasWriteScope(form)) return
+  if (child === undefined) {
+    throw new Error(
+      `banbo-agents: cannot install the write scope of "${prepared.targetAgentId}" on child `
+      + `"${String(prepared.targetAgentId)}": the child Agent is not resolvable from this host's agents registry, `
+      + 'and publishing it unguarded would let it write outside the declared scope',
+    )
+  }
   child.ctx.tools.guard((execution) => writeScopeGuardReason(form, execution))
 }
 
-/** Start one published one-shot run inside an already-owned holder. */
+/** Start one published one-shot activation inside an already-owned holder. */
 async function startOneShot(runtime, prepared, options, holder, lease) {
-  const request = buildDelegationRequest(prepared, {
+  const built = buildDelegationRequest(prepared, {
     parent: options.parent,
     prompt: options.prompt,
     description: options.description,
     signal: holder.signal,
   })
+  const childId = runtime.createChildId()
+  // Park the composition BEFORE the child can materialize: the manager reserves
+  // this exact id and runs the child's creation window inside `startActivation`,
+  // so the `agent/created` listener must already find it here.
+  reserveChildComposition(childId, {
+    agentId: prepared.targetAgentId,
+    // The OWNING main Agent comes from the caller identity, never from the child
+    // definition's own id. The authority record is re-checked against the sidecar
+    // and the live main on every resume, so deriving this from the definition
+    // would make that check vacuous.
+    mainAgentId: prepared.callerIdentity.mainAgentId,
+    persona: prepared.persona,
+    toolFilter: prepared.toolFilter,
+  })
   let run
   try {
     holder.beginStart()
-    run = await runtime.subagents.start(DELEGATION_PROVIDER, request)
+    // 0.2.1 replaced `start(provider, request)` with `startActivation(spec)`:
+    // the label and cancellation moved OUT of the request, and a local child
+    // (the only kind `spawn` produces) is selected by supplying `childId`. A
+    // one-shot keeps caller delivery so no parent completion notice is
+    // announced, which is what the foreground/background terminal contracts
+    // below already assume.
+    run = await runtime.subagents.startActivation({
+      provider: DELEGATION_PROVIDER,
+      label: built.label,
+      childId,
+      request: built.request,
+      signal: holder.signal,
+      delivery: 'caller',
+    })
   } catch (error) {
-    holder.failStart(error)
-    await holder.settle()
-    lease.release()
+    // The child never materialized. `failStart` first: the holder is still
+    // start-pending, and only that (or `attach`) resolves its publication —
+    // without it `settle()` waits forever. Everything else goes through the
+    // single ownership owner, so this path cannot forget the lease.
+    try {
+      holder.failStart(error)
+    } catch {}
+    await releaseOwnership(runtime, { childId, holder, lease })
     throw error
   }
-  // Installed AFTER the run is published but OUTSIDE the try above, and that
-  // placement is load-bearing in both directions. Inside the try it would take
-  // the "creation failed" path, whose `settle()` disposes a holder that never
-  // attached and therefore leaks the live child. After `holder.attach` it would
-  // be worse still: `failStart` throws once a run is attached, so the cleanup
-  // below could never run. A throw here is a harness-shape change rather than a
-  // data condition, and the run is already live, so it must be disposed by hand
-  // — the holder cannot do it.
+  // Installed AFTER the activation is published but OUTSIDE the try above, and
+  // that placement is load-bearing in both directions. Inside the try it would
+  // take the "creation failed" path, whose `settle()` disposes a holder that
+  // never attached and therefore leaks the live child. After `holder.attach` it
+  // would be worse still: `failStart` throws once a run is attached, so the
+  // cleanup below could never run. A throw here is a harness-shape change rather
+  // than a data condition, and the activation is already live, so it must be
+  // disposed by hand — the holder cannot do it.
   try {
-    guardChildWriteScope(prepared, run.localAgent)
+    guardChildWriteScope(prepared, runtime.agents?.get(run.childId))
   } catch (error) {
-    // `failStart` first: the holder is still start-pending, and only that (or
-    // `attach`) resolves its publication — without it `settle()` waits forever.
-    // It is legal here precisely because the run was never attached.
-    holder.failStart(error)
+    // The listener consumes the reservation during creation; this only matters
+    // when the child was never announced at all.
+    try {
+      holder.failStart(error)
+    } catch {}
     try {
       // Unbounded on purpose, and unlike the deadline paths: `dispose()` cancels
       // first (abort + machine.cancel + whenIdle), so it settles unless the
@@ -571,17 +708,15 @@ async function startOneShot(runtime, prepared, options, holder, lease) {
       // condition.
       await run.dispose()
     } catch {
-      // The run is already live; a failing dispose must not mask the original
-      // guard error, and the holder cannot retry it (it never attached).
+      // The activation is already live; a failing dispose must not mask the
+      // original guard error, and the holder cannot retry it (it never attached).
     }
-    runtime.liveIdentities.delete(run.id)
-    await holder.settle()
-    lease.release()
+    await releaseOwnership(runtime, { childId, holder, lease })
     throw error
   }
   holder.attach(run)
-  runtime.liveIdentities.set(run.id, childIdentity(prepared, runtime.service))
-  logDelegationStart(runtime, prepared, run.id, 'one-shot', options.runInBackground === true)
+  runtime.liveIdentities.set(run.childId, childIdentity(prepared, runtime.service))
+  logDelegationStart(runtime, prepared, run.childId, 'one-shot', options.runInBackground === true)
   return run
 }
 
@@ -602,30 +737,30 @@ async function runForeground(runtime, prepared, options, holder, lease, budget) 
         terminal === DEADLINE_REACHED ? 'foreground-deadline' : 'caller-cancelled',
       )
       if (settled === 'settled') {
-        runtime.liveIdentities.delete(run.id)
+        runtime.liveIdentities.delete(run.childId)
         lease.release()
       } else {
         // The deadline terminal releases width capacity even when physical
         // cleanup must stay registry-owned; otherwise one hung provider could
         // permanently exhaust every root slot.
         lease.release()
-        cleanupOneShotOnSettlement(runtime, holder, run.id, lease)
+        cleanupOneShotOnSettlement(runtime, holder, run.childId, lease)
       }
       const status = settled === 'settled' ? 'cancel_requested' : 'cleanup_deferred'
-      logDelegationEnd(runtime, run.id, 'aborted', status)
+      logDelegationEnd(runtime, run.childId, 'aborted', status)
       return {
         kind: 'foreground',
         agentId: prepared.targetAgentId,
-        childId: run.id,
+        childId: run.childId,
         status,
         result: '',
       }
     }
 
-    const settlement = cleanupOneShotOnSettlement(runtime, holder, run.id, lease)
+    const settlement = cleanupOneShotOnSettlement(runtime, holder, run.childId, lease)
     await settlement
-    const result = foregroundResult(prepared, run.id, terminal.result)
-    logDelegationEnd(runtime, run.id, terminal.result.stopReason, result.status)
+    const result = foregroundResult(prepared, run.childId, terminal.result)
+    logDelegationEnd(runtime, run.childId, terminal.result.stopReason, result.status)
     return result
   } finally {
     // The official `SubagentRun.result` may reject on an infrastructure fault
@@ -635,8 +770,8 @@ async function runForeground(runtime, prepared, options, holder, lease, budget) 
     // idempotent, so the normal and deadline terminals are unaffected. The
     // observation entry is dropped here too: the normal paths already removed
     // it through `logDelegationEnd`, and the rejection path has no other owner.
-    cleanupOneShotOnSettlement(runtime, holder, run.id, lease)
-    observationMap(runtime).delete(run.id)
+    cleanupOneShotOnSettlement(runtime, holder, run.childId, lease)
+    observationMap(runtime).delete(run.childId)
   }
 }
 
@@ -655,12 +790,12 @@ async function runBackground(runtime, prepared, options, holder, lease, budget) 
       holder.result.then((result) => ({ kind: 'result', result })),
     ])
     if (terminal !== DEADLINE_REACHED && terminal.kind === 'result') {
-      const settlement = cleanupOneShotOnSettlement(runtime, holder, run.id, lease)
+      const settlement = cleanupOneShotOnSettlement(runtime, holder, run.childId, lease)
       await settlement
       const outcome = backgroundOutcome(terminal.result)
       logDelegationEnd(
         runtime,
-        run.id,
+        run.childId,
         terminal.result.stopReason,
         terminal.result.stopReason === 'completed'
           ? (outputText(terminal.result.output) === '' ? 'empty' : 'completed')
@@ -671,14 +806,14 @@ async function runBackground(runtime, prepared, options, holder, lease, budget) 
 
     const settled = await cancelAndDrain(runtime, holder, budget.drainGraceMs, 'background-deadline')
     if (settled === 'settled') {
-      runtime.liveIdentities.delete(run.id)
+      runtime.liveIdentities.delete(run.childId)
       lease.release()
-      logDelegationEnd(runtime, run.id, 'aborted', 'cancel_requested')
+      logDelegationEnd(runtime, run.childId, 'aborted', 'cancel_requested')
       return { status: 'killed', detail: 'background deadline reached; cancel requested' }
     }
     lease.release()
-    cleanupOneShotOnSettlement(runtime, holder, run.id, lease)
-    logDelegationEnd(runtime, run.id, 'aborted', 'cleanup_deferred')
+    cleanupOneShotOnSettlement(runtime, holder, run.childId, lease)
+    logDelegationEnd(runtime, run.childId, 'aborted', 'cleanup_deferred')
     return { status: 'failed', detail: 'background deadline reached; cleanup deferred to HolderRegistry' }
   } catch (error) {
     return { status: 'failed', detail: String(error?.message ?? error) }
@@ -686,8 +821,8 @@ async function runBackground(runtime, prepared, options, holder, lease, budget) 
     // Same rejection path as the foreground case: the job must still settle its
     // holder, drop the live identity and release its slot. The observation entry
     // has no other owner once the end-log path is skipped.
-    cleanupOneShotOnSettlement(runtime, holder, run.id, lease)
-    observationMap(runtime).delete(run.id)
+    cleanupOneShotOnSettlement(runtime, holder, run.childId, lease)
+    observationMap(runtime).delete(run.childId)
   }
 }
 
@@ -695,27 +830,38 @@ async function runBackground(runtime, prepared, options, holder, lease, budget) 
 async function startContinuable(runtime, prepared, options, lease) {
   const childId = runtime.createChildId()
   const identity = childIdentity(prepared, runtime.service)
-  writeChildIdentity(runtime.service.rootDir, childId, identity)
-  const base = buildDelegationRequest(prepared, {
-    parent: options.parent,
-    prompt: options.prompt,
-    description: options.description,
-    signal: options.signal,
-  })
+  // EVERYTHING that can fail after the lease was acquired lives inside this try,
+  // including the sidecar write. It used to sit outside: a damaged data root then
+  // threw past the cleanup and left the concurrency slot reserved forever, which
+  // is a permanent width-budget leak for the whole root session.
   try {
-    const started = await runtime.subagents.startContinuable({
-      provider: DELEGATION_PROVIDER,
-      label: base.label,
-      childId,
-      request: {
-        prompt: base.prompt,
-        parent: base.parent,
-        maxDepth: base.maxDepth,
-        toolFilter: base.toolFilter,
-        persona: base.persona,
-        ...(base.agentOptions === undefined ? {} : { agentOptions: base.agentOptions }),
-      },
+    writeChildIdentity(runtime.service.rootDir, childId, identity)
+    const built = buildDelegationRequest(prepared, {
+      parent: options.parent,
+      prompt: options.prompt,
+      description: options.description,
       signal: options.signal,
+    })
+    // Same handoff as the one-shot path: the child id is reserved here, so the
+    // composition is parked under it before the manager can materialize the child.
+    reserveChildComposition(childId, {
+      agentId: prepared.targetAgentId,
+      mainAgentId: prepared.callerIdentity.mainAgentId,
+      persona: prepared.persona,
+      toolFilter: prepared.toolFilter,
+    })
+    // `startActivation` with a reserved `childId` IS the continuable path in
+    // 0.2.1: a provider with `prepareContinuable` (spawn, fork) runs a local
+    // activation the parent can keep messaging. `delivery: 'parent'` is what
+    // makes the completion notice reach the delegating agent, matching the
+    // background semantics this path has always had.
+    const started = await runtime.subagents.startActivation({
+      provider: DELEGATION_PROVIDER,
+      label: built.label,
+      childId,
+      request: built.request,
+      signal: options.signal,
+      delivery: 'parent',
     })
     runtime.continuableLeases.set(started.childId, lease)
     // No `guardChildWriteScope` here. A continuable child is guarded by the
@@ -732,8 +878,16 @@ async function startContinuable(runtime, prepared, options, lease) {
       status: 'started',
     }
   } catch (error) {
-    rollbackChildIdentity(runtime.service.rootDir, childId, identity)
-    lease.release()
+    // The child never published, so every piece of ownership acquired above must
+    // be released — the parked composition, the sidecar, and the concurrency
+    // slot. One owner for that, shared with the one-shot path.
+    await releaseOwnership(runtime, {
+      childId,
+      lease,
+      identity,
+      identityRoot: runtime.service.rootDir,
+      settled: false,
+    })
     throw error
   }
 }
@@ -956,12 +1110,12 @@ async function runBatchItem(runtime, options, task, item, noOpLease) {
       runInBackground: false,
       signal: options.signal,
     }, holder, noOpLease)
-    item.runId = run.id
+    item.runId = run.childId
     try {
       if (item.closed === true) {
         await holder.settle()
-        runtime.liveIdentities.delete(run.id)
-        logDelegationEnd(runtime, run.id, 'aborted', item.final?.status ?? 'cleanup_deferred')
+        runtime.liveIdentities.delete(run.childId)
+        logDelegationEnd(runtime, run.childId, 'aborted', item.final?.status ?? 'cleanup_deferred')
         return item.final
       }
       // Observe the official promise directly so a result resolved before the
@@ -969,8 +1123,8 @@ async function runBatchItem(runtime, options, task, item, noOpLease) {
       const result = await run.result
       item.terminal = batchItemFromResult(task.agentId, result)
       await holder.settle()
-      runtime.liveIdentities.delete(run.id)
-      logDelegationEnd(runtime, run.id, result.stopReason, item.terminal.status)
+      runtime.liveIdentities.delete(run.childId)
+      logDelegationEnd(runtime, run.childId, result.stopReason, item.terminal.status)
       if (item.closed !== true) item.final = item.terminal
       return item.final
     } finally {
@@ -978,8 +1132,8 @@ async function runBatchItem(runtime, options, task, item, noOpLease) {
       // retained or the live identity behind. Idempotent on every other path.
       // The observation entry is dropped here because the rejection path never
       // reaches `logDelegationEnd`.
-      cleanupOneShotOnSettlement(runtime, holder, run.id, noOpLease)
-      observationMap(runtime).delete(run.id)
+      cleanupOneShotOnSettlement(runtime, holder, run.childId, noOpLease)
+      observationMap(runtime).delete(run.childId)
     }
   } catch (error) {
     if (item.closed === true) return item.final
@@ -1343,6 +1497,11 @@ export default function apply(ctx, config) {
     continuableLeases: new Map(),
     observations: new Map(),
     logger: ctx.logger,
+    // The official agents registry: the ONLY way to reach a published child's
+    // own Agent for the one-shot write-scope guard. Wired from the context here
+    // (previously this slot was never populated, so the guard was a silent
+    // no-op and a scoped one-shot child ran with an unguarded `write`).
+    agents: ctx.agents,
     now: Date.now,
   }
 
