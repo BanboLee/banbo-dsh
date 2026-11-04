@@ -4,10 +4,19 @@ import { createLoopbackServer } from '../fixtures/loopback-openai-sse.mjs'
 import { SCENARIOS } from './plan.mjs'
 import { runTuiSession } from './pty.mjs'
 
+/**
+ * Canonical session-log generations, per dsh-session-format: v0 is
+ * `session.jsonl`, later generations carry `.vN` (0.2.1 persists
+ * `session.v4.jsonl.zstd`). The old fixed `session.jsonl.zstd` suffix matched
+ * no log at all on the newer format, so TUI-03 could never see the files it
+ * claimed to check.
+ */
+const SESSION_LOG = /^session(?:\.v[1-9]\d*)?\.jsonl(?:\.zstd)?$/
+
 function sessionLogs(root) {
   if (!existsSync(root)) return []
   return readdirSync(root, { recursive: true })
-    .filter((entry) => entry.endsWith('session.jsonl.zstd'))
+    .filter((entry) => SESSION_LOG.test(entry.split('/').at(-1) ?? ''))
     .map((entry) => join(root, entry))
 }
 
@@ -15,7 +24,12 @@ function result(id, evidence) {
   return { id, scenario: SCENARIOS[id], status: 'passed', evidence }
 }
 
-export async function runTuiScenarios(environment) {
+/**
+ * The TUI scenario set runs against the candidate profile's own TUI entry:
+ * `session` carries the matrix-checked node and the `profileTuiEntry` result,
+ * so every PTY in this lane launches the candidate, not a global install.
+ */
+export async function runTuiScenarios(environment, session) {
   const fixture = createLoopbackServer()
   await new Promise((resolve, reject) => {
     fixture.server.once('error', reject)
@@ -26,7 +40,13 @@ export async function runTuiScenarios(environment) {
     // minimal and persist the choice.
     const baseline = await runTuiSession({
       environment,
+      label: 'baseline',
+      node: session.node,
+      tui: session.tui,
       actions: [
+        // The i18n template has two spaces ("Current preset  <id>"); the
+        // rendered transcript block collapses them to one. The single-space
+        // marker is the one that actually matches the screen.
         { input: '/preset status\r', waitFor: 'Current preset standard' },
         { input: '/preset minimal\r', waitFor: 'Preset switched: minimal' },
       ],
@@ -36,6 +56,9 @@ export async function runTuiScenarios(environment) {
     // leave the agent with fish and no bash even under a bash preset.
     const persisted = await runTuiSession({
       environment,
+      label: 'persisted',
+      node: session.node,
+      tui: session.tui,
       actions: [
         { input: '/preset status\r', waitFor: 'Current preset minimal' },
         { input: '/preset standard\r', waitFor: 'Preset switched: standard' },
@@ -50,6 +73,9 @@ export async function runTuiScenarios(environment) {
     const requestsAfterControlledTurn = fixture.evidence().requestCount
     const resumed = await runTuiSession({
       environment,
+      label: 'resumed',
+      node: session.node,
+      tui: session.tui,
       args: ['--resume', persisted.resumeToken],
       actions: [
         { input: '/preset status\r', waitFor: 'Current preset standard' },
@@ -64,7 +90,18 @@ export async function runTuiScenarios(environment) {
     const requestsAfterResume = fixture.evidence().requestCount
     const separate = await runTuiSession({
       environment,
+      label: 'separate',
+      node: session.node,
+      tui: session.tui,
       actions: [{
+        // 0.18 host-entry: an injection socket exists at boot, but a prompt
+        // injected into a session that has not taken any keyboard input yet is
+        // inert (verified: zero model requests). One read-only local command
+        // materializes the session; it changes no state and keeps the turn's
+        // assertions untouched.
+        input: '/preset status\r',
+        waitFor: 'Current preset standard',
+      }, {
         prompt: 'qa separate turn',
         completed: () => fixture.evidence().requestCount >= requestsAfterResume + 2
           && fixture.evidence().terminalStatuses.at(-1) === 'stop',

@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 
 import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry } from '@deepseek-ai/dsh-agent'
@@ -69,16 +70,44 @@ afterEach(() => {
 /* ------------------------------------------------------------------ A1 --- */
 
 describe('A1 — dependency family is uniform', () => {
-  it('the workspace lockfile resolves no 0.1.7-rc.2 package alongside 0.2.1-rc.2', () => {
-    const lock = readFileSync(join(repoRoot, 'pnpm-lock.yaml'), 'utf8')
-    const previous = lock.match(/0\.1\.7-rc\.2/g) ?? []
-    const family = lock.match(/0\.2\.1-rc\.2/g) ?? []
-    // Mixing prereleases inside one family is the exact failure this probe
-    // exists to catch: `^0.2.1-rc.2` cannot express "stay on rc.2", so a
-    // caret range silently drifts to the newest rc.x — and a package left
-    // behind on the previous family is the other half of the same drift.
-    expect(previous).toHaveLength(0)
-    expect(family.length).toBeGreaterThan(0)
+  it('the workspace lockfile resolves no 0.2.1-rc.2 package alongside 0.2.1-rc.5', () => {
+    // PARSED, never grepped: a legal declaration still SPELLS the old release
+    // (`^0.2.1-rc.2` peer ranges, the `specifier:` fields, the override values),
+    // so a text probe either misses the real drift or fires on every peer range.
+    // Only the RESOLVED surface counts — the keys of `packages` and `snapshots`,
+    // where pnpm writes `<name>@<version>` (a peer hash may follow the version).
+    const lock = parse(readFileSync(join(repoRoot, 'pnpm-lock.yaml'), 'utf8')) as {
+      packages?: Record<string, unknown>
+      snapshots?: Record<string, unknown>
+    }
+    const target = '0.2.1-rc.5'
+    const previous = '0.2.1-rc.2'
+    const resolved = [...Object.keys(lock.packages ?? {}), ...Object.keys(lock.snapshots ?? {})]
+      .map((key) => /^(@deepseek-ai\/dsh-[a-z0-9-]+)@([^()]+)/u.exec(key))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => ({ name: match[1] ?? '', version: match[2] ?? '' }))
+
+    // The forward guard comes FIRST: if the family resolves to nothing — a
+    // renamed lineage, a lock-format change, an empty read — then "no rc.2
+    // resolved" would be vacuously green, which is exactly the silent pass this
+    // probe must not allow.
+    expect(resolved.length, 'the dsh family must be resolved in the lock').toBeGreaterThan(0)
+    expect(
+      resolved.filter((entry) => entry.version === target).length,
+      `the lock must resolve the family to ${target}`,
+    ).toBeGreaterThan(0)
+    expect(
+      resolved.some((entry) => entry.name === '@deepseek-ai/dsh-agent' && entry.version === target),
+      `@deepseek-ai/dsh-agent@${target} must be resolved`,
+    ).toBe(true)
+
+    // The regression this probe exists for: a package left behind on the
+    // previous release. Peer declarations never reach this list — only resolved
+    // keys do — so a legal `^0.2.1-rc.2` cannot be misreported as a stale pin.
+    const badReferences = resolved
+      .filter((entry) => entry.version === previous)
+      .map((entry) => `${entry.name}@${entry.version}`)
+    expect(badReferences, 'the lock must not resolve any package from the previous family').toEqual([])
   })
 
   it('this plugin declares the same family for every @deepseek-ai dependency', () => {
@@ -87,15 +116,25 @@ describe('A1 — dependency family is uniform', () => {
       peerDependencies?: Record<string, string>
       devDependencies?: Record<string, string>
     }
-    const family = [
-      ...Object.entries(manifest.dependencies ?? {}),
-      ...Object.entries(manifest.peerDependencies ?? {}),
-      ...Object.entries(manifest.devDependencies ?? {}),
-    ].filter(([name]) => name.startsWith('@deepseek-ai/dsh-') && name !== '@deepseek-ai/dsh-brand')
+    const family = (record: Record<string, string> | undefined) => Object.entries(record ?? {})
+      .filter(([name]) => name.startsWith('@deepseek-ai/dsh-') && name !== '@deepseek-ai/dsh-brand')
 
-    expect(family.length).toBeGreaterThan(0)
-    for (const [name, range] of family) {
+    const peers = family(manifest.peerDependencies)
+    const installed = [...family(manifest.dependencies), ...family(manifest.devDependencies)]
+    expect(peers.length).toBeGreaterThan(0)
+    expect(installed.length).toBeGreaterThan(0)
+    // Two exact ranges, deliberately different: the peer range keeps the
+    // `^0.2.1-rc.2` floor (it already admits `0.2.1-rc.5`, so it does not move),
+    // while every installed pin follows the family to `^0.2.1-rc.5`. Both
+    // patterns are anchored, so a caret range drifting to whatever rc.x is
+    // newest still fails on both sides. A package named in BOTH sections — every
+    // dsh peer is also a dev dependency — is checked against the pattern of the
+    // section it appears in, not against one pattern for the bare name.
+    for (const [name, range] of peers) {
       expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.1-rc\.2$/)
+    }
+    for (const [name, range] of installed) {
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.1-rc\.5$/)
     }
   })
 })

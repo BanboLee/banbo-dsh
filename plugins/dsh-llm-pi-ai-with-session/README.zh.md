@@ -6,6 +6,8 @@
 
 它是官方 `llm-pi-ai` adapter 上的一个**通用 session wrapper**：注册显式的 session provider 路由——只注册 `routes` 中声明的路由——复用 pi-ai 的 **openai-completions** 线上实现，并在每次请求上加上一个可配置的会话 header（默认 `x-session-id`）。网关、凭据、静态 headers、模型与推理档位全部从 `llm-pi-ai.providers` 的 source provider **继承**；不重复任何配置。它只使用公开的 `ctx.llm.registerAdapter` 扩展点，从不修改 harness 内核，不需要额外的二进制，也从不碰被锁死的 `sendSessionAffinityHeaders` 开关。
 
+**维护模式：** 本 bundle 不再新增功能，只承诺已声明的 `@earendil-works/pi-ai` 区间（`^0.84.2 || ^1.0.0`）保持可安装、可运行；新需求请由其它方案承接。
+
 ## 为什么需要它
 
 Harness 官方有两条 LLM 通路：

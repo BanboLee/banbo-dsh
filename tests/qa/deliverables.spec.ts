@@ -10,6 +10,7 @@ const requiredArtifacts = [
   'scripts/qa/run-dsh-tui-real.mjs',
   'scripts/qa/run-lsp-real-servers.mjs',
   'scripts/qa/run-dsh-tui-upgrade.mjs',
+  'scripts/qa/matrices/dsh-0.2.1-rc.5_tui-0.18.0.json',
   'scripts/qa/fixtures/loopback-openai-sse.mjs',
   'scripts/qa/fixtures/dsh-tui-qa-settings.yaml',
   'scripts/qa/fixtures/dsh-tui-qa.patch.yml',

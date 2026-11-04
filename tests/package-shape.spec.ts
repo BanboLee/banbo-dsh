@@ -59,7 +59,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
       '@deepseek-ai/cordis': '~4.0.5',
       '@deepseek-ai/dsh-llm': '^0.2.1-rc.2',
       '@deepseek-ai/dsh-timeout': '^0.2.1-rc.2',
-      '@earendil-works/pi-ai': '^0.84.2',
+      '@earendil-works/pi-ai': '^0.84.2 || ^1.0.0',
     },
   },
   {
@@ -79,7 +79,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     packageName: '@banbolee/dsh-fish-shell',
     files: ['index.js', 'local.js', 'tool.js', 'policy.js', 'terminal.js', 'terminal-fish.js', 'persistent.js', 'job-kind.d.ts', 'terminal-tools.js', 'tool-terminal.js', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG.md'],
     dependencies: {
-      '@deepseek-ai/dsh-tool-terminal': '0.2.1-rc.2',
+      '@deepseek-ai/dsh-tool-terminal': '0.2.1-rc.5',
     },
     bundledDependencies: ['@deepseek-ai/dsh-tool-terminal'],
     peerDependencies: {
@@ -250,17 +250,17 @@ describe('DSH bundle package manifests', () => {
 })
 
 describe('DSH dependency family ranges', () => {
-  it('codegraph-mcp declares @deepseek-ai/dsh-llm from the rc.2 family', () => {
+  it('codegraph-mcp declares @deepseek-ai/dsh-llm from the rc.5 family', () => {
     const manifest = readManifest('plugins/codegraph-mcp')
 
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.1-rc.2')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.1-rc.5')
   })
 
-  it('rtk declares @deepseek-ai/dsh-llm and @deepseek-ai/dsh-settings from the rc.2 family', () => {
+  it('rtk declares @deepseek-ai/dsh-llm and @deepseek-ai/dsh-settings from the rc.5 family', () => {
     const manifest = readManifest('plugins/rtk')
 
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.1-rc.2')
-    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('^0.2.1-rc.2')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.1-rc.5')
+    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('^0.2.1-rc.5')
   })
 })
 

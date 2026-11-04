@@ -12,7 +12,7 @@
  * check possible here: flipping one row of the activation snapshot to pending —
  * or injecting a throwing step — must turn the corresponding gate red.
  */
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -23,20 +23,25 @@ import {
   createQaLayout,
 } from '../../scripts/qa/lib/environment.mjs'
 import {
+  TUI_PACKAGE_NAME,
   installProfile,
+  packageRootFromBin,
   packBundles,
-  targetTuiPackagePath,
   writeToolWrappers,
 } from '../../scripts/qa/lib/profile.mjs'
 import {
+  EXTERNAL_TOOL_DEFAULTS,
   GATE_NAMES,
   INTERACTIVE_SEAMS,
   RUNNING_FIBER_STATE,
   activationVerdict,
   declaredRowIds,
+  describeCandidates,
   exitCodeFor,
   expectedActivationRows,
+  inspectCandidates,
   probeInstalledProfileActivation,
+  resolveToolPaths,
   runGates,
 } from '../../scripts/qa/run-dsh-tui-upgrade.mjs'
 
@@ -372,10 +377,133 @@ describe('upgrade gate verdicts', () => {
   })
 })
 
+// ── The candidate contract: injected launchers, no host defaults ────────────
+
+/** A candidate prefix shaped like `npm install --global --prefix <prefix>`. */
+function createFakeCandidate(prefix: string, packageName: string, version: string, versionLine: string): string {
+  const segments = packageName.split('/')
+  const packageRoot = join(prefix, 'lib', 'node_modules', ...segments)
+  mkdirSync(join(packageRoot, 'bin'), { recursive: true })
+  writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: packageName, version }))
+  writeFileSync(join(packageRoot, 'bin', 'cli.js'), `process.stdout.write(${JSON.stringify(versionLine)})\n`)
+  mkdirSync(join(prefix, 'bin'), { recursive: true })
+  const launcher = join(prefix, 'bin', segments[segments.length - 1] as string)
+  symlinkSync(join('..', 'lib', 'node_modules', ...segments, 'bin', 'cli.js'), launcher)
+  return launcher
+}
+
+describe('injected candidate launchers', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'dsh-tui-qa-candidates-'))
+  const nodeMajor = Number(process.versions.node.split('.')[0])
+
+  afterAll(() => {
+    rmSync(scratch, { recursive: true, force: true })
+  })
+
+  it('refuses to fall back to a host dsh when a candidate flag is missing', () => {
+    // Given/When/Then: no candidate defaults exist — the lane names the flag and
+    // prints its usage instead of quietly running the host's nvm install.
+    expect(() => resolveToolPaths(new Map())).toThrow(/--node-bin[\s\S]*usage:/)
+  })
+
+  it('takes all three candidates from their explicit flags', () => {
+    // Given: explicit candidate launchers.
+    const tools = resolveToolPaths(new Map([
+      ['node-bin', process.execPath],
+      ['dsh-bin', '/tmp/cand/bin/dsh'],
+      ['dsh-tui-bin', '/tmp/cand/bin/dsh-tui'],
+    ])) as Record<string, string>
+
+    // Then: they are used verbatim.
+    expect(tools.node).toBe(process.execPath)
+    expect(tools.dsh).toBe('/tmp/cand/bin/dsh')
+    expect(tools.dshTui).toBe('/tmp/cand/bin/dsh-tui')
+  })
+
+  it('keeps the host tools as defaults and honours their explicit overrides', () => {
+    // Given: the three required candidates, with and without tool overrides.
+    const required = [
+      ['node-bin', process.execPath],
+      ['dsh-bin', '/tmp/cand/bin/dsh'],
+      ['dsh-tui-bin', '/tmp/cand/bin/dsh-tui'],
+    ] as const
+    const base = resolveToolPaths(new Map(required)) as Record<string, string>
+    const overridden = resolveToolPaths(new Map<string, string>([
+      ...required,
+      ['rtk-bin', '/opt/rtk'],
+      ['codegraph-bin', '/opt/codegraph'],
+    ])) as Record<string, string>
+
+    // Then: the host tool defaults survive, and each one is overridable.
+    expect(base.rtk).toBe(EXTERNAL_TOOL_DEFAULTS.rtk)
+    expect(base.codegraph).toBe(EXTERNAL_TOOL_DEFAULTS.codegraph)
+    expect(overridden.rtk).toBe('/opt/rtk')
+    expect(overridden.codegraph).toBe('/opt/codegraph')
+  })
+
+  it('records requested path and realpath for every injected candidate', () => {
+    // Given: launchers under a candidate prefix.
+    const dsh = createFakeCandidate(join(scratch, 'describe'), '@deepseek-ai/dsh', '0.2.1-rc.5', '0.2.1-rc.5')
+    const dshTui = createFakeCandidate(join(scratch, 'describe'), TUI_PACKAGE_NAME, '0.18.0', '0.18.0')
+    const tools = { node: process.execPath, dsh, dshTui }
+
+    // When: the candidates are described.
+    const described = describeCandidates(tools) as Record<string, { requestedPath: string; realpath: string }>
+
+    // Then: the requested path is kept apart from the realpath, without
+    // following the symlink in the report.
+    expect(described.dsh).toEqual({ requestedPath: resolve(dsh), realpath: realpathSync(dsh) })
+    expect(described.dsh.realpath).not.toBe(described.dsh.requestedPath)
+    expect(described.dshTui.requestedPath).toBe(resolve(dshTui))
+  })
+
+  it('derives package identity and raw --version output from the candidates', async () => {
+    // Given: an rc.5 dsh launcher and a TUI launcher that prints name+version.
+    const prefix = join(scratch, 'inspect')
+    const dsh = createFakeCandidate(prefix, '@deepseek-ai/dsh', '0.2.1-rc.5', '0.2.1-rc.5\n')
+    const dshTui = createFakeCandidate(prefix, TUI_PACKAGE_NAME, '0.18.0', `${TUI_PACKAGE_NAME} 0.18.0\n`)
+    const matrix = { nodeMajor, dsh: '0.2.1-rc.5', dshTui: '0.18.0' }
+
+    // When: the candidates are inspected against the matrix.
+    const evidence = await inspectCandidates({ node: process.execPath, dsh, dshTui }, matrix) as {
+      node: { versionOutput: string }
+      dsh: { packageName: string; packageVersion: string; versionOutput: string; packageRoot: string }
+      dshTui: { packageName: string; packageVersion: string; versionOutput: string }
+    }
+
+    // Then: every evidence field the report promises is present and verbatim.
+    expect(evidence.node.versionOutput).toBe(`v${process.versions.node}`)
+    expect(evidence.dsh).toMatchObject({
+      packageName: '@deepseek-ai/dsh',
+      packageVersion: '0.2.1-rc.5',
+      versionOutput: '0.2.1-rc.5',
+      packageRoot: realpathSync(join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh')),
+    })
+    expect(evidence.dshTui).toMatchObject({
+      packageName: TUI_PACKAGE_NAME,
+      packageVersion: '0.18.0',
+      versionOutput: `${TUI_PACKAGE_NAME} 0.18.0`,
+    })
+  })
+
+  it('rejects a candidate whose version is not the matrix version', async () => {
+    // Given: an rc.4 launcher with a matrix that requires rc.5.
+    const prefix = join(scratch, 'mismatch')
+    const dsh = createFakeCandidate(prefix, '@deepseek-ai/dsh', '0.2.1-rc.4', '0.2.1-rc.4\n')
+    const dshTui = createFakeCandidate(prefix, TUI_PACKAGE_NAME, '0.18.0', '0.18.0\n')
+
+    // When/Then: the mismatch is named, never accepted.
+    await expect(inspectCandidates(
+      { node: process.execPath, dsh, dshTui },
+      { nodeMajor, dsh: '0.2.1-rc.5', dshTui: '0.18.0' },
+    )).rejects.toThrow(/--dsh-bin reports "0\.2\.1-rc\.4".*requires 0\.2\.1-rc\.5/)
+  })
+})
+
 // ── The G5 activation step against a real QA-packed profile ──────────────────
 
-const TUI_BUNDLE = '@deepseek-harness-tui/dsh-tui'
-const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.16.1`'
+const TUI_BUNDLE = TUI_PACKAGE_NAME
+const TUI_HINT = 'install it with `npm install -g @deepseek-harness-tui/dsh-tui@0.18.0` (the package root is derived from the `dsh-tui` launcher on PATH)'
 const repoRoot = resolve(import.meta.dirname, '..', '..')
 
 function findExecutableOnPath(name: string): string | undefined {
@@ -388,13 +516,14 @@ function findExecutableOnPath(name: string): string | undefined {
 }
 
 const dshBinary = findExecutableOnPath('dsh')
+const dshTuiBinary = findExecutableOnPath('dsh-tui')
 const pnpmBinary = findExecutableOnPath('pnpm')
-const tuiTarget: string | undefined = dshBinary === undefined
+/** The TUI package root the `dsh-tui` launcher belongs to (no sibling guess). */
+const tuiTarget: string | undefined = dshTuiBinary === undefined
   ? undefined
   : (() => {
     try {
-      const candidate = targetTuiPackagePath(realpathSync(dshBinary))
-      return existsSync(join(candidate, 'package.json')) ? candidate : undefined
+      return packageRootFromBin(dshTuiBinary, TUI_PACKAGE_NAME).root
     } catch {
       return undefined
     }
@@ -402,7 +531,7 @@ const tuiTarget: string | undefined = dshBinary === undefined
 
 const missingPrerequisites = [
   ...(dshBinary === undefined ? ['the `dsh` CLI on PATH'] : []),
-  ...(tuiTarget === undefined ? [`the global ${TUI_BUNDLE} package beside it — ${TUI_HINT}`] : []),
+  ...(tuiTarget === undefined ? [`the installed ${TUI_BUNDLE} package reachable from the \`dsh-tui\` launcher on PATH — ${TUI_HINT}`] : []),
   ...(pnpmBinary === undefined ? ['`pnpm` on PATH (the QA pack step runs through it)'] : []),
 ]
 /** A missing prerequisite SKIPS with its reason named; it never passes silently. */
@@ -459,7 +588,7 @@ describe(`the G5 activation probe on a QA-packed ${TUI_BUNDLE} profile`, () => {
     if (!existsSync(wanted[0] as string)) {
       throw new Error(`the QA pack step did not produce ${wanted[0]}: ${tarballs.join(', ')}`)
     }
-    await installProfile(wrappers.dsh, { dshTui: tuiVersion }, wanted, repoRoot, environment as never)
+    await installProfile({ wrapper: wrappers.dsh, dshBin }, wanted, repoRoot, environment as never)
   }, 600_000)
 
   afterAll(() => {
@@ -490,6 +619,7 @@ describe(`the G5 activation probe on a QA-packed ${TUI_BUNDLE} profile`, () => {
       layout: layout as never,
       environment: environment as never,
       dshBin: dshBinary as string,
+      tuiPackageRoot: tuiTarget as string,
     }) as {
       readonly passed: boolean
       readonly failures: readonly unknown[]

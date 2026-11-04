@@ -1,13 +1,16 @@
 import { execFile, execFileSync } from 'node:child_process'
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { createQaLayout } from '../../scripts/qa/lib/environment.mjs'
 import {
+  TUI_PACKAGE_NAME,
+  packageRootFromBin,
   readDshWrapperTarget,
+  readOnboardingFixture,
+  seedOnboardingFixture,
   stageTuiPackage,
-  targetTuiPackagePath,
   writeToolWrappers,
 } from '../../scripts/qa/lib/profile.mjs'
 import { resolveDshInstallationBin } from '../composition/profile-loader'
@@ -39,15 +42,91 @@ describe('QA profile tool wrappers', () => {
     expect(readFileSync(wrappers.pnpm, 'utf8')).toContain('exec "/opt/pnpm/bin/pnpm" "$@"')
   })
 
-  it('locates the exact installed target TUI beside the Node 26 global dsh package', () => {
-    // Given: the Node 26 global dsh executable path.
-    const dsh = '/opt/node26/lib/node_modules/@deepseek-ai/dsh/lib/bin.js'
+  it('derives the dsh-tui package root from the injected launcher instead of a sibling layout', () => {
+    // Given: a candidate prefix whose `bin/dsh-tui` is a symlink into its own
+    // package — the shape of `npm install --global --prefix /tmp/<prefix>`.
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-tui-qa-launcher-'))
+    roots.push(prefix)
+    const packageRoot = join(prefix, 'lib', 'node_modules', '@deepseek-harness-tui', 'dsh-tui')
+    mkdirSync(join(packageRoot, 'bin'), { recursive: true })
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: TUI_PACKAGE_NAME, version: '0.18.0' }))
+    writeFileSync(join(packageRoot, 'bin', 'dsh-tui.js'), '#!/usr/bin/env node\n')
+    mkdirSync(join(prefix, 'bin'), { recursive: true })
+    symlinkSync(
+      join('..', 'lib', 'node_modules', '@deepseek-harness-tui', 'dsh-tui', 'bin', 'dsh-tui.js'),
+      join(prefix, 'bin', 'dsh-tui'),
+    )
 
-    // When: the sibling target package path is derived without registry access.
-    const target = targetTuiPackagePath(dsh)
+    // When: the package root is derived from the launcher (realpath first).
+    const resolved = packageRootFromBin(join(prefix, 'bin', 'dsh-tui'), TUI_PACKAGE_NAME)
 
-    // Then: the target package points at the global scoped dsh-tui install.
-    expect(target).toBe('/opt/node26/lib/node_modules/@deepseek-harness-tui/dsh-tui')
+    // Then: the launcher's own package is returned, not a path beside some dsh.
+    expect(resolved.root).toBe(realpathSync(packageRoot))
+    expect(resolved.manifest.name).toBe(TUI_PACKAGE_NAME)
+    expect(resolved.manifest.version).toBe('0.18.0')
+  })
+
+  it('fails loud when the launcher belongs to a package with another name', () => {
+    // Given: a launcher inside a package that is not the requested one.
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-tui-qa-wrong-package-'))
+    roots.push(prefix)
+    const packageRoot = join(prefix, 'lib', 'node_modules', '@example', 'not-dsh-tui')
+    mkdirSync(join(packageRoot, 'bin'), { recursive: true })
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@example/not-dsh-tui', version: '1.0.0' }))
+    writeFileSync(join(packageRoot, 'bin', 'launcher.js'), '#!/usr/bin/env node\n')
+
+    // When: the requested package root is derived from that launcher.
+    const derive = () => packageRootFromBin(join(packageRoot, 'bin', 'launcher.js'), TUI_PACKAGE_NAME)
+
+    // Then: the derivation refuses to guess another install.
+    expect(derive).toThrow(/no ancestor package\.json declares that name/)
+  })
+
+  it('fails loud when the candidate launcher does not exist', () => {
+    // Given/When/Then: a missing launcher is a named setup error, never a fallback.
+    expect(() => packageRootFromBin('/nonexistent/bin/dsh-tui', TUI_PACKAGE_NAME))
+      .toThrow(/candidate launcher does not exist/)
+  })
+
+  it('targets the dsh realpath so dsh-tui 0.18 can follow the launcher to its host package', () => {
+    // Given: a candidate prefix whose `bin/dsh` is a symlink to `lib/bin.js` —
+    // the shape `dsh-tui 0.18`'s `findHostDsh` follows by its `.js` token.
+    const prefix = mkdtempSync(join(tmpdir(), 'dsh-tui-qa-dsh-realpath-'))
+    roots.push(prefix)
+    const dshPackage = join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh')
+    mkdirSync(join(dshPackage, 'lib'), { recursive: true })
+    writeFileSync(join(dshPackage, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.1-rc.5' }))
+    writeFileSync(join(dshPackage, 'lib', 'bin.js'), '#!/usr/bin/env node\n')
+    mkdirSync(join(prefix, 'bin'), { recursive: true })
+    symlinkSync(join('..', 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), join(prefix, 'bin', 'dsh'))
+    const root = mkdtempSync(join(tmpdir(), 'dsh-tui-qa-dsh-wrapper-'))
+    roots.push(root)
+    const layout = createQaLayout(root)
+
+    // When: the QA wrappers are rendered from that launcher.
+    const wrappers = writeToolWrappers(layout, {
+      node: process.execPath,
+      dsh: join(prefix, 'bin', 'dsh'),
+      pnpm: '/opt/pnpm/bin/pnpm',
+    })
+
+    // Then: the wrapper targets the real package entry, not the prefix symlink.
+    expect(readDshWrapperTarget(wrappers.dsh)).toBe(realpathSync(join(dshPackage, 'lib', 'bin.js')))
+    expect(readDshWrapperTarget(wrappers.dsh).endsWith('/lib/bin.js')).toBe(true)
+  })
+
+  it('seeds the dsh-tui first-run state as a recorded fixture', () => {
+    // Given: an empty QA home.
+    const home = mkdtempSync(join(tmpdir(), 'dsh-tui-qa-onboarding-'))
+    roots.push(home)
+
+    // When: the deterministic first-run state is seeded.
+    const seeded = seedOnboardingFixture(home)
+
+    // Then: it is written, marked as preseeded, and readable back.
+    expect(seeded).toMatchObject({ completed: true, version: 1, preseeded: true })
+    expect(existsSync(seeded.path)).toBe(true)
+    expect(readOnboardingFixture(home)).toMatchObject({ completed: true, version: 1 })
   })
 
   it('recovers the explicit dsh target when a QA wrapper is inspected', () => {
@@ -87,10 +166,10 @@ describe('QA profile tool wrappers', () => {
   })
 })
 
-// ── QA packing contract for the global dsh-tui installation ──────────────────
+// ── QA packing contract for the installed dsh-tui package ────────────────────
 
-const TUI_PACKAGE = '@deepseek-harness-tui/dsh-tui'
-const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.16.1`'
+const TUI_PACKAGE = TUI_PACKAGE_NAME
+const TUI_HINT = 'install it with `npm install -g @deepseek-harness-tui/dsh-tui@0.18.0` (the package root is derived from the `dsh-tui` launcher on PATH)'
 
 /**
  * The vendored bundles the PUBLISHED manifest curates in its own
@@ -131,13 +210,12 @@ function findExecutableOnPath(name: string): string | undefined {
   return undefined
 }
 
-/** The global dsh-tui package `targetTuiPackagePath` resolves beside `dsh`. */
+/** The dsh-tui package the `dsh-tui` launcher on PATH belongs to. */
 function findTargetTuiPackage(): string | undefined {
-  const dsh = findExecutableOnPath('dsh')
-  if (dsh === undefined) return undefined
+  const dshTui = findExecutableOnPath('dsh-tui')
+  if (dshTui === undefined) return undefined
   try {
-    const candidate = targetTuiPackagePath(realpathSync(dsh))
-    return existsSync(join(candidate, 'package.json')) ? candidate : undefined
+    return packageRootFromBin(dshTui, TUI_PACKAGE_NAME).root
   } catch {
     return undefined
   }
@@ -165,7 +243,7 @@ const tuiExtracted = join(tuiScratch, 'extracted')
 const tuiTarget = findTargetTuiPackage()
 /** Why this lane cannot run here; a SKIP with this reason, never a silent pass. */
 const tuiUnrunnable = tuiTarget === undefined
-  ? `the global ${TUI_PACKAGE} package is missing beside the global \`dsh\` CLI — ${TUI_HINT}`
+  ? `no installed ${TUI_PACKAGE} package was found through the \`dsh-tui\` launcher on PATH — ${TUI_HINT}`
   : undefined
 
 let tuiSourceManifest: TuiManifest | undefined
@@ -204,13 +282,13 @@ function runTuiPnpm(args: readonly string[]): Promise<void> {
   })
 }
 
-describe(`QA packing of the global ${TUI_PACKAGE} installation`, () => {
+describe(`QA packing of the installed ${TUI_PACKAGE} package`, () => {
   afterAll(() => {
     rmSync(tuiScratch, { recursive: true, force: true })
   })
 
   beforeAll(async () => {
-    // The global package is the published artefact: a missing one is a SKIP
+    // The installed package is the published artefact: a missing one is a SKIP
     // (spelled out in every test below), but once it is there the pack runs.
     if (tuiTarget === undefined) return
     tuiSourceManifest = JSON.parse(readFileSync(join(tuiTarget, 'package.json'), 'utf8')) as TuiManifest

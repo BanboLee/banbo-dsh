@@ -16,7 +16,7 @@
  *     deliberately does not depend on dsh-tui (the CI `composition` job does
  *     not install it). A lane that could only ever skip is not a lane;
  *   - `installProfile` installs that ONE tarball into `$DSH_HOME/profiles/dsh-tui`
- *     with the real `dsh plugin add` CLI, `--offline`, under a fresh temporary
+ *     with the real `dsh plugin add` CLI, `--prefer-offline`, under a fresh temporary
  *     `$DSH_HOME`. The profile name is hard-coded by the helper; the
  *     composition is dsh-base + this bundle, NOT the dsh-tui one, and the lane
  *     asserts that (`dsh-base` is the profile's implicit first layer);
@@ -139,7 +139,7 @@ const TERMINAL_TOOL_NAMES = [
   'terminal_close',
   'terminal_list',
 ] as const
-const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.1-rc.2`'
+const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.1-rc.5`'
 const FISH_HINT = 'install it (`apt-get install fish` on Linux, `brew install fish` on macOS)'
 const WEB_APP_HINT = `install a dsh release that ships ${WEB_APP} (the \`web\` profile template)`
 
@@ -631,10 +631,9 @@ describe(
       const fishTarball = await packFishBundle({ qaRoot, packs: qa.packs, pnpm: wrappers.pnpm, environment })
       if (!existsSync(fishTarball)) throw new Error(`the pack step did not produce ${fishTarball}`)
 
-      // The second argument is `installProfile`'s `matrix` slot, which that
-      // helper ignores (it only forwards the wrapper, the tarballs and the
-      // environment to `dsh plugin --profile dsh-tui add`).
-      await installProfile(wrappers.dsh, { preset: PRESET_ID }, [fishTarball], repoRoot, environment)
+      // `installProfile` installs through the injected dsh and verifies the
+      // wrapper delegates to that exact launcher.
+      await installProfile({ wrapper: wrappers.dsh, dshBin }, [fishTarball], repoRoot, environment)
 
       const profileDir = join(qa.dshHome, 'profiles', PROFILE_NAME)
       const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as {

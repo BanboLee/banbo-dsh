@@ -161,8 +161,8 @@ describe('dependencyFamilyVersion — the locked harness range (§11.2)', () => 
 /* ------------------------------------------------- range ⇄ target runtime --- */
 
 const repoRoot = resolve(pluginRoot, '..', '..')
-/** The runtime the declared family names — the version the range must admit. */
-const TARGET_DSH_VERSION = '0.2.1-rc.2'
+/** The runtime the declared family resolves to — the version the range must admit. */
+const TARGET_DSH_VERSION = '0.2.1-rc.5'
 /** The runtime the family was upgraded FROM: the negative control. */
 const PREVIOUS_DSH_VERSION = '0.2.0-rc.2'
 
@@ -188,7 +188,7 @@ function optionalInstalledModule(id: string): unknown {
 }
 
 describe('dependencyFamilyVersion — the declared range admits the target runtime', () => {
-  it('accepts 0.2.1-rc.2 through the platform evaluator, with semver as the fallback', () => {
+  it('accepts 0.2.1-rc.5 through the platform evaluator, with semver as the fallback', () => {
     const manifest: object = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'))
     const appBoot = optionalInstalledModule('@deepseek-ai/dsh-app-boot') as {
       evaluatePluginCompatibility: (

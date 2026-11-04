@@ -16,6 +16,8 @@ duplicated. It uses only the public `ctx.llm.registerAdapter` extension point,
 never modifies harness core, needs no extra binary, and never touches the
 locked-down `sendSessionAffinityHeaders` switch.
 
+**Maintenance mode:** no new features are planned; the declared `@earendil-works/pi-ai` range (`^0.84.2 || ^1.0.0`) is kept installable and runnable, and new requirements should be served by a different solution.
+
 ## Why this plugin exists
 
 Harness ships two official LLM paths:

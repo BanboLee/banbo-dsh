@@ -19,6 +19,8 @@ const matrix = {
     '@banbolee/dsh-codegraph-mcp': '0.1.0',
     '@banbolee/dsh-llm-pi-ai-with-session': '0.1.0',
     '@banbolee/dsh-lsp-diagnostics': '0.1.0',
+    // Six published bundles: the matrix has to pin the agents bundle too.
+    '@banbolee/dsh-agents': '0.4.3',
   },
 } as const
 

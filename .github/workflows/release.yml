@@ -80,8 +80,8 @@ env:
   # composition and fish lanes need. They are pinned HERE rather than inherited
   # from the runner so a runner image change cannot silently move the harness the
   # packed bundles are verified against.
-  RELEASE_DSH_VERSION: '0.2.1-rc.2'
-  RELEASE_DSH_TUI_VERSION: '0.16.1'
+  RELEASE_DSH_VERSION: '0.2.1-rc.5'
+  RELEASE_DSH_TUI_VERSION: '0.18.0'
   # Where the journal and the packed tarballs live. The journal is uploaded even
   # when the run fails, so a partial failure leaves evidence behind.
   RELEASE_ARTIFACTS: release-artifacts
@@ -160,7 +160,7 @@ jobs:
           npm install --global "@deepseek-ai/dsh@${RELEASE_DSH_VERSION}"
           dsh --version
 
-      # `0.16.1` is the first dsh-tui whose peers include `0.2.1-rc.2`.
+      # `0.18.0` is the first dsh-tui whose peers include `0.2.1-rc.5`.
       - name: Install the pinned DSH TUI
         run: |
           set -euo pipefail

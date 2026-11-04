@@ -194,10 +194,10 @@ describe('CI workflow pnpm cache pairing', () => {
     // empty, so a job with only these still fails the setup-node POST step.
     ['npm ci', 'npm ci --include=dev'],
     ['a local npm install', 'npm install --no-audit --no-fund'],
-    ['a global npm install (the dsh CLI)', 'npm install -g @deepseek-ai/dsh@0.2.1-rc.2'],
+    ['a global npm install (the dsh CLI)', 'npm install -g @deepseek-ai/dsh@0.2.1-rc.5'],
     ['a global npm install with --global', 'npm install --global npm@11.21.0'],
     // A global PNPM install does not fill the workspace store either.
-    ['a global pnpm install', 'pnpm add -g @deepseek-ai/dsh@0.2.1-rc.2'],
+    ['a global pnpm install', 'pnpm add -g @deepseek-ai/dsh@0.2.1-rc.5'],
     ['a pnpm test run', 'pnpm test'],
     ['a pnpm pack', 'pnpm pack --config.node-linker=hoisted'],
   ])('does NOT count %s as populating the pnpm store', (_label, run) => {
@@ -209,17 +209,82 @@ describe('CI workflow pnpm cache pairing', () => {
   it('counts a step that installs the workspace AND a global CLI', () => {
     // The mixed positive case: one step, two commands. The global install must not
     // disqualify the step, because the workspace install does populate the store.
-    const run = 'pnpm install --frozen-lockfile\nnpm install -g @deepseek-ai/dsh@0.2.1-rc.2'
+    const run = 'pnpm install --frozen-lockfile\nnpm install -g @deepseek-ai/dsh@0.2.1-rc.5'
     expect(installsWorkspace({ steps: [{ run }] })).toBe(true)
     // …and the same pair on ONE line separated by `&&`.
-    expect(installsWorkspace({ steps: [{ run: 'pnpm install && npm install -g @deepseek-ai/dsh@0.2.1-rc.2' }] })).toBe(true)
+    expect(installsWorkspace({ steps: [{ run: 'pnpm install && npm install -g @deepseek-ai/dsh@0.2.1-rc.5' }] })).toBe(true)
     // Order must not matter either.
-    expect(installsWorkspace({ steps: [{ run: 'npm install -g @deepseek-ai/dsh@0.2.1-rc.2 && pnpm install' }] })).toBe(true)
+    expect(installsWorkspace({ steps: [{ run: 'npm install -g @deepseek-ai/dsh@0.2.1-rc.5 && pnpm install' }] })).toBe(true)
   })
 
   it('does not count a comment that mentions an install', () => {
     // A step whose comment says "pnpm install" but whose command is something else
     // must not satisfy the rule.
     expect(installsWorkspace({ steps: [{ run: '# pnpm install --frozen-lockfile\nnode scripts/qa/x.mjs' }] })).toBe(false)
+  })
+})
+
+/* ------------------------------------------- the harness this lane provisions --- */
+
+/** Index of the first step whose `run:` matches `pattern`, or -1. */
+function stepIndex(steps: readonly Step[], pattern: RegExp): number {
+  return steps.findIndex((step) => pattern.test(step.run ?? ''))
+}
+
+/**
+ * The pins the CI runner provisions are a CORRECTNESS input, not a preference.
+ *
+ * The gates and the composition lane resolve the real packages beside the global
+ * `dsh`, so the versions installed here decide whether those probes run against
+ * the family the manifests declare — a stale pin silently verifies the wrong
+ * harness. `tests/release-workflow.spec.ts` asserts the same pair (and its step
+ * order) for the release lane; this is the push/PR counterpart.
+ */
+describe('CI provisions the pinned DSH CLI and TUI', () => {
+  const DSH_INSTALL = /@deepseek-ai\/dsh@/u
+  const TUI_INSTALL = /@deepseek-harness-tui\/dsh-tui@/u
+  const DSH_PIN = '@deepseek-ai/dsh@0.2.1-rc.5'
+  const TUI_PIN = '@deepseek-harness-tui/dsh-tui@0.18.0'
+  const STALE_DSH_PIN = '@deepseek-ai/dsh@0.2.1-rc.2'
+  const STALE_TUI_PIN = '@deepseek-harness-tui/dsh-tui@0.16.1'
+
+  const jobsProvisioning = (pattern: RegExp) =>
+    Object.entries(load().jobs).filter(([, job]) => stepIndex(job.steps, pattern) > -1)
+
+  it('installs the exact DSH pin, and never the previous one', () => {
+    const provisioning = jobsProvisioning(DSH_INSTALL)
+    expect(provisioning.length, 'some job must provision the DSH CLI').toBeGreaterThan(0)
+    for (const [name, job] of provisioning) {
+      const text = job.steps.map((step) => step.run ?? '').join('\n')
+      // Exact string, not a range: `^0.2.1-rc.5` would let the runner drift to a
+      // newer rc.x and quietly change the harness every gate is measured against.
+      expect(text, `${name} must install ${DSH_PIN}`).toContain(DSH_PIN)
+      expect(text, `${name} must not install ${STALE_DSH_PIN}`).not.toContain(STALE_DSH_PIN)
+    }
+  })
+
+  it('installs the exact TUI pin beside it, and never the previous one', () => {
+    const provisioning = jobsProvisioning(TUI_INSTALL)
+    expect(provisioning.length, 'some job must provision the dsh-tui probes').toBeGreaterThan(0)
+    for (const [name, job] of provisioning) {
+      const text = job.steps.map((step) => step.run ?? '').join('\n')
+      expect(text, `${name} must install ${TUI_PIN}`).toContain(TUI_PIN)
+      expect(text, `${name} must not install ${STALE_TUI_PIN}`).not.toContain(STALE_TUI_PIN)
+    }
+  })
+
+  it('installs the DSH CLI BEFORE the TUI in every job that provisions the TUI', () => {
+    // The TUI declares a peer on `@deepseek-ai/dsh`, so installing it first would
+    // resolve against whatever the runner happened to have. Asserted on STEP
+    // ORDER, not on the text: two adjacent `run` strings can appear in any order
+    // in a passing `includes` check.
+    const jobs = Object.entries(load().jobs).filter(([, job]) => stepIndex(job.steps, TUI_INSTALL) > -1)
+    expect(jobs.length, 'some job must provision the dsh-tui probes').toBeGreaterThan(0)
+    for (const [name, job] of jobs) {
+      const dsh = stepIndex(job.steps, DSH_INSTALL)
+      const tui = stepIndex(job.steps, TUI_INSTALL)
+      expect(dsh, `${name} provisions the TUI, so it must install the DSH CLI too`).toBeGreaterThan(-1)
+      expect(dsh, `${name}: the DSH CLI install step must precede the TUI install step`).toBeLessThan(tui)
+    }
   })
 })

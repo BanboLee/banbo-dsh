@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseOptions, requireOption } from './lib/cli.mjs'
 import { runCodeGraphScenario, runProfileScenarios } from './lib/core-scenarios.mjs'
 import { readQaEnvironment } from './lib/environment.mjs'
 import { MANDATORY_PLAN_IDS, REAL_SCENARIO_DRIVERS, SCENARIOS, assertCompleteResults } from './lib/plan.mjs'
-import { runChild } from './lib/process.mjs'
+import { profileTuiEntry, readOnboardingFixture } from './lib/profile.mjs'
+import { resolveNodeForMatrix, runChild } from './lib/process.mjs'
 import { runTuiScenarios } from './lib/tui-scenarios.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -40,14 +41,22 @@ async function runCompositionScenarios(node, vitest, environment) {
     if (files === undefined) throw new Error(`composition scenario is missing files: ${id}`)
     const key = files.join(',')
     if (!testCache.has(key)) {
-      testCache.set(key, runChild(node, [vitest, 'run', ...files], { cwd: repoRoot, env: environment }))
+      // The default vitest config EXCLUDES `tests/composition/**` (that suite
+      // runs as its own lane), and vitest applies excludes to explicitly named
+      // paths too — so the exact-command driver must use the composition
+      // config or it matches no files and exits 1.
+      testCache.set(key, runChild(node, [
+        vitest, 'run',
+        '--config', resolve(repoRoot, 'vitest.composition.config.ts'),
+        ...files,
+      ], { cwd: repoRoot, env: environment }))
     }
     await testCache.get(key)
     results.push({
       id,
       scenario: SCENARIOS[id],
       status: 'passed',
-      evidence: { driver: 'exact-vitest-command', files },
+      evidence: { driver: 'exact-vitest-command', config: 'vitest.composition.config.ts', files },
     })
   }
   return results
@@ -59,9 +68,16 @@ async function main() {
   const envFile = resolve(requireOption(options, 'env-file'))
   const environment = readQaEnvironment(envFile)
   const matrixPath = resolve(requireOption(options, 'matrix'))
-  const node = environment.PATH.split(':').map((path) => resolve(path, 'node'))
-    .find((candidate) => candidate.includes('/v26.'))
-  if (node === undefined) throw new Error('Node 26 is missing from QA PATH')
+  const matrix = JSON.parse(readFileSync(matrixPath, 'utf8'))
+  // The node on the QA PATH is checked by its REAL --version against the matrix
+  // (the old `/v26.` path-shape guess was not a version check).
+  const { node, versionOutput: nodeVersion } = await resolveNodeForMatrix(environment.PATH, matrix.nodeMajor)
+  // G6's TUI scenarios launch the candidate profile's own installation, and its
+  // package version has to be the matrix's.
+  const tui = profileTuiEntry(environment.DSH_HOME, 'dsh-tui')
+  if (tui.packageVersion !== matrix.dshTui) {
+    throw new Error(`the QA profile installs ${tui.packageName}@${tui.packageVersion}; the matrix requires ${matrix.dshTui}`)
+  }
   const vitest = resolve(repoRoot, 'node_modules', 'vitest', 'vitest.mjs')
   const compositionEnvironment = {
     ...environment,
@@ -77,7 +93,7 @@ async function main() {
   })
   const compositionResults = await runCompositionScenarios(node, vitest, compositionEnvironment)
   const codegraphResult = await runCodeGraphScenario({ environment })
-  const tuiResults = await runTuiScenarios(environment)
+  const tuiResults = await runTuiScenarios(environment, { node, tui })
   const unordered = [...profileResults, ...compositionResults, codegraphResult, ...tuiResults]
   const results = MANDATORY_PLAN_IDS.map((id) => {
     const result = unordered.find((candidate) => candidate.id === id)
@@ -85,7 +101,17 @@ async function main() {
     return result
   })
   const reportPath = resolve(dirname(envFile), 'evidence', 'g6-results.json')
-  writeFileSync(reportPath, `${JSON.stringify({ matrixPath, results }, null, 2)}\n`)
+  const onboarding = readOnboardingFixture(environment.HOME)
+  writeFileSync(reportPath, `${JSON.stringify({
+    matrixPath,
+    nodeVersion,
+    tui: { packageName: tui.packageName, packageVersion: tui.packageVersion, entryPath: tui.entryPath },
+    // G6 runs the default 0.18 path only (host entry); runTuiSession fails the
+    // session if the TUI falls back to `dsh --profile`.
+    launch: { mode: 'host-entry', hostEntryEnv: environment.DSH_TUI_HOST_ENTRY ?? null },
+    fixtures: onboarding === undefined ? {} : { onboarding },
+    results,
+  }, null, 2)}\n`)
   assertCompleteResults(results)
   const realLspProviders = options.get('real-lsp-providers')
   let realLspEvidencePath

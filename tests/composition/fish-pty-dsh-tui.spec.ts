@@ -24,7 +24,7 @@
  *     (staged `pnpm install --prod` + hoisted pack, so the bundled
  *     `@deepseek-ai/dsh-tool-terminal` lands inside the tarball);
  *   - `installProfile` installs both into `$DSH_HOME/profiles/dsh-tui` with the
- *     real `dsh plugin add` CLI, `--offline`, under a fresh temporary
+ *     real `dsh plugin add` CLI, `--prefer-offline`, under a fresh temporary
  *     `$DSH_HOME` (the real `~/.config/dsh` is never read or written);
  *   - the profile is then booted in-process exactly like the `dsh` CLI boots it
  *     (`loadProfile` → root `cordis.yml` rewritten to the empty root →
@@ -70,7 +70,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -82,9 +82,10 @@ import {
   createQaLayout,
 } from '../../scripts/qa/lib/environment.mjs'
 import {
+  TUI_PACKAGE_NAME,
   installProfile,
+  packageRootFromBin,
   packBundles,
-  targetTuiPackagePath,
   writeToolWrappers,
 } from '../../scripts/qa/lib/profile.mjs'
 import {
@@ -135,8 +136,8 @@ const TERMINAL_TOOL_NAMES = [
   'terminal_close',
   'terminal_list',
 ] as const
-const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.1-rc.2`'
-const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.16.1`'
+const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.1-rc.5`'
+const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.18.0`'
 const FISH_HINT = 'install it (`apt-get install fish` on Linux, `brew install fish` on macOS)'
 
 function findOnPath(name: string): string | undefined {
@@ -149,15 +150,15 @@ function findOnPath(name: string): string | undefined {
 }
 
 const dshBinary = findOnPath('dsh')
+const dshTuiBinary = findOnPath('dsh-tui')
 const fishBinary = findOnPath('fish')
 const pnpmBinary = findOnPath('pnpm')
-/** The globally installed dsh-tui package `targetTuiPackagePath` resolves beside `dsh`. */
-const tuiPackage: string | undefined = dshBinary === undefined
+/** The installed dsh-tui package the `dsh-tui` launcher belongs to. */
+const tuiPackage: string | undefined = dshTuiBinary === undefined
   ? undefined
   : (() => {
     try {
-      const candidate = targetTuiPackagePath(realpathSync(dshBinary))
-      return existsSync(join(candidate, 'package.json')) ? candidate : undefined
+      return packageRootFromBin(dshTuiBinary, TUI_PACKAGE_NAME).root
     } catch {
       return undefined
     }
@@ -165,7 +166,7 @@ const tuiPackage: string | undefined = dshBinary === undefined
 
 const missingPrerequisites = [
   ...(dshBinary === undefined ? [`the \`dsh\` CLI on PATH — ${DSH_HINT}`] : []),
-  ...(tuiPackage === undefined ? [`the global ${TUI_BUNDLE} package — ${TUI_HINT}`] : []),
+  ...(tuiPackage === undefined ? [`the installed ${TUI_BUNDLE} package reachable from the \`dsh-tui\` launcher — ${TUI_HINT}`] : []),
   ...(fishBinary === undefined ? [`the \`fish\` shell on PATH — ${FISH_HINT}`] : []),
   ...(pnpmBinary === undefined ? ['`pnpm` on PATH (the pack and profile-install steps run through it)'] : []),
 ]
@@ -556,10 +557,9 @@ describe(
           throw new Error(`the QA pack step did not produce ${tarball}; it produced:\n${tarballs.join('\n')}`)
         }
       }
-      // The second argument is `installProfile`'s `matrix` slot, which that
-      // helper ignores (it only forwards the wrapper, the tarballs and the
-      // environment to `dsh plugin --profile dsh-tui add`).
-      await installProfile(wrappers.dsh, { dshTui: tuiVersion }, wanted, repoRoot, environment)
+      // `installProfile` installs through the injected dsh and verifies the
+      // wrapper delegates to that exact launcher.
+      await installProfile({ wrapper: wrappers.dsh, dshBin }, wanted, repoRoot, environment)
 
       const profileDir = join(qa.dshHome, 'profiles', PROFILE_NAME)
       const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as {

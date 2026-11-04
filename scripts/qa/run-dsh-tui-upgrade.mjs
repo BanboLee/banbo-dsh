@@ -2,9 +2,17 @@
 /**
  * Isolated dsh-tui upgrade orchestration — QA gates G4, G5, G6.
  *
- * External contract (unchanged): `--gates G4,G5,G6`, `--qa-root <dir>`,
- * `--matrix <file>`; the report lands at `<qa-root>/evidence/upgrade.json` with
- * `qaRoot`, `nodeVersion`, `dshVersion`, `tarballCount` and `gates`; a failing
+ * External contract: `--gates G4,G5,G6`, `--qa-root <dir>`, `--matrix <file>`,
+ * plus the three INJECTED candidates — `--node-bin`, `--dsh-bin` and
+ * `--dsh-tui-bin` (the lane no longer assumes the host's nvm-installed dsh;
+ * a missing one fails loud with usage). The candidate-independent host tools
+ * (pnpm, rtk, codegraph, the language servers, go) keep their host paths as
+ * defaults and are overridable with their own `--<tool>-bin` flags.
+ *
+ * The report lands at `<qa-root>/evidence/upgrade.json` with `qaRoot`,
+ * `nodeVersion`, `dshVersion`, `tarballCount`, `gates` and the additive
+ * `matrix` + `candidates` blocks (requested path, realpath, raw `--version`
+ * output, package name/version/root for every injected candidate); a failing
  * gate makes the process exit non-zero. `gateEvidence` is additive.
  *
  * What each gate proves — the semantics are the pre-existing ones; this script
@@ -45,18 +53,30 @@ import {
   writeQaEnvironment,
 } from './lib/environment.mjs'
 import {
+  DSH_PACKAGE_NAME,
+  TUI_PACKAGE_NAME,
   installProfile,
+  packageRootFromBin,
   packBundles,
   renderProfileFiles,
-  targetTuiPackagePath,
   writeToolWrappers,
 } from './lib/profile.mjs'
 import { runChild } from './lib/process.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const DEFAULTS = {
-  node: '/home/lixingxin/.local/share/nvm/v26.7.0/bin/node',
-  dsh: '/home/lixingxin/.local/share/nvm/v26.7.0/bin/dsh',
+
+/** The three candidates the lane runs against; each MUST be injected. */
+const CANDIDATE_OPTIONS = {
+  node: 'node-bin',
+  dsh: 'dsh-bin',
+  dshTui: 'dsh-tui-bin',
+}
+
+/**
+ * Candidate-INDEPENDENT host tools: the lane keeps the maintainer host's paths
+ * as defaults, and every one of them can be overridden explicitly.
+ */
+export const EXTERNAL_TOOL_DEFAULTS = {
   pnpm: '/home/lixingxin/.local/share/pnpm/pnpm',
   rtk: '/data00/home/lixingxin/project/rtk/target/release/rtk',
   codegraph: '/home/lixingxin/.codegraph/versions/v1.6.0/bin/codegraph',
@@ -67,6 +87,158 @@ const DEFAULTS = {
   pythonLanguageServer: '/home/lixingxin/.local/bin/pyright-langserver',
   go: '/home/lixingxin/.goenv/shims/go',
 }
+
+const TOOL_OVERRIDE_OPTIONS = {
+  pnpm: 'pnpm-bin',
+  rtk: 'rtk-bin',
+  codegraph: 'codegraph-bin',
+  typescriptLanguageServer: 'typescript-lsp-bin',
+  gopls: 'gopls-bin',
+  clangd: 'clangd-bin',
+  rustAnalyzer: 'rust-analyzer-bin',
+  pythonLanguageServer: 'python-lsp-bin',
+  go: 'go-bin',
+}
+
+const USAGE = [
+  'usage: node scripts/qa/run-dsh-tui-upgrade.mjs',
+  '  --gates G4,G5,G6',
+  '  --qa-root <isolated OS temp dir>',
+  '  --matrix <matrix.json>',
+  '  --node-bin <node> --dsh-bin <dsh> --dsh-tui-bin <dsh-tui>',
+  '  [--pnpm-bin <pnpm>] [--rtk-bin <rtk>] [--codegraph-bin <codegraph>]',
+  '  [--typescript-lsp-bin <ts-ls>] [--gopls-bin <gopls>] [--clangd-bin <clangd>]',
+  '  [--rust-analyzer-bin <rust-analyzer>] [--python-lsp-bin <pyright>] [--go-bin <go>]',
+].join('\n')
+
+/** A required candidate option, or a fail-loud usage error (never a host default). */
+function requireToolOption(options, name) {
+  const value = options.get(name)
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`missing required option --${name}\n${USAGE}`)
+  }
+  return value
+}
+
+/**
+ * Resolve the injected candidates and the (overridable) host tools.
+ *
+ * The three candidate paths have NO defaults: the lane is meant to run against
+ * an externally installed candidate prefix, and silently falling back to the
+ * host's nvm dsh is exactly the bug this contract removes. The environment is
+ * returned keyed by the names the lane uses (`node`, `dsh`, `dshTui`, …).
+ */
+export function resolveToolPaths(options) {
+  const tools = {}
+  for (const [key, option] of Object.entries(CANDIDATE_OPTIONS)) {
+    tools[key] = requireToolOption(options, option)
+  }
+  for (const [key, option] of Object.entries(TOOL_OVERRIDE_OPTIONS)) {
+    const override = options.get(option)
+    tools[key] = typeof override === 'string' && override.length > 0 ? override : EXTERNAL_TOOL_DEFAULTS[key]
+  }
+  return tools
+}
+
+function realpathOrFail(requestedPath, option) {
+  try {
+    return realpathSync(requestedPath)
+  } catch {
+    throw new Error(`the injected --${option} does not exist: ${requestedPath}`)
+  }
+}
+
+/**
+ * `requestedPath` is what the caller passed; `realpath` is what it really is.
+ * A missing launcher is recorded (not thrown) so a failed run still reports
+ * which path was asked for; `inspectCandidates` is what fails loud.
+ */
+export function describeCandidates(tools) {
+  const candidates = {}
+  for (const [key, option] of Object.entries(CANDIDATE_OPTIONS)) {
+    const requestedPath = resolve(tools[key])
+    try {
+      candidates[key] = { requestedPath, realpath: realpathSync(requestedPath) }
+    } catch {
+      candidates[key] = { requestedPath, error: `the injected --${option} does not exist: ${requestedPath}` }
+    }
+  }
+  return candidates
+}
+
+/**
+ * One package launcher's evidence: the path the lane was asked to use, the
+ * launcher's realpath, the RAW `--version` output (launchers may print the
+ * package name plus the version), and the package manifest found above it.
+ */
+async function inspectPackageLauncher({ requested, node, packageName, option, environment }) {
+  const realpath = realpathOrFail(requested, option)
+  const { root, manifest } = packageRootFromBin(realpath, packageName)
+  let versionOutput
+  try {
+    versionOutput = (await runChild(node, [realpath, '--version'], { cwd: repoRoot, env: environment })).output.trim()
+  } catch (error) {
+    throw new Error(`--${option} did not answer \`--version\`: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (typeof manifest.version !== 'string' || manifest.version.length === 0) {
+    throw new Error(`the package at ${root} (${packageName}) declares no version`)
+  }
+  return {
+    requestedPath: resolve(requested),
+    realpath,
+    versionOutput,
+    packageName: manifest.name,
+    packageVersion: manifest.version,
+    packageRoot: root,
+  }
+}
+
+/**
+ * Inspect and validate the three injected candidates against the matrix, and
+ * return the evidence block the report records. `--version` output is kept
+ * verbatim so a launcher that prints "package name + version" is still
+ * auditable.
+ */
+export async function inspectCandidates(tools, matrix, environment = process.env) {
+  const requestedNode = resolve(tools.node)
+  const nodeRealpath = realpathOrFail(requestedNode, 'node-bin')
+  const nodeVersionOutput = (await runChild(requestedNode, ['--version'], { cwd: repoRoot, env: environment })).output.trim()
+  if (!nodeVersionOutput.startsWith(`v${matrix.nodeMajor}.`)) {
+    throw new Error(`--node-bin reports ${nodeVersionOutput}; the matrix requires v${matrix.nodeMajor}.x`)
+  }
+  const node = { requestedPath: requestedNode, realpath: nodeRealpath, versionOutput: nodeVersionOutput }
+
+  const dsh = await inspectPackageLauncher({
+    requested: resolve(tools.dsh),
+    node: requestedNode,
+    packageName: DSH_PACKAGE_NAME,
+    option: 'dsh-bin',
+    environment,
+  })
+  if (dsh.versionOutput !== matrix.dsh) {
+    throw new Error(`--dsh-bin reports ${JSON.stringify(dsh.versionOutput)}; the matrix requires ${matrix.dsh}`)
+  }
+  if (dsh.packageVersion !== matrix.dsh) {
+    throw new Error(`--dsh-bin is package ${dsh.packageName}@${dsh.packageVersion}; the matrix requires ${matrix.dsh}`)
+  }
+
+  const dshTui = await inspectPackageLauncher({
+    requested: resolve(tools.dshTui),
+    node: requestedNode,
+    packageName: TUI_PACKAGE_NAME,
+    option: 'dsh-tui-bin',
+    environment,
+  })
+  if (dshTui.packageVersion !== matrix.dshTui) {
+    throw new Error(`--dsh-tui-bin is package ${dshTui.packageName}@${dshTui.packageVersion}; the matrix requires ${matrix.dshTui}`)
+  }
+  if (!dshTui.versionOutput.includes(dshTui.packageVersion)) {
+    throw new Error(`--dsh-tui-bin reports ${JSON.stringify(dshTui.versionOutput)}, which does not mention the installed ${dshTui.packageVersion}`)
+  }
+
+  return { node, dsh, dshTui }
+}
+
 /** The profile `installProfile` hard-codes, and the rows the QA patch must mount. */
 const PROFILE_NAME = 'dsh-tui'
 const EXPECTED_ROWS = [
@@ -153,16 +325,15 @@ export function expectedActivationRows(patchText) {
 }
 
 /**
- * The installed dsh-tui package's own bundle patch (`dsh.bundle.patch`), read
- * from the package the profile actually runs. `undefined` when it cannot be
- * read: the expectation set then reads as "nothing declared", which the verdict
- * reports as a failure instead of passing.
+ * The candidate dsh-tui package's own bundle patch (`dsh.bundle.patch`), read
+ * from the package root derived from the injected `--dsh-tui-bin`. `undefined`
+ * when it cannot be read: the expectation set then reads as "nothing declared",
+ * which the verdict reports as a failure instead of passing.
  */
-function readInstalledTuiPatch(dshBin) {
+function readInstalledTuiPatch(tuiPackageRoot) {
   try {
-    const target = targetTuiPackagePath(realpathSync(dshBin))
-    const manifest = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8'))
-    const patch = join(target, manifest?.dsh?.bundle?.patch ?? 'cordis.patch.yml')
+    const manifest = JSON.parse(readFileSync(join(tuiPackageRoot, 'package.json'), 'utf8'))
+    const patch = join(tuiPackageRoot, manifest?.dsh?.bundle?.patch ?? 'cordis.patch.yml')
     return existsSync(patch) ? readFileSync(patch, 'utf8') : undefined
   } catch {
     return undefined
@@ -300,7 +471,7 @@ function resolveDshBin(candidate) {
   return existsSync(wrapperTarget) ? realpathSync(wrapperTarget) : wrapperTarget
 }
 
-/** Load the installed `@deepseek-ai/dsh-app-boot` beside the global `dsh`. */
+/** Load the installed `@deepseek-ai/dsh-app-boot` beside the candidate `dsh`. */
 async function loadAppBoot(dshBin) {
   const packageRoot = dirname(dirname(resolveDshBin(dshBin)))
   const appBootUrl = pathToFileURL(join(packageRoot, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'lib', 'index.js')).href
@@ -352,8 +523,8 @@ function snapshotInteractiveRows(ctx, expectedRows) {
  * an import failure or a pending row never reaches fiber state 2, so the
  * deadline only costs time on real failures.
  */
-async function probeInteractiveRows({ dshBin, dshHome, profileName }) {
-  const expectations = expectedActivationRows(readInstalledTuiPatch(dshBin))
+async function probeInteractiveRows({ dshBin, tuiPackageRoot, dshHome, profileName }) {
+  const expectations = expectedActivationRows(readInstalledTuiPatch(tuiPackageRoot))
   const { appBoot, installAnchor } = await loadAppBoot(dshBin)
   const profile = appBoot.loadProfile('dsh', profileName, installAnchor, dshHome)
   const prepare = await openProfileModuleResolution(appBoot, { installAnchor, profile, home: dshHome })
@@ -392,7 +563,7 @@ async function probeInteractiveRows({ dshBin, dshHome, profileName }) {
  * HOME/DSH_HOME, the QA PATH). The caller's environment is restored whatever
  * happens, and the verdict names every offending row.
  */
-export async function probeInstalledProfileActivation({ layout, environment, dshBin }) {
+export async function probeInstalledProfileActivation({ layout, environment, dshBin, tuiPackageRoot }) {
   const savedEnvironment = {
     DSH_HOME: process.env.DSH_HOME,
     HOME: process.env.HOME,
@@ -406,7 +577,7 @@ export async function probeInstalledProfileActivation({ layout, environment, dsh
   })
   delete process.env.PNPM_HOME
   try {
-    return await probeInteractiveRows({ dshBin, dshHome: layout.dshHome, profileName: PROFILE_NAME })
+    return await probeInteractiveRows({ dshBin, tuiPackageRoot, dshHome: layout.dshHome, profileName: PROFILE_NAME })
   } finally {
     for (const [key, value] of Object.entries(savedEnvironment)) {
       if (value === undefined) delete process.env[key]
@@ -448,114 +619,161 @@ async function main() {
   const qaRoot = assertIsolatedQaRoot(requireOption(options, 'qa-root'), repoRoot)
   const matrixPath = resolve(requireOption(options, 'matrix'))
   const matrix = JSON.parse(readFileSync(matrixPath, 'utf8'))
+  const tools = resolveToolPaths(options)
   const layout = createQaLayout(qaRoot)
   process.once('exit', () => cleanupQaRuntimeHome(layout))
-  for (const [label, path] of Object.entries(DEFAULTS)) {
-    if (['clangd', 'rustAnalyzer', 'pythonLanguageServer'].includes(label)) continue
-    assertExecutable(path, label)
-  }
-  const codegraphRealpath = realpathSync(DEFAULTS.codegraph)
-  if (!codegraphRealpath.includes('/.codegraph/versions/')) {
-    throw new Error(`QA_CODEGRAPH is not an official bundled release: ${codegraphRealpath}`)
-  }
-  const nodeVersion = (await runChild(DEFAULTS.node, ['--version'], { cwd: repoRoot, env: {} })).output.trim()
-  if (!nodeVersion.startsWith(`v${matrix.nodeMajor}.`)) throw new Error(`Node version mismatch: ${nodeVersion}`)
-  const dshVersion = (await runChild(DEFAULTS.node, [DEFAULTS.dsh, '--version'], { cwd: repoRoot, env: {} })).output.trim()
-  if (dshVersion !== matrix.dsh) throw new Error(`dsh version mismatch: ${dshVersion}`)
-  const wrappers = writeToolWrappers(layout, {
-    node: DEFAULTS.node,
-    dsh: DEFAULTS.dsh,
-    pnpm: DEFAULTS.pnpm,
-  })
-  const environment = buildQaEnvironment({
-    qaRoot,
-    runtimeHome: layout.runtimeHome,
-    nodeBin: dirname(DEFAULTS.node),
-    codegraph: codegraphRealpath,
-    rtk: DEFAULTS.rtk,
-    typescriptLanguageServer: DEFAULTS.typescriptLanguageServer,
-    gopls: DEFAULTS.gopls,
-    realDsh: DEFAULTS.dsh,
-    go: DEFAULTS.go,
-    loopbackPort: await allocatePort(),
-  })
-  const envFile = writeQaEnvironment(qaRoot, environment)
-  const targetTui = targetTuiPackagePath(realpathSync(DEFAULTS.dsh))
-  const targetTuiVersion = JSON.parse(readFileSync(resolve(targetTui, 'package.json'), 'utf8')).version
-  if (targetTuiVersion !== matrix.dshTui) throw new Error(`installed dsh-tui version mismatch: ${targetTuiVersion}`)
-  const tarballs = await packBundles(repoRoot, layout, DEFAULTS.pnpm, environment, targetTui)
-  await installProfile(wrappers.dsh, matrix, tarballs, repoRoot, environment)
-  renderProfileFiles(repoRoot, layout, environment)
 
-  // ── Gate steps: each one produces evidence, `runGates` derives the verdicts ──
-  const graph = () => runChild(DEFAULTS.node, [
-    resolve(repoRoot, 'scripts/qa/validate-dsh-tui-graph.mjs'),
-    '--profile', PROFILE_NAME,
-    '--matrix', matrixPath,
-    '--env-file', envFile,
-  ], { cwd: repoRoot, env: environment }).then(() => ({ validator: 'scripts/qa/validate-dsh-tui-graph.mjs' }))
-
-  const composition = async () => {
-    const dump = await runChild(wrappers.dsh, ['--profile', PROFILE_NAME, '--dump-config'], {
-      cwd: layout.workspace,
-      env: environment,
-    })
-    const missing = EXPECTED_ROWS.filter((row) => !dump.output.includes(row))
-    if (missing.length > 0) throw new Error(`profile dump is missing rows: ${missing.join(', ')}`)
-    return { rows: [...EXPECTED_ROWS] }
-  }
-
-  const ptyStartup = async () => {
-    await runChild(DEFAULTS.node, [
-      resolve(repoRoot, 'scripts/qa/run-dsh-tui-pty.mjs'),
-      '--case', 'startup',
-      '--env-file', envFile,
-    ], { cwd: repoRoot, env: environment })
-    return readEvidenceFile(layout, 'g5-pty.json')
-  }
-
-  // The activation probe boots the profile in this process; the exported step
-  // installs the QA-launch environment around it and restores it afterwards.
-  const activation = () => probeInstalledProfileActivation({ layout, environment, dshBin: DEFAULTS.dsh })
-
-  const realRunArgs = [
-    resolve(repoRoot, 'scripts/qa/run-dsh-tui-real.mjs'),
-    '--all-core',
-    '--env-file', envFile,
-    '--matrix', matrixPath,
-  ]
-  if (options.get('all-real-lsp-providers') === true) {
-    realRunArgs.push(
-      '--real-lsp-providers', 'typescript,go,clangd,rust,python',
-      '--typescript-command', DEFAULTS.typescriptLanguageServer,
-      '--go-command', DEFAULTS.gopls,
-      '--clangd-command', DEFAULTS.clangd,
-      '--rust-command', DEFAULTS.rustAnalyzer,
-      '--python-command', DEFAULTS.pythonLanguageServer,
-    )
-  }
-  const planResults = async () => {
-    await runChild(DEFAULTS.node, realRunArgs, { cwd: repoRoot, env: environment })
-    return readEvidenceFile(layout, 'g6-results.json')
-  }
-
-  const report = await runGates({ graph, composition, ptyStartup, activation, planResults })
-
+  // The report is written even when the lane's setup throws: the candidate
+  // identity and the requested paths are the first thing a failed run has to
+  // explain. `describeCandidates` records paths; `inspectCandidates` validates.
   const evidence = {
     qaRoot,
-    nodeVersion,
-    dshVersion,
-    tarballCount: tarballs.length,
-    gates: report.gates,
-    gateEvidence: report.gateEvidence,
+    matrix: { path: matrixPath, nodeMajor: matrix.nodeMajor, dsh: matrix.dsh, dshTui: matrix.dshTui },
+    candidates: describeCandidates(tools),
+    gates: Object.fromEntries(GATE_NAMES.map((name) => [name, 'failed'])),
+    gateEvidence: {},
   }
-  writeFileSync(resolve(layout.evidence, 'upgrade.json'), `${JSON.stringify(evidence, null, 2)}\n`)
-  process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`)
-  for (const name of GATE_NAMES) {
-    if (report.gates[name] === 'passed') continue
-    process.stderr.write(`gate ${name} FAILED: ${JSON.stringify(report.gateEvidence[name])}\n`)
+  try {
+    // Version probes run against the QA HOME: the dsh-tui launcher reports the
+    // profile it would delegate to, and that must never be the user's real one.
+    const inspected = await inspectCandidates(tools, matrix, {
+      ...process.env,
+      HOME: layout.home,
+      DSH_HOME: layout.dshHome,
+    })
+    evidence.candidates = inspected
+    evidence.nodeVersion = inspected.node.versionOutput
+    evidence.dshVersion = inspected.dsh.versionOutput
+    const targetTui = inspected.dshTui.packageRoot
+
+    for (const [label, path] of Object.entries(EXTERNAL_TOOL_DEFAULTS)) {
+      if (['clangd', 'rustAnalyzer', 'pythonLanguageServer'].includes(label)) continue
+      assertExecutable(tools[label], label)
+    }
+    const codegraphRealpath = realpathSync(tools.codegraph)
+    if (!codegraphRealpath.includes('/.codegraph/versions/')) {
+      throw new Error(`QA_CODEGRAPH is not an official bundled release: ${codegraphRealpath}`)
+    }
+    const wrappers = writeToolWrappers(layout, {
+      node: tools.node,
+      dsh: tools.dsh,
+      pnpm: tools.pnpm,
+    })
+    const environment = buildQaEnvironment({
+      qaRoot,
+      runtimeHome: layout.runtimeHome,
+      nodeBin: dirname(tools.node),
+      codegraph: codegraphRealpath,
+      rtk: tools.rtk,
+      typescriptLanguageServer: tools.typescriptLanguageServer,
+      gopls: tools.gopls,
+      realDsh: tools.dsh,
+      go: tools.go,
+      loopbackPort: await allocatePort(),
+    })
+    const envFile = writeQaEnvironment(qaRoot, environment)
+    const tarballs = await packBundles(repoRoot, layout, tools.pnpm, environment, targetTui)
+    await installProfile({ wrapper: wrappers.dsh, dshBin: tools.dsh }, tarballs, repoRoot, environment)
+    // Fixture state, recorded as such: the QA home is not a first-run user, so
+    // dsh-tui 0.18 must not open its onboarding wizard on it.
+    const fixtures = renderProfileFiles(repoRoot, layout, environment)
+    evidence.fixtures = fixtures
+    evidence.tarballCount = tarballs.length
+
+    // ── Gate steps: each one produces evidence, `runGates` derives the verdicts ──
+    const graph = () => runChild(tools.node, [
+      resolve(repoRoot, 'scripts/qa/validate-dsh-tui-graph.mjs'),
+      '--profile', PROFILE_NAME,
+      '--matrix', matrixPath,
+      '--env-file', envFile,
+    ], { cwd: repoRoot, env: environment }).then(() => ({ validator: 'scripts/qa/validate-dsh-tui-graph.mjs' }))
+
+    const composition = async () => {
+      const dump = await runChild(wrappers.dsh, ['--profile', PROFILE_NAME, '--dump-config'], {
+        cwd: layout.workspace,
+        env: environment,
+      })
+      const missing = EXPECTED_ROWS.filter((row) => !dump.output.includes(row))
+      if (missing.length > 0) throw new Error(`profile dump is missing rows: ${missing.join(', ')}`)
+      return { rows: [...EXPECTED_ROWS] }
+    }
+
+    // G5 starts the TUI on BOTH 0.18 launch paths: the default in-process
+    // host entry and the explicit `DSH_TUI_HOST_ENTRY=0` legacy mount. Each
+    // mode's evidence is kept (and its failure named) instead of letting one
+    // green path mask the other.
+    const ptyStartup = async () => {
+      const modes = {}
+      const failures = []
+      for (const mode of ['host-entry', 'legacy-fallback']) {
+        try {
+          await runChild(tools.node, [
+            resolve(repoRoot, 'scripts/qa/run-dsh-tui-pty.mjs'),
+            '--case', 'startup',
+            '--env-file', envFile,
+            '--matrix', matrixPath,
+            '--mode', mode,
+          ], { cwd: repoRoot, env: environment })
+          modes[mode] = readEvidenceFile(layout, `g5-pty-${mode}.json`)
+        } catch (error) {
+          modes[mode] = { error: error instanceof Error ? error.message : String(error) }
+          failures.push(`${mode}: ${modes[mode].error}`)
+        }
+      }
+      if (failures.length > 0) return { passed: false, modes, failures }
+      return { modes }
+    }
+
+    // The activation probe boots the profile in this process; the exported step
+    // installs the QA-launch environment around it and restores it afterwards.
+    const activation = () => probeInstalledProfileActivation({
+      layout,
+      environment,
+      dshBin: tools.dsh,
+      tuiPackageRoot: targetTui,
+    })
+
+    const realRunArgs = [
+      resolve(repoRoot, 'scripts/qa/run-dsh-tui-real.mjs'),
+      '--all-core',
+      '--env-file', envFile,
+      '--matrix', matrixPath,
+    ]
+    if (options.get('all-real-lsp-providers') === true) {
+      realRunArgs.push(
+        '--real-lsp-providers', 'typescript,go,clangd,rust,python',
+        '--typescript-command', tools.typescriptLanguageServer,
+        '--go-command', tools.gopls,
+        '--clangd-command', tools.clangd,
+        '--rust-command', tools.rustAnalyzer,
+        '--python-command', tools.pythonLanguageServer,
+      )
+    }
+    const planResults = async () => {
+      await runChild(tools.node, realRunArgs, { cwd: repoRoot, env: environment })
+      return readEvidenceFile(layout, 'g6-results.json')
+    }
+
+    const report = await runGates({ graph, composition, ptyStartup, activation, planResults })
+    evidence.gates = report.gates
+    evidence.gateEvidence = report.gateEvidence
+    process.exitCode = report.exitCode
+    for (const name of GATE_NAMES) {
+      if (report.gates[name] === 'passed') continue
+      process.stderr.write(`gate ${name} FAILED: ${JSON.stringify(report.gateEvidence[name])}\n`)
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    evidence.error = message
+    evidence.gateEvidence = Object.fromEntries(
+      GATE_NAMES.map((name) => [name, { error: `not evaluated: lane setup failed: ${message}` }]),
+    )
+    process.stderr.write(`${error instanceof Error ? error.stack ?? message : message}\n`)
+    process.exitCode = 1
+  } finally {
+    writeFileSync(resolve(layout.evidence, 'upgrade.json'), `${JSON.stringify(evidence, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify(evidence, null, 2)}\n`)
   }
-  process.exitCode = report.exitCode
 }
 
 function isDirectInvocation() {

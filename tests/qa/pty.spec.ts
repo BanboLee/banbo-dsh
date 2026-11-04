@@ -5,10 +5,15 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   actionCompleted,
+  assertChatSurface,
+  assertOnboardingSeeded,
   cleanupInjectionState,
   submitInjectedPrompt,
   waitForInjectionSocket,
+  wizardMarker,
+  writeSubmittedLine,
 } from '../../scripts/qa/lib/pty.mjs'
+import { seedOnboardingFixture } from '../../scripts/qa/lib/profile.mjs'
 
 const roots: string[] = []
 
@@ -104,6 +109,43 @@ describe('TUI injection client', () => {
 
     // Then: the bounded retry submits exactly once to the replacement socket.
     expect(messages.join('')).toContain('"text":"qa second session"')
+  })
+
+  it('treats the dsh-tui 0.18 first-run wizard as NOT the chat surface', () => {
+    // Given: the wizard transcript real 0.18 prints on a fresh home, and a chat
+    // transcript whose `❯` really is the input prompt.
+    const wizard = 'Welcome to dsh-TUI  Step 1 of 4\n❯ Accounts and models'
+    const chat = 'Say something, or type / for commands…\n❯\nSessions & workspaces'
+
+    // Then: only the wizard is rejected — the readiness tightening is explicit.
+    expect(wizardMarker(wizard)).toBeDefined()
+    expect(() => assertChatSurface(wizard)).toThrow(/first-run wizard/)
+    expect(wizardMarker(chat)).toBeUndefined()
+    expect(() => assertChatSurface(chat)).not.toThrow()
+  })
+
+  it('writes command text and its submit key as separate PTY writes', async () => {
+    // Given: a fake PTY recording every write.
+    const writes: string[] = []
+    const pty = { write: (value: string) => { writes.push(value) } }
+
+    // When: a submitted command is written.
+    await writeSubmittedLine(pty, '/exit', 0)
+
+    // Then: 0.18 sees the text first and the Enter as its own chunk (one
+    // combined "/exit\r" opens the palette and never submits).
+    expect(writes).toEqual(['/exit', '\r'])
+  })
+
+  it('refuses to launch a TUI without the preseeded onboarding fixture', () => {
+    // Given: an empty QA home, then the seeded fixture.
+    const home = mkdtempSync(join(tmpdir(), 'dsh-tui-onboarding-gate-'))
+    roots.push(home)
+
+    // Then: a missing fixture fails loud; a seeded one is returned as evidence.
+    expect(() => assertOnboardingSeeded({ HOME: home })).toThrow(/preseeded first-run state/)
+    seedOnboardingFixture(home)
+    expect(assertOnboardingSeeded({ HOME: home })).toMatchObject({ completed: true, version: 1 })
   })
 
   it('requires protocol completion and the rendered marker when both are configured', () => {

@@ -214,8 +214,8 @@ describe('release workflow permissions and toolchain', () => {
     // `dsh-tui` beside it; without both, Gate B/F and the dsh-tui composition lane
     // SKIP, so a release runner would silently skip the checks that inspect a
     // packed tarball.
-    expect(env.RELEASE_DSH_VERSION).toBe('0.2.1-rc.2')
-    expect(env.RELEASE_DSH_TUI_VERSION).toBe('0.16.1')
+    expect(env.RELEASE_DSH_VERSION).toBe('0.2.1-rc.5')
+    expect(env.RELEASE_DSH_TUI_VERSION).toBe('0.18.0')
     const steps = job(load()).steps
     const dsh = stepIndex(steps, /Install the pinned DSH CLI/)
     const tui = stepIndex(steps, /Install the pinned DSH TUI/)

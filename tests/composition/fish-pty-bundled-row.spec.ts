@@ -137,7 +137,7 @@ const TERMINAL_TOOL_NAMES = [
   'terminal_close',
   'terminal_list',
 ] as const
-const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.1-rc.2`'
+const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.1-rc.5`'
 const FISH_HINT = 'install it (`apt-get install fish` on Linux, `brew install fish` on macOS)'
 
 function findOnPath(name: string): string | undefined {
@@ -604,10 +604,9 @@ describe(
       const fishTarball = await packFishBundle({ qaRoot, packs: qa.packs, pnpm: wrappers.pnpm, environment })
       if (!existsSync(fishTarball)) throw new Error(`the pack step did not produce ${fishTarball}`)
 
-      // The second argument is `installProfile`'s `matrix` slot, which that
-      // helper ignores (it only forwards the wrapper, the tarballs and the
-      // environment to `dsh plugin --profile dsh-tui add`).
-      await installProfile(wrappers.dsh, { bundledRow: true }, [fishTarball], repoRoot, environment)
+      // `installProfile` installs through the injected dsh and verifies the
+      // wrapper delegates to that exact launcher.
+      await installProfile({ wrapper: wrappers.dsh, dshBin }, [fishTarball], repoRoot, environment)
 
       const profileDir = join(qa.dshHome, 'profiles', PROFILE_NAME)
       const manifest = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8')) as {
