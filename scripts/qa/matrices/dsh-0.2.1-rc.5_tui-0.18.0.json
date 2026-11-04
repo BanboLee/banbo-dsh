@@ -5,11 +5,11 @@
   "cordis": "4.0.5",
   "piAi": "1.5.0",
   "bundles": {
-    "@banbolee/dsh-fish-shell": "0.8.3",
-    "@banbolee/dsh-rtk": "0.3.3",
-    "@banbolee/dsh-codegraph-mcp": "0.3.3",
-    "@banbolee/dsh-llm-pi-ai-with-session": "0.3.3",
-    "@banbolee/dsh-lsp-diagnostics": "0.3.3",
-    "@banbolee/dsh-agents": "0.4.3"
+    "@banbolee/dsh-fish-shell": "0.8.4",
+    "@banbolee/dsh-rtk": "0.3.4",
+    "@banbolee/dsh-codegraph-mcp": "0.3.4",
+    "@banbolee/dsh-llm-pi-ai-with-session": "0.3.4",
+    "@banbolee/dsh-lsp-diagnostics": "0.3.4",
+    "@banbolee/dsh-agents": "0.4.4"
   }
 }
