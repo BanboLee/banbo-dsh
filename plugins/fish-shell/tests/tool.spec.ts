@@ -10,6 +10,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import * as tool from '../tool.js'
 import {
@@ -250,7 +251,8 @@ describe('presentFishCall / presentFishResult (C)', () => {
 // --- Real-Cordis integration surface (D): mount REAL SystemPrompt +
 // ToolRuntime on a REAL Context, provide fake shell/shellEnv/jobs/approval/
 // sandboxPolicy, load this bundle's tool plugin, then drive
-// ctx.tools.execute({ name: 'fish', ... }) exactly like the harness does.
+// ctx.tools.execute({ calls: [{ name: 'fish', ... }] }) exactly like the
+// harness does.
 
 interface FakeShell {
   sandboxMode: string | undefined
@@ -341,6 +343,7 @@ async function mountTool(options: {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime, {})
+  await ctx.plugin(NativeToolExecutor)
   const shell = fakeShell(sandboxMode)
   const shellEnv = { collect: vi.fn(() => ({})) }
   const jobs = { start: vi.fn(() => 'fish-1') }
@@ -357,14 +360,18 @@ async function mountTool(options: {
 
 let callSeq = 0
 
+/** Drive one model-shaped call through the batch API and return its settled result. */
 function executeCall(ctx: Context, args: Record<string, unknown>, extra: Record<string, unknown> = {}) {
   return ctx.tools.execute({
-    callId: `fish-spec-${++callSeq}`,
-    name: 'fish',
-    arguments: args,
+    calls: [{
+      type: 'tool-call',
+      id: `fish-spec-${++callSeq}`,
+      name: 'fish',
+      arguments: JSON.stringify(args),
+    }],
     signal: new AbortController().signal,
     ...extra,
-  } as never)
+  } as never).then((batch) => batch.results[0]!.result)
 }
 
 describe('fish tool integration on real Cordis services (D)', () => {

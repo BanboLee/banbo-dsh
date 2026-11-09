@@ -12,6 +12,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { Session, SessionStore, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
 
@@ -229,7 +230,8 @@ interface RealHarness {
 async function realHarness(options: { ownTool?: string } = {}): Promise<RealHarness> {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt, { personaPrefix: 'global persona' })
-  await ctx.plugin(ToolRuntime, { mode: 'native' })
+  await ctx.plugin(ToolRuntime, {})
+  await ctx.plugin(NativeToolExecutor)
   // A REAL Session: the delegated-child path now persists the composition
   // authority into the child's own log, so a stub would make the write throw.
   await ctx.plugin(SessionStore)

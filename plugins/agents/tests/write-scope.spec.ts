@@ -18,9 +18,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { SessionStore, appendPluginRecord } from '@deepseek-ai/dsh-session'
-import type { ToolExecutionInput, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import type { ToolBatchInput, ToolBatchResult } from '@deepseek-ai/dsh-tools'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm'
 
 import { loadCatalog, mergeDefinition } from '../catalog.js'
 import { CHILD_AUTHORITY_RECORD } from '../child-authority.js'
@@ -652,7 +654,8 @@ describe('main-runtime wiring — the mounted definition is what is enforced', (
   async function harness(writeScope: string | undefined, cwd: string) {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt, { personaPrefix: 'global persona' })
-    await ctx.plugin(ToolRuntime, { mode: 'native' })
+    await ctx.plugin(ToolRuntime, {})
+    await ctx.plugin(NativeToolExecutor)
     const host = await ctx.plugin({ name: 'write-scope-wiring-host', inject: ['tools', 'systemPrompt'], apply() {} })
     for (const name of ['read', 'read_image', 'write', 'edit']) host.ctx.tools.register(toolDefinition(name) as never)
 
@@ -697,14 +700,17 @@ describe('main-runtime wiring — the mounted definition is what is enforced', (
   }
 
   /** Execute one tool call through the registry and return its result. */
-  function call(agent: { ctx: { tools: { execute: (input: ToolExecutionInput) => Promise<ToolExecutionResult> } } }, name: string, filePath: string) {
+  function call(agent: { ctx: { tools: { execute: (input: ToolBatchInput) => Promise<ToolBatchResult> } } }, name: string, filePath: string) {
     return agent.ctx.tools.execute({
-      callId: `call-${name}-${filePath}`,
-      name,
-      arguments: { file_path: filePath },
-      agent,
+      calls: [{
+        type: 'tool-call',
+        id: `call-${name}-${filePath}` as ToolCallId,
+        name,
+        arguments: JSON.stringify({ file_path: filePath }),
+      }],
+      agent: agent as never,
       signal: new AbortController().signal,
-    } as ToolExecutionInput)
+    }).then((batch) => batch.results[0]!.result)
   }
 
   it('denies an out-of-scope write and allows an in-scope one for the mounted definition', async () => {
@@ -747,7 +753,8 @@ describe('main-runtime wiring — the mounted definition is what is enforced', (
   async function resumeHarness(options: { scope?: string, sidecar?: boolean, agentId?: string } = {}) {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt, { personaPrefix: 'global persona' })
-    await ctx.plugin(ToolRuntime, { mode: 'native' })
+    await ctx.plugin(ToolRuntime, {})
+    await ctx.plugin(NativeToolExecutor)
     // A real Session: the resume path reads the durable authority record through
     // the official plugin-record API, and a stub would silently read as "absent".
     await ctx.plugin(SessionStore)

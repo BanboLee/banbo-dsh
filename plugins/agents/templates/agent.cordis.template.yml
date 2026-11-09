@@ -19,8 +19,10 @@
 #      claude-code provider rows. A banbo agent reaches other agents only
 #      through the named `agent_<id>` tools this bundle registers, so the
 #      model cannot route around the authorisation graph. `tool-subagent-control`
-#      and `list-agents` stay: they provide `send_message` / `interrupt_agent` /
-#      `list_agents`, which address children that already exist.
+#      stays: it provides `send_message` / `interrupt_agent` / `list_agents`,
+#      which address children that already exist. (0.2.2 folded `list_agents`
+#      into that plugin and removed the separate `.../list-agents` subpath row,
+#      so this copy drops the row with it.)
 #   2. Two rows are ADDED: `main-runtime` (the pre-first-turn activation gate
 #      and per-agent tool surface) and `delegation` (the named tools, the depth
 #      budget, the width budget, and the holder registry).
@@ -78,6 +80,10 @@
 
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
+  # 0.2.2 added `applyPatch` to the official `standard` row (set false, so the
+  # `apply_patch` tool does not join `edit`); keep the copy key-for-key.
+  config:
+    applyPatch: false
 
 - id: tool-fs-search
   name: '@deepseek-ai/dsh-tool-fs-search'
@@ -164,9 +170,6 @@
   config:
     - id: tool-subagent-control
       name: '@deepseek-ai/dsh-tool-subagent-control'
-
-    - id: tool-subagent-list-agents
-      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
 
 # ── banbo-agents runtime ────────────────────────────────────────────────────
 

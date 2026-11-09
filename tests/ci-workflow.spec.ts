@@ -194,10 +194,10 @@ describe('CI workflow pnpm cache pairing', () => {
     // empty, so a job with only these still fails the setup-node POST step.
     ['npm ci', 'npm ci --include=dev'],
     ['a local npm install', 'npm install --no-audit --no-fund'],
-    ['a global npm install (the dsh CLI)', 'npm install -g @deepseek-ai/dsh@0.2.1-rc.5'],
+    ['a global npm install (the dsh CLI)', 'npm install -g @deepseek-ai/dsh@0.2.2-rc.1'],
     ['a global npm install with --global', 'npm install --global npm@11.21.0'],
     // A global PNPM install does not fill the workspace store either.
-    ['a global pnpm install', 'pnpm add -g @deepseek-ai/dsh@0.2.1-rc.5'],
+    ['a global pnpm install', 'pnpm add -g @deepseek-ai/dsh@0.2.2-rc.1'],
     ['a pnpm test run', 'pnpm test'],
     ['a pnpm pack', 'pnpm pack --config.node-linker=hoisted'],
   ])('does NOT count %s as populating the pnpm store', (_label, run) => {
@@ -209,12 +209,12 @@ describe('CI workflow pnpm cache pairing', () => {
   it('counts a step that installs the workspace AND a global CLI', () => {
     // The mixed positive case: one step, two commands. The global install must not
     // disqualify the step, because the workspace install does populate the store.
-    const run = 'pnpm install --frozen-lockfile\nnpm install -g @deepseek-ai/dsh@0.2.1-rc.5'
+    const run = 'pnpm install --frozen-lockfile\nnpm install -g @deepseek-ai/dsh@0.2.2-rc.1'
     expect(installsWorkspace({ steps: [{ run }] })).toBe(true)
     // …and the same pair on ONE line separated by `&&`.
-    expect(installsWorkspace({ steps: [{ run: 'pnpm install && npm install -g @deepseek-ai/dsh@0.2.1-rc.5' }] })).toBe(true)
+    expect(installsWorkspace({ steps: [{ run: 'pnpm install && npm install -g @deepseek-ai/dsh@0.2.2-rc.1' }] })).toBe(true)
     // Order must not matter either.
-    expect(installsWorkspace({ steps: [{ run: 'npm install -g @deepseek-ai/dsh@0.2.1-rc.5 && pnpm install' }] })).toBe(true)
+    expect(installsWorkspace({ steps: [{ run: 'npm install -g @deepseek-ai/dsh@0.2.2-rc.1 && pnpm install' }] })).toBe(true)
   })
 
   it('does not count a comment that mentions an install', () => {
@@ -243,10 +243,10 @@ function stepIndex(steps: readonly Step[], pattern: RegExp): number {
 describe('CI provisions the pinned DSH CLI and TUI', () => {
   const DSH_INSTALL = /@deepseek-ai\/dsh@/u
   const TUI_INSTALL = /@deepseek-harness-tui\/dsh-tui@/u
-  const DSH_PIN = '@deepseek-ai/dsh@0.2.1-rc.5'
-  const TUI_PIN = '@deepseek-harness-tui/dsh-tui@0.18.0'
-  const STALE_DSH_PIN = '@deepseek-ai/dsh@0.2.1-rc.2'
-  const STALE_TUI_PIN = '@deepseek-harness-tui/dsh-tui@0.16.1'
+  const DSH_PIN = '@deepseek-ai/dsh@0.2.2-rc.1'
+  const TUI_PIN = '@deepseek-harness-tui/dsh-tui@0.19.0'
+  const STALE_DSH_PIN = '@deepseek-ai/dsh@0.2.1-rc.5'
+  const STALE_TUI_PIN = '@deepseek-harness-tui/dsh-tui@0.18.0'
 
   const jobsProvisioning = (pattern: RegExp) =>
     Object.entries(load().jobs).filter(([, job]) => stepIndex(job.steps, pattern) > -1)
@@ -256,7 +256,7 @@ describe('CI provisions the pinned DSH CLI and TUI', () => {
     expect(provisioning.length, 'some job must provision the DSH CLI').toBeGreaterThan(0)
     for (const [name, job] of provisioning) {
       const text = job.steps.map((step) => step.run ?? '').join('\n')
-      // Exact string, not a range: `^0.2.1-rc.5` would let the runner drift to a
+      // Exact string, not a range: `^0.2.2-rc.1` would let the runner drift to a
       // newer rc.x and quietly change the harness every gate is measured against.
       expect(text, `${name} must install ${DSH_PIN}`).toContain(DSH_PIN)
       expect(text, `${name} must not install ${STALE_DSH_PIN}`).not.toContain(STALE_DSH_PIN)

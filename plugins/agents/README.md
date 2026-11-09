@@ -32,7 +32,7 @@ Restart the profile afterwards: catalog and generation complete before the Host 
 
 ### Presets and how to add your own
 
-This bundle declares its two presets, `banbo` and `planner`, as two `@deepseek-ai/dsh-agent-preset` rows in [`cordis.patch.yml`](./cordis.patch.yml). A preset is a declaration, not a directory: `config.id` is the preset identity a session saves, and `config.plugins` is the composition it mounts. The roster itself belongs to the profile's `agent-preset-registry` row (config `{ default, selectedDefault }`), which DSH Web `0.2.1-rc.5` inserts with `default: standard`; this bundle deliberately neither declares nor patches that row, so another bundle patching it cannot take these presets away.
+This bundle declares its two presets, `banbo` and `planner`, as two `@deepseek-ai/dsh-agent-preset` rows in [`cordis.patch.yml`](./cordis.patch.yml). A preset is a declaration, not a directory: `config.id` is the preset identity a session saves, and `config.plugins` is the composition it mounts. The roster itself belongs to the profile's `agent-preset-registry` row (config `{ default, selectedDefault }`), which DSH Web `0.2.2-rc.1` inserts with `default: standard`; this bundle deliberately neither declares nor patches that row, so another bundle patching it cannot take these presets away.
 
 To add your own preset, write the same row shape into your own profile patch — `$DSH_HOME/profiles/<profile>/cordis.patch.yml` — or install a bundle that carries it:
 
@@ -59,16 +59,16 @@ A composition that runs one of this bundle's main agents must also carry the two
 Two consequences worth knowing:
 
 - a user main agent whose YAML declares `main.presetId: my-lead` needs a preset row whose `config.id` is `my-lead`; without it the agent is still in the catalog (and in the ABI), but its runtime refuses to activate and fails loud with `preset mapping mismatch`;
-- a profile that composes no `agent-preset-registry` row leaves these preset rows pending and this bundle waiting for the `agentPresets` service — the Web profile `0.2.1-rc.5` composes it.
+- a profile that composes no `agent-preset-registry` row leaves these preset rows pending and this bundle waiting for the `agentPresets` service — the Web profile `0.2.2-rc.1` composes it.
 
 ### dsh-tui
 
-dsh-tui `0.18.0` — the release whose `@deepseek-ai/dsh-agent` peer admits `0.2.1-rc.5` (`0.16.x` stop at `rc.2`, `0.17.0` at `rc.3`), and therefore the one this repository verifies — is on the same 0.1.7 model. Its own bundle patch declares its own roster row `dsh-tui-agent-preset-registry` (package `@deepseek-ai/dsh-agent-preset-registry`, config `{ default: standard }`) and retires the 0.1.2-era `dsh-tui-agent-presets` roster whenever that package resolves (`cordis.patch.yml`, "0.1.7 replaces directory discovery with declarations in a registry"). Two consequences:
+dsh-tui `0.19.0` — the release whose `@deepseek-ai/dsh-agent` peer admits `0.2.2-rc.1` (`0.16.x` stop at `rc.2`, `0.17.0` at `rc.3`, `0.18.0` at `rc.5`), and therefore the one this repository verifies — is on the same 0.1.7 model. Its own bundle patch declares its own roster row `dsh-tui-agent-preset-registry` (package `@deepseek-ai/dsh-agent-preset-registry`, config `{ default: standard }`) and retires the 0.1.2-era `dsh-tui-agent-presets` roster whenever that package resolves (`cordis.patch.yml`, "0.1.7 replaces directory discovery with declarations in a registry"). Two consequences:
 
 - this bundle mounts under whichever registry row the profile composes — the Web profile's `agent-preset-registry` or the TUI's `dsh-tui-agent-preset-registry` — so it needs no TUI patch target at all, and the 0.1.5 `dsh-tui-agent-presets` seat is gone for good;
 - the TUI's roster default stays `standard`, so select ours explicitly: `DSH_TUI_PRESET=banbo dsh-tui`, or the TUI's own `/preset banbo` (a persisted preference wins over the default, and the environment variable wins over both).
 
-dsh-tui `0.15.0` and older are the 0.1.5-to-0.2.0 generation: their `@deepseek-ai/dsh-agent` peer stops at `0.2.0-rc.2`, so they cannot run this bundle's `^0.2.1-rc.2` family. **This bundle does not support them.** The peer range itself still admits an `rc.2` host, so `0.16.0`/`0.16.1` remain the lowest runnable releases there (`0.16.0` is the first release whose `@deepseek-ai/dsh-agent` peer admits `0.2.1-rc.2`). This repository's dependency family is pinned at `0.2.1-rc.5`, though, and `0.2.1-rc.5` is declared only by TUI `0.18.0` (`0.16.x` stop at `rc.2`, `0.17.0` at `rc.3`) — so the combination verified in this round is `0.2.1-rc.5` + TUI `0.18.0`, while the `0.16.1` combination is not verified here.
+dsh-tui `0.15.0` and older are the 0.1.5-to-0.2.0 generation: their `@deepseek-ai/dsh-agent` peer stops at `0.2.0-rc.2`, so they cannot run this bundle's `^0.2.1-rc.2` family. **This bundle does not support them.** The peer range itself still admits an `rc.2` host, so `0.16.0`/`0.16.1` remain the lowest runnable releases there (`0.16.0` is the first release whose `@deepseek-ai/dsh-agent` peer admits `0.2.1-rc.2`). This repository's dependency family is pinned at `0.2.2-rc.1`, though, and `0.2.2-rc.1` is declared only by TUI `0.19.0` (`0.16.x` stop at `rc.2`, `0.17.0` at `rc.3`, `0.18.0` at `rc.5`) — so the combination verified in this round is `0.2.2-rc.1` + TUI `0.19.0`, while the `0.16.1` combination is not verified here.
 
 ## The team
 

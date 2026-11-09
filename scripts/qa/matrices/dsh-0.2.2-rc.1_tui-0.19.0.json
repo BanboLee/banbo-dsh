@@ -1,8 +1,8 @@
 {
   "nodeMajor": 26,
-  "dsh": "0.2.1-rc.5",
-  "dshTui": "0.18.0",
-  "cordis": "4.0.5",
+  "dsh": "0.2.2-rc.1",
+  "dshTui": "0.19.0",
+  "cordis": "4.1.0",
   "piAi": "1.5.0",
   "bundles": {
     "@banbolee/dsh-fish-shell": "0.8.4",

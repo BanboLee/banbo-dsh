@@ -8,6 +8,7 @@ import { createScope } from '@deepseek-ai/dsh-scope'
 import { LocalJobRegistry } from '@deepseek-ai/dsh-jobs-local'
 import type { JobOutcome } from '@deepseek-ai/dsh-jobs'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import {
   NO_START_CAPABILITIES,
   SubagentRuntime,
@@ -55,6 +56,10 @@ async function subagentFixture(start: SubagentProvider['start']) {
   // so a top-level parent must expose that header (it ends the walk).
   const parent = { id: 'parent', session: { id: 'parent', header: { parentSession: undefined } } }
   ctx.provide('agents', { get: (id: string) => (id === parent.id ? parent : undefined) } as never)
+  // 0.2.2 made `sessionProjections` a hard dependency of SubagentRuntime (its
+  // init registers the catalog, timing, and identity units), so the probe
+  // supplies a registering stand-in instead of a real projection registry.
+  ctx.provide('sessionProjections', { register: async () => () => {} } as never)
   ctx.provide('workingDirectory', {
     defaultDirectory: process.cwd(),
     get: () => process.cwd(),
@@ -170,6 +175,9 @@ describe('D1 — SubagentRun settlement and provider ownership', () => {
 async function jobsFixture() {
   const ctx = new Context()
   contexts.push(ctx)
+  // 0.2.2 made `sessionProjections` a hard dependency of AgentRegistry (it
+  // registers the turn-boundary projection); the job probe needs no real one.
+  ctx.provide('sessionProjections', { register: async () => () => {} } as never)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(LocalJobRegistry, { maxConcurrentJobsPerOwner: 4 })
   ctx.jobs.attachController('gate-d')
@@ -275,7 +283,8 @@ async function signalFixture() {
   const ctx = new Context()
   contexts.push(ctx)
   await ctx.plugin(SystemPrompt, {})
-  await ctx.plugin(ToolRuntime, { mode: 'native' })
+  await ctx.plugin(ToolRuntime, {})
+  await ctx.plugin(NativeToolExecutor)
   return ctx
 }
 
@@ -298,9 +307,9 @@ describe('D3 — tools/execute replaces the signal by fusing it with caller canc
     })
 
     const execution = ctx.tools.execute({
-      callId: 'gate-d-wrapper' as never,
-      name: 'signal_probe', arguments: {}, signal: caller.signal,
-    })
+      calls: [{ type: 'tool-call', id: 'gate-d-wrapper' as never, name: 'signal_probe', arguments: '{}' }],
+      signal: caller.signal,
+    }).then((batch) => batch.results[0]!.result)
     const bodySignal = await entered.promise
     expect(bodySignal).not.toBe(caller.signal)
     expect(bodySignal).not.toBe(wrapper.signal)
@@ -334,9 +343,9 @@ describe('D3 — tools/execute replaces the signal by fusing it with caller canc
     })
 
     const execution = ctx.tools.execute({
-      callId: 'gate-d-caller' as never,
-      name: 'signal_probe', arguments: {}, signal: caller.signal,
-    })
+      calls: [{ type: 'tool-call', id: 'gate-d-caller' as never, name: 'signal_probe', arguments: '{}' }],
+      signal: caller.signal,
+    }).then((batch) => batch.results[0]!.result)
     const bodySignal = await entered.promise
     caller.abort('caller deadline')
     expect(bodySignal.aborted).toBe(true)

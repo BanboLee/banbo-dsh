@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { bindScopeParent, createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import * as terminalTools from '../terminal-tools.js'
 
@@ -345,6 +346,7 @@ describe('terminalTools policy on the real tool registry', () => {
     // first (the same composition as tests/policy.spec.ts).
     await ctx.plugin(SystemPrompt, {})
     await ctx.plugin(ToolRuntime, {})
+    await ctx.plugin(NativeToolExecutor)
     const host = await ctx.plugin({ name: 'terminal-tools-spec-host', inject: ['tools'], apply() {} })
     // The agent object IS its scope key, exactly like dsh-agent-loop: composed
     // under a preset standing scope and carrying the scoped context the policy

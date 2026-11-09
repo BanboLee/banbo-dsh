@@ -136,8 +136,8 @@ const TERMINAL_TOOL_NAMES = [
   'terminal_close',
   'terminal_list',
 ] as const
-const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.1-rc.5`'
-const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.18.0`'
+const DSH_HINT = 'install it with `npm install -g @deepseek-ai/dsh@0.2.2-rc.1`'
+const TUI_HINT = 'install it beside the global dsh CLI with `npm install -g @deepseek-harness-tui/dsh-tui@0.19.0`'
 const FISH_HINT = 'install it (`apt-get install fish` on Linux, `brew install fish` on macOS)'
 
 function findOnPath(name: string): string | undefined {

@@ -260,10 +260,10 @@ unavailable`.
 - Portable deterministic tests use the repository fixture server and never use
   a real server or the network. The separate explicit real-server lane is
   opt-in, local-filesystem/process-only, and never installs or downloads tools.
-- Implementation and tests use the `0.2.1-rc.5` dependency family; the peers
+- Implementation and tests use the `0.2.2-rc.1` dependency family; the peers
   `@deepseek-ai/dsh-fs`, `@deepseek-ai/dsh-llm`, `@deepseek-ai/dsh-subprocess`,
   and `@deepseek-ai/dsh-tools` keep the `^0.2.1-rc.2` range, which already
-  admits `0.2.1-rc.5`.
+  admits `0.2.2-rc.1`.
 
 ## Verification
 

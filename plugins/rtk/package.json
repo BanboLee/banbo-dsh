@@ -32,21 +32,21 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/cordis": "~4.1.0",
     "@deepseek-ai/dsh-subprocess": "^0.2.1-rc.2"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "~4.0.5",
-    "@deepseek-ai/dsh-bash-sandbox": "^0.2.1-rc.5",
-    "@deepseek-ai/dsh-llm": "^0.2.1-rc.5",
-    "@deepseek-ai/dsh-sandbox": "^0.2.1-rc.5",
-    "@deepseek-ai/dsh-sandbox-policy": "^0.2.1-rc.5",
-    "@deepseek-ai/dsh-scope": "^0.2.1-rc.5",
-    "@deepseek-ai/dsh-session-projection": "^0.2.1-rc.5",
-    "@deepseek-ai/dsh-settings": "^0.2.1-rc.5",
-    "@deepseek-ai/dsh-shell": "^0.2.1-rc.5",
-    "@deepseek-ai/dsh-subprocess": "^0.2.1-rc.5",
-    "@deepseek-ai/dsh-subprocess-local": "^0.2.1-rc.5"
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-bash-sandbox": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox-policy": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-scope": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-session-projection": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-shell": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess": "^0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess-local": "^0.2.2-rc.1"
   },
   "keywords": [
     "dsh",

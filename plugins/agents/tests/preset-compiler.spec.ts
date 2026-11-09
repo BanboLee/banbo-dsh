@@ -283,12 +283,14 @@ describe('the template keeps the official general-purpose delegation entries out
     }
   })
 
-  it('keeps the control rows that address already-existing children', () => {
+  it('keeps the control row that addresses already-existing children', () => {
     const rows = parseComposition(renderComposition(templateText, 'probe'))
     const ids = rows
       .flatMap((row) => [row, ...(Array.isArray(row.config) ? row.config as Array<Record<string, unknown>> : [])])
       .map((row) => row.id)
-    for (const id of ['tool-subagent-control', 'tool-subagent-list-agents']) expect(ids, id).toContain(id)
+    // One row, not two: 0.2.2 registers `list_agents` from the control plugin
+    // itself and dropped the separate `.../list-agents` subpath row.
+    for (const id of ['tool-subagent-control']) expect(ids, id).toContain(id)
   })
 
   it('mounts both banbo-agents runtime rows with the agent id', () => {
@@ -378,7 +380,7 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
       '  config:',
       '    provider: spawn',
       '    toolName: my_delegate',
-      '    modelSelectionSettings: true',
+      '    modelDiscovery: true',
       '- id: disabled-provider',
       "  name: '@deepseek-ai/dsh-tool-subagent'",
       '  disabled: true',
@@ -400,7 +402,7 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
     const managed = computeStandardInventory(renderComposition(templateText, 'probe'))
     expect(managed.digest).toBe(shipped.templateDigest)
     expect(managed.tools).toEqual(shipped.tools)
-    expect(shipped.dshVersion).toMatch(/^0\.2\.1-rc\.\d+$/)
+    expect(shipped.dshVersion).toMatch(/^0\.2\.2-rc\.\d+$/)
   })
 
   // The official `standard` composition lives in the `preset-standard` row of
@@ -419,6 +421,9 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
     })
 
     it('removes only general delegation creation tools from the standard ABI', () => {
+      // `list_subagent_models` is derived from the subagent row's discovery gate
+      // (`modelDiscovery` in 0.2.2; it was `modelSelectionSettings` before), and
+      // this copy drops that row entirely.
       const removed = official.tools.filter((name) => !managed.tools.includes(name))
       expect(removed).toEqual([
         'list_subagent_models',
@@ -448,6 +453,10 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
         'workflow-worker-thread',
         'tool-workflow',
         'tool-ralph',
+        // 0.2.2 removed this row together with the `.../list-agents` subpath:
+        // `list_agents` moved into `@deepseek-ai/dsh-tool-subagent-control`
+        // itself, so the row disappears from both sides of the copy.
+        'tool-subagent-list-agents',
       ])
       for (const id of deliberatelyRemoved) {
         expect(managedById.has(id), `${id} is deliberately removed and must stay removed`).toBe(false)
@@ -460,6 +469,10 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
       // stops being a copy this gate must fail loudly rather than compare
       // nothing.
       expect(shared.length, 'the template must still be a copy of standard').toBeGreaterThan(15)
+      // Exactly the three rows this bundle adds. 0.2.2 dropped the official
+      // `tool-subagent-list-agents` row (its `list_agents` tool moved into
+      // `tool-subagent-control`), and this copy dropped it too, so keeping a
+      // fourth managed-only row would mean carrying an unmountable subpath.
       expect(managedById.size - shared.length, 'only the 3 added rows may be ours alone').toBe(3)
 
       // Rows whose config this bundle EXTENDS on purpose. Each entry names the
@@ -499,7 +512,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
   const options = (root: string, definitions: unknown[], extra: Record<string, unknown> = {}) => ({
     rootDir: root,
     definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-    dshVersion: '0.2.1-rc.5',
+    dshVersion: '0.2.2-rc.1',
     selfVersion: '0.0.0',
     ...extra,
   })
@@ -566,7 +579,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
     expect(abi.agents[0].presetId).toBe('my-lead')
     expect(abi.agents[0].hasMain).toBe(true)
     expect(abi.agents[0].toolName).toBe('agent_my_lead')
-    expect(abi.dshVersion).toBe('0.2.1-rc.5')
+    expect(abi.dshVersion).toBe('0.2.2-rc.1')
     // The marker names no preset count any more: presets are not compiled here.
     expect(JSON.parse(readFileSync(join(result.generationDir, COMPLETE_MARKER), 'utf8')))
       .not.toHaveProperty('presets')
@@ -814,7 +827,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.2.1-rc.5',
+        dshVersion: '0.2.2-rc.1',
         selfVersion: '0.0.0',
       } as never)
 
@@ -865,7 +878,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.2.1-rc.5',
+        dshVersion: '0.2.2-rc.1',
         selfVersion: '0.0.0',
       } as never)
 

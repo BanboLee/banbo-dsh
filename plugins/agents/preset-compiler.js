@@ -227,8 +227,7 @@ const FIXED_RUNTIME_TOOLS = Object.freeze({
   '@deepseek-ai/dsh-tool-skill': ['skill'],
   '@deepseek-ai/dsh-tool-goal': ['create_goal', 'get_goal', 'update_goal'],
   '@deepseek-ai/dsh-plan-mode': ['exit_plan_mode'],
-  '@deepseek-ai/dsh-tool-subagent-control': ['interrupt_agent', 'send_message'],
-  '@deepseek-ai/dsh-tool-subagent-control/list-agents': ['list_agents'],
+  '@deepseek-ai/dsh-tool-subagent-control': ['interrupt_agent', 'list_agents', 'send_message'],
   '@deepseek-ai/dsh-tool-ralph': ['ralph'],
   '@deepseek-ai/dsh-tool-ask-user': ['ask_user_question'],
   '@deepseek-ai/dsh-tool-todo': ['todo_write'],
@@ -243,7 +242,9 @@ function runtimeTools(row) {
   const config = isRecord(row.config) ? row.config : {}
   if (row.name === '@deepseek-ai/dsh-tool-subagent') {
     const toolName = typeof config.toolName === 'string' ? config.toolName : 'subagent'
-    return [toolName, ...(config.modelSelectionSettings === true ? ['list_subagent_models'] : [])]
+    // 0.2.2 renamed the discovery switch (`modelSelectionSettings` before it) and
+    // registers `list_subagent_models` only when it is on.
+    return [toolName, ...(config.modelDiscovery === true ? ['list_subagent_models'] : [])]
   }
   if (row.name === '@deepseek-ai/dsh-tool-workflow') {
     return [typeof config.toolName === 'string' ? config.toolName : 'workflow']

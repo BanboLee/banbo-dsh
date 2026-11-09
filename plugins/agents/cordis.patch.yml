@@ -52,6 +52,8 @@
             'disabled': !!js process.platform !== 'win32'
           - 'id': 'tool-fs'
             'name': '@deepseek-ai/dsh-tool-fs'
+            'config':
+              'applyPatch': false
           - 'id': 'tool-fs-search'
             'name': '@deepseek-ai/dsh-tool-fs-search'
             'config':
@@ -118,8 +120,6 @@
             'config':
               - 'id': 'tool-subagent-control'
                 'name': '@deepseek-ai/dsh-tool-subagent-control'
-              - 'id': 'tool-subagent-list-agents'
-                'name': '@deepseek-ai/dsh-tool-subagent-control/list-agents'
           - 'id': 'banbo-main-runtime'
             'name': '@banbolee/dsh-agents/main-runtime'
             'config':
@@ -165,6 +165,8 @@
             'disabled': !!js process.platform !== 'win32'
           - 'id': 'tool-fs'
             'name': '@deepseek-ai/dsh-tool-fs'
+            'config':
+              'applyPatch': false
           - 'id': 'tool-fs-search'
             'name': '@deepseek-ai/dsh-tool-fs-search'
             'config':
@@ -231,8 +233,6 @@
             'config':
               - 'id': 'tool-subagent-control'
                 'name': '@deepseek-ai/dsh-tool-subagent-control'
-              - 'id': 'tool-subagent-list-agents'
-                'name': '@deepseek-ai/dsh-tool-subagent-control/list-agents'
           - 'id': 'banbo-main-runtime'
             'name': '@banbolee/dsh-agents/main-runtime'
             'config':

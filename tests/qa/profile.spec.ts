@@ -49,7 +49,7 @@ describe('QA profile tool wrappers', () => {
     roots.push(prefix)
     const packageRoot = join(prefix, 'lib', 'node_modules', '@deepseek-harness-tui', 'dsh-tui')
     mkdirSync(join(packageRoot, 'bin'), { recursive: true })
-    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: TUI_PACKAGE_NAME, version: '0.18.0' }))
+    writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: TUI_PACKAGE_NAME, version: '0.19.0' }))
     writeFileSync(join(packageRoot, 'bin', 'dsh-tui.js'), '#!/usr/bin/env node\n')
     mkdirSync(join(prefix, 'bin'), { recursive: true })
     symlinkSync(
@@ -63,7 +63,7 @@ describe('QA profile tool wrappers', () => {
     // Then: the launcher's own package is returned, not a path beside some dsh.
     expect(resolved.root).toBe(realpathSync(packageRoot))
     expect(resolved.manifest.name).toBe(TUI_PACKAGE_NAME)
-    expect(resolved.manifest.version).toBe('0.18.0')
+    expect(resolved.manifest.version).toBe('0.19.0')
   })
 
   it('fails loud when the launcher belongs to a package with another name', () => {
@@ -95,7 +95,7 @@ describe('QA profile tool wrappers', () => {
     roots.push(prefix)
     const dshPackage = join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh')
     mkdirSync(join(dshPackage, 'lib'), { recursive: true })
-    writeFileSync(join(dshPackage, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.1-rc.5' }))
+    writeFileSync(join(dshPackage, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.2-rc.1' }))
     writeFileSync(join(dshPackage, 'lib', 'bin.js'), '#!/usr/bin/env node\n')
     mkdirSync(join(prefix, 'bin'), { recursive: true })
     symlinkSync(join('..', 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'), join(prefix, 'bin', 'dsh'))
@@ -169,7 +169,7 @@ describe('QA profile tool wrappers', () => {
 // ── QA packing contract for the installed dsh-tui package ────────────────────
 
 const TUI_PACKAGE = TUI_PACKAGE_NAME
-const TUI_HINT = 'install it with `npm install -g @deepseek-harness-tui/dsh-tui@0.18.0` (the package root is derived from the `dsh-tui` launcher on PATH)'
+const TUI_HINT = 'install it with `npm install -g @deepseek-harness-tui/dsh-tui@0.19.0` (the package root is derived from the `dsh-tui` launcher on PATH)'
 
 /**
  * The vendored bundles the PUBLISHED manifest curates in its own

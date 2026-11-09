@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { ToolRuntime, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import {
   SubagentDepthError,
@@ -29,7 +30,8 @@ function tool(name: string): ToolDefinition {
 async function scopedTools() {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt, {})
-  await ctx.plugin(ToolRuntime, { mode: 'native' })
+  await ctx.plugin(ToolRuntime, {})
+  await ctx.plugin(NativeToolExecutor)
   const host = await ctx.plugin({ name: 'gate-c-host', inject: ['tools', 'systemPrompt'], apply() {} })
   host.ctx.tools.register(tool('global_a'))
   host.ctx.tools.register(tool('global_b'))

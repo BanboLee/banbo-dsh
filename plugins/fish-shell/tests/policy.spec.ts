@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { bindScopeParent, createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import * as policy from '../policy.js'
 
@@ -140,6 +141,7 @@ async function composeHarness(options: {
   const ctx = new Context()
   await ctx.plugin(SystemPrompt, {})
   await ctx.plugin(ToolRuntime, {})
+  await ctx.plugin(NativeToolExecutor)
   const host = await ctx.plugin({ name: 'policy-spec-host', inject: ['tools', 'systemPrompt'], apply() {} })
   const hostCtx = host.ctx
 

@@ -29,6 +29,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import * as NativeToolExecutor from '@deepseek-ai/dsh-tool-executor-native'
 import { ToolRuntime, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 
 import { loadCatalog } from '../catalog.js'
@@ -319,7 +320,8 @@ describe('a child capability resolves against the composition, not the caller fi
     const ctx = new Context()
     try {
       await ctx.plugin(SystemPrompt, {})
-      await ctx.plugin(ToolRuntime, { mode: 'native' })
+      await ctx.plugin(ToolRuntime, {})
+      await ctx.plugin(NativeToolExecutor)
       const host = await ctx.plugin({ name: 'surface-host', inject: ['tools'], apply() {} })
       for (const name of everyCapabilityTool()) host.ctx.tools.register(tool(name))
 
@@ -487,7 +489,8 @@ describe('a child capability resolves against the composition, not the caller fi
     const ctx = new Context()
     try {
       await ctx.plugin(SystemPrompt, {})
-      await ctx.plugin(ToolRuntime, { mode: 'native' })
+      await ctx.plugin(ToolRuntime, {})
+      await ctx.plugin(NativeToolExecutor)
       const host = await ctx.plugin({ name: 'fallback-host', inject: ['tools'], apply() {} })
       for (const name of everyCapabilityTool()) host.ctx.tools.register(tool(name))
 
@@ -563,7 +566,8 @@ describe('the delegation runtime plugin still mounts with a real registry', () =
     const ctx = new Context()
     try {
       await ctx.plugin(SystemPrompt, {})
-      await ctx.plugin(ToolRuntime, { mode: 'native' })
+      await ctx.plugin(ToolRuntime, {})
+      await ctx.plugin(NativeToolExecutor)
       const host = await ctx.plugin({ name: 'mount-host', inject: ['tools'], apply() {} })
       // Only the capability tools: the runtime registers the named `agent_*`
       // tools and `delegate_batch` itself, and duplicates throw.

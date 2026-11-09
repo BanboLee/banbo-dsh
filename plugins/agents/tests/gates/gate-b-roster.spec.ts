@@ -1,6 +1,6 @@
 /**
  * Gate B — preset-ROW platform probes (the 0.1.7 model, unchanged at the
- * runtime this bundle now targets, dsh 0.2.1-rc.5).
+ * runtime this bundle now targets, dsh 0.2.2-rc.1).
  *
  * 0.1.7 replaced the 0.1.5 roster model wholesale: `@deepseek-ai/dsh-agent-presets`
  * does not exist at 0.1.7-rc.2, presets are no longer directories discovered
@@ -10,7 +10,7 @@
  * row owns. This file locks only platform facts about that model:
  *
  *   - the rows this bundle declares are VALID according to the real packages
- *     the `dsh` on PATH ships — 0.2.1-rc.5 as verified here, the version this
+ *     the `dsh` on PATH ships — 0.2.2-rc.1 as verified here, the version this
  *     bundle's `^0.2.1-rc.2` family resolves to — (their own schema and entry-list
  *     validator), not according to a copy of it;
  *   - they compose cleanly with the official `dsh-web-app` layer, which is the
@@ -301,8 +301,8 @@ describe('B3 — the 0.1.5 directory-roster model is gone', () => {
  * profile Loader reads it — never assumed.
  *
  * dsh-tui 0.11.1 was the release that adopted the 0.1.7 model this bundle
- * targets; 0.18.0 is the release installed and verified here, whose
- * `@deepseek-ai/dsh-agent` peer admits the `0.2.1-rc.5` runtime (0.11.2's peer
+ * targets; 0.19.0 is the release installed and verified here, whose
+ * `@deepseek-ai/dsh-agent` peer admits the `0.2.2-rc.1` runtime (0.11.2's peer
  * stops at `0.2.0-rc.1`). Its patch declares its OWN registry row
  * (`dsh-tui-agent-preset-registry`, package
  * `@deepseek-ai/dsh-agent-preset-registry`, config `{ default: standard }`) and
@@ -316,13 +316,13 @@ describe('B3 — the 0.1.5 directory-roster model is gone', () => {
  *
  * Which side of that boundary a range falls on is a SEMVER question, never a
  * substring one: a range need not name a version it admits (`>=0.2.0-rc.0`),
- * and naming one can mean the opposite (`<0.2.1-rc.5`: it spells the target out).
+ * and naming one can mean the opposite (`<0.2.2-rc.1`: it spells the target out).
  */
 describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => {
   const TUI_PACKAGE = '@deepseek-harness-tui/dsh-tui'
 
   /** The runtime this bundle's `^0.2.1-rc.2` family resolves to. */
-  const TARGET_DSH_VERSION = '0.2.1-rc.5'
+  const TARGET_DSH_VERSION = '0.2.2-rc.1'
   /** A runtime nothing here claims, so "it was accepted" can be shown to fail. */
   const UNSUPPORTED_DSH_VERSION = '0.3.0'
 
@@ -386,16 +386,16 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
   })
 
   /**
-   * Ranges where "does it name `0.2.1-rc.2`?" and "does it admit `0.2.1-rc.2`?"
+   * Ranges where "does it name the target?" and "does it admit the target?"
    * disagree — the substring question this file used to ask instead. All three
    * were rehearsed as counterexamples against the old assertion: the first two
    * were refused as incompatible while being compatible, the third was accepted
    * while being incompatible.
    */
   const PEER_RANGE_PROBES = [
-    { range: '>=0.2.0-rc.0 <0.2.1', names: false, admits: true },
+    { range: '>=0.2.0-rc.0 <0.3.0', names: false, admits: true },
     { range: '>=0.2.0-rc.0', names: false, admits: true },
-    { range: '<0.2.1-rc.5', names: true, admits: false },
+    { range: '<0.2.2-rc.1', names: true, admits: false },
   ] as const
 
   it('decides a peer range by semver, not by whether it names the target', async () => {
@@ -616,7 +616,7 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
     const registry = rows.find((row) => row.name === PRESET_REGISTRY)
     const legacy = rows.find((row) => row.name === '@deepseek-ai/dsh-agent-presets')
     if (registry !== undefined) {
-      // 0.1.7 generation (registry seat from 0.11.0; verified against 0.18.0).
+      // 0.1.7 generation (registry seat from 0.11.0; verified against 0.19.0).
       expect(atLeast(tui!.version, [0, 11, 0]), `registry seat from 0.11.0, installed ${tui!.version}`).toBe(true)
       expect(registry.config).toMatchObject({ default: 'standard' })
       expect(

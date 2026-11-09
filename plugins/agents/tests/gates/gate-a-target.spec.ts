@@ -70,7 +70,7 @@ afterEach(() => {
 /* ------------------------------------------------------------------ A1 --- */
 
 describe('A1 — dependency family is uniform', () => {
-  it('the workspace lockfile resolves no 0.2.1-rc.2 package alongside 0.2.1-rc.5', () => {
+  it('the workspace lockfile resolves no 0.2.1-rc.5 package alongside 0.2.2-rc.1', () => {
     // PARSED, never grepped: a legal declaration still SPELLS the old release
     // (`^0.2.1-rc.2` peer ranges, the `specifier:` fields, the override values),
     // so a text probe either misses the real drift or fires on every peer range.
@@ -80,8 +80,8 @@ describe('A1 — dependency family is uniform', () => {
       packages?: Record<string, unknown>
       snapshots?: Record<string, unknown>
     }
-    const target = '0.2.1-rc.5'
-    const previous = '0.2.1-rc.2'
+    const target = '0.2.2-rc.1'
+    const previous = '0.2.1-rc.5'
     const resolved = [...Object.keys(lock.packages ?? {}), ...Object.keys(lock.snapshots ?? {})]
       .map((key) => /^(@deepseek-ai\/dsh-[a-z0-9-]+)@([^()]+)/u.exec(key))
       .filter((match): match is RegExpExecArray => match !== null)
@@ -124,8 +124,8 @@ describe('A1 — dependency family is uniform', () => {
     expect(peers.length).toBeGreaterThan(0)
     expect(installed.length).toBeGreaterThan(0)
     // Two exact ranges, deliberately different: the peer range keeps the
-    // `^0.2.1-rc.2` floor (it already admits `0.2.1-rc.5`, so it does not move),
-    // while every installed pin follows the family to `^0.2.1-rc.5`. Both
+    // `^0.2.1-rc.2` floor (it already admits `0.2.2-rc.1`, so it does not move),
+    // while every installed pin follows the family to `^0.2.2-rc.1`. Both
     // patterns are anchored, so a caret range drifting to whatever rc.x is
     // newest still fails on both sides. A package named in BOTH sections — every
     // dsh peer is also a dev dependency — is checked against the pattern of the
@@ -134,7 +134,7 @@ describe('A1 — dependency family is uniform', () => {
       expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.1-rc\.2$/)
     }
     for (const [name, range] of installed) {
-      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.1-rc\.5$/)
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.2-rc\.1$/)
     }
   })
 })
@@ -427,6 +427,10 @@ describe('A6 — depth arithmetic the standing tool graph depends on', () => {
 describe('A7 — agent/created is a vetoable publication boundary', () => {
   async function registryHost() {
     const ctx = new Context()
+    // 0.2.2 made `sessionProjections` a hard dependency of AgentRegistry (it
+    // registers the turn-boundary projection); this probe observes the
+    // creation dispatch only, so a registering stand-in is enough.
+    ctx.provide('sessionProjections', { register: async () => () => {} } as never)
     await ctx.plugin(AgentRegistry)
     const host = await ctx.plugin({ name: 'gate-a7-host', inject: ['agents'], apply() {} })
     return { ctx, host }
