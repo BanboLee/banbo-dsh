@@ -13,6 +13,9 @@ mounted executor.
 
 ## Prerequisites
 
+This release requires DSH `0.2.2-rc.1` or newer (`^0.2.2-rc.1` peers).
+Development dependencies are pinned exactly to `0.2.2-rc.1`.
+
 The `rtk` CLI must be **pre-installed** and reachable on `PATH` (or pinned via
 the `rtkBinary` config) for this bundle to have any effect. Without `rtk`, the
 plugin still installs and runs, but every command fails open to passthrough —

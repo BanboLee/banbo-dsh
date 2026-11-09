@@ -1,2 +1,5 @@
 packages:
-  - 'plugins/*'
+  - 'plugins/agents'
+  - 'plugins/fish-shell'
+  - 'plugins/dsh-lsp-diagnostics'
+  - 'plugins/rtk'

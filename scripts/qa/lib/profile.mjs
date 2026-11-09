@@ -8,8 +8,6 @@ export const TUI_PACKAGE_NAME = '@deepseek-harness-tui/dsh-tui'
 export const BUNDLES = [
   ['plugins/fish-shell', '@banbolee/dsh-fish-shell'],
   ['plugins/rtk', '@banbolee/dsh-rtk'],
-  ['plugins/codegraph-mcp', '@banbolee/dsh-codegraph-mcp'],
-  ['plugins/dsh-llm-pi-ai-with-session', '@banbolee/dsh-llm-pi-ai-with-session'],
   ['plugins/dsh-lsp-diagnostics', '@banbolee/dsh-lsp-diagnostics'],
   ['plugins/agents', '@banbolee/dsh-agents'],
 ]
@@ -302,8 +300,6 @@ export function renderProfileFiles(repoRoot, layout, environment) {
   const fixtures = join(repoRoot, 'scripts', 'qa', 'fixtures')
   const values = {
     QA_LOOPBACK_PORT: environment.QA_LOOPBACK_PORT,
-    QA_CODEGRAPH: environment.QA_CODEGRAPH,
-    QA_WORKSPACE: environment.DSH_TUI_WORKSPACE_TARGET,
     QA_TS_LSP: environment.QA_TS_LSP,
     QA_GOPLS: environment.QA_GOPLS,
     QA_RTK: environment.QA_RTK,

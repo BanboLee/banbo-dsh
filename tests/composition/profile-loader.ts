@@ -104,14 +104,20 @@ export async function startShellProcess(shell: ShellLike, request: ShellRequestL
 
 interface ToolRuntimeLike {
   schemas(): Array<{ readonly name: string }>
-  execute(input: { readonly callId: string; readonly name: string; readonly arguments: unknown; readonly signal: AbortSignal }): Promise<{
-    readonly isError: boolean
-    readonly value?: unknown
-    readonly content: readonly {
-      readonly type: string
-      readonly text?: string
+  execute(input: {
+    readonly calls: readonly { readonly type: 'tool-call'; readonly id: string; readonly name: string; readonly arguments: string }[]
+    readonly signal: AbortSignal
+    readonly agent?: unknown
+  }): Promise<{
+    readonly results: readonly {
+      readonly callId: string
+      readonly result: {
+        readonly isError: boolean
+        readonly value?: unknown
+        readonly content: readonly { readonly type: string; readonly text?: string }[]
+        readonly error?: { readonly message: string }
+      }
     }[]
-    readonly error?: { readonly message: string }
   }>
 }
 
@@ -282,7 +288,8 @@ function writeTestRoot(profile: string): string {
   const root = join(profile, 'cordis.yml')
   writeFileSync(root, [
     "- id: test-system-prompt\n  name: ./test-seams.mjs\n  config:\n    kind: systemPrompt",
-    "- id: tools\n  name: '@deepseek-ai/dsh-tools'\n  config:\n    mode: native",
+    "- id: tools\n  name: '@deepseek-ai/dsh-tools'",
+    "- id: tool-executor-native\n  name: '@deepseek-ai/dsh-tool-executor-native'",
     "- id: session-projection\n  name: '@deepseek-ai/dsh-session-projection'",
     // `workingDirectory` injects `fs`, `sessionProjections` and `systemPrompt`
     // (the last two are already mounted here), so the fs seam comes with it.

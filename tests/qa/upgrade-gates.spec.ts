@@ -82,7 +82,7 @@ function healthySteps() {
     composition: () => Promise.resolve({ rows: ['fish-shell', 'tool-fish'] }),
     ptyStartup: () => Promise.resolve({ inputReady: true, exitCode: 0 }),
     activation: () => Promise.resolve(activationVerdict(runningSnapshot())),
-    planResults: () => Promise.resolve({ results: 30 }),
+    planResults: () => Promise.resolve({ results: 23 }),
   }
   return steps
 }
@@ -283,7 +283,7 @@ describe('upgrade gate verdicts', () => {
     expect(report.exitCode).toBe(0)
     expect(report.gateEvidence.G5.startup).toEqual({ inputReady: true, exitCode: 0 })
     expect(report.gateEvidence.G5.activation.passed).toBe(true)
-    expect(report.gateEvidence.G6.planResults).toEqual({ results: 30 })
+    expect(report.gateEvidence.G6.planResults).toEqual({ results: 23 })
   })
 
   it('fails G5 and blocks G6 when a row is mutated to pending', async () => {
@@ -431,14 +431,11 @@ describe('injected candidate launchers', () => {
     const overridden = resolveToolPaths(new Map<string, string>([
       ...required,
       ['rtk-bin', '/opt/rtk'],
-      ['codegraph-bin', '/opt/codegraph'],
     ])) as Record<string, string>
 
     // Then: the host tool defaults survive, and each one is overridable.
     expect(base.rtk).toBe(EXTERNAL_TOOL_DEFAULTS.rtk)
-    expect(base.codegraph).toBe(EXTERNAL_TOOL_DEFAULTS.codegraph)
     expect(overridden.rtk).toBe('/opt/rtk')
-    expect(overridden.codegraph).toBe('/opt/codegraph')
   })
 
   it('records requested path and realpath for every injected candidate', () => {
@@ -571,7 +568,6 @@ describe(`the G5 activation probe on a QA-packed ${TUI_BUNDLE} profile`, () => {
         qaRoot,
         runtimeHome: qa.runtimeHome,
         nodeBin: dirname(process.execPath),
-        codegraph: '',
         rtk: '',
         typescriptLanguageServer: '',
         gopls: '',

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { createQaLayout } from '../../scripts/qa/lib/environment.mjs'
 import {
+  BUNDLES,
   TUI_PACKAGE_NAME,
   packageRootFromBin,
   readDshWrapperTarget,
@@ -18,6 +19,15 @@ import { resolveDshInstallationBin } from '../composition/profile-loader'
 const roots: string[] = []
 
 describe('QA profile tool wrappers', () => {
+  it('packs only the four maintained bundles', () => {
+    expect(BUNDLES).toEqual([
+      ['plugins/fish-shell', '@banbolee/dsh-fish-shell'],
+      ['plugins/rtk', '@banbolee/dsh-rtk'],
+      ['plugins/dsh-lsp-diagnostics', '@banbolee/dsh-lsp-diagnostics'],
+      ['plugins/agents', '@banbolee/dsh-agents'],
+    ])
+  })
+
   afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })

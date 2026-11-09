@@ -50,7 +50,6 @@ describe('QA child environment', () => {
     const environment = buildQaEnvironment({
       qaRoot,
       nodeBin: '/opt/node26/bin',
-      codegraph: '/home/qa-user/.codegraph/versions/v1.6.0/bin/codegraph',
       rtk: '/opt/qa/rtk',
       typescriptLanguageServer: '/opt/qa/typescript-language-server',
       gopls: '/opt/qa/gopls',
@@ -61,7 +60,6 @@ describe('QA child environment', () => {
 
     // Then: only approved keys exist and the production credential is absent.
     expect(Object.keys(environment).sort()).toEqual([
-      'CODEGRAPH_NO_UPDATE_CHECK',
       'DO_NOT_TRACK',
       'DSH_HOME',
       'DSH_TELEMETRY_MODE',
@@ -69,7 +67,6 @@ describe('QA child environment', () => {
       'DSH_TUI_WORKSPACE_TARGET',
       'HOME',
       'PATH',
-      'QA_CODEGRAPH',
       'QA_GO',
       'QA_GOPLS',
       'QA_LOOPBACK_API_KEY',
@@ -111,7 +108,6 @@ describe('QA child environment', () => {
     const environment = buildQaEnvironment({
       qaRoot,
       nodeBin: '/opt/node26/bin',
-      codegraph: '/home/qa-user/.codegraph/versions/v1.6.0/bin/codegraph',
       rtk: '/opt/qa/rtk',
       typescriptLanguageServer: '/opt/qa/typescript-language-server',
       gopls: '/opt/qa/gopls',
@@ -136,7 +132,6 @@ describe('QA child environment', () => {
       ...buildQaEnvironment({
         qaRoot,
         nodeBin: '/opt/node26/bin',
-        codegraph: '/home/qa-user/.codegraph/versions/v1.6.0/bin/codegraph',
         rtk: '/opt/qa/rtk',
         typescriptLanguageServer: '/opt/qa/typescript-language-server',
         gopls: '/opt/qa/gopls',

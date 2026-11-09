@@ -127,10 +127,32 @@ const owners = readmeOwners()
 
 describe('bilingual READMEs — the pair exists and is the right way round', () => {
   it('covers the root and every plugin', () => {
-    // Six plugins plus the root. A drop means the walk stopped finding them,
-    // which would make every assertion below vacuous.
+    // Four maintained plugins, two frozen plugins and the root remain documented.
+    // A missing owner would make its assertions below vacuous.
     expect(owners.length).toBeGreaterThanOrEqual(7)
   })
+
+  it.each(['codegraph-mcp', 'dsh-llm-pi-ai-with-session'])(
+    'keeps %s frozen and explicitly deprecated in both languages', (directory) => {
+      const root = join(repoRoot, 'plugins', directory)
+      const manifest = JSON.parse(read(join(root, 'package.json')))
+      expect(manifest.version).toBe('0.3.4')
+      expect(manifest.deprecated).toContain('Deprecated and frozen at 0.3.4')
+      expect(manifest.peerDependencies['@deepseek-ai/cordis']).toBe('~4.0.5')
+      expect(manifest.devDependencies['@deepseek-ai/cordis']).toBe('~4.0.5')
+      for (const [name, version] of Object.entries(manifest.devDependencies)) {
+        if (name.startsWith('@deepseek-ai/dsh-')) expect(version).toBe('^0.2.1-rc.5')
+      }
+      for (const [name, version] of Object.entries(manifest.peerDependencies)) {
+        if (name.startsWith('@deepseek-ai/dsh-')) expect(version).toBe('^0.2.1-rc.2')
+      }
+      if (directory === 'dsh-llm-pi-ai-with-session') {
+        expect(manifest.devDependencies['@deepseek-ai/schemastery']).toBe('~3.18.5')
+      }
+      expect(read(join(root, 'README.md'))).toContain('Deprecated — frozen at 0.3.4')
+      expect(read(join(root, 'README.zh.md'))).toContain('已弃用——冻结在 0.3.4')
+    },
+  )
 
   it('has an English README.md and a Chinese README.zh.md for each owner', () => {
     for (const { label, dir } of owners) {

@@ -154,23 +154,21 @@ export async function createRealHeadlessHarness(): Promise<RealHeadlessHarness> 
           return startShellProcess(ctx.shell, input)
         },
         executeTool: async (name, args) => {
-          const result = await ctx.get('tools')?.execute({
-            callId: `real-e2e-${name}`,
-            name,
-            arguments: args,
+          const batch = await ctx.get('tools')?.execute({
+            calls: [{ type: 'tool-call', id: `real-e2e-${name}`, name, arguments: JSON.stringify(args) }],
             signal: AbortSignal.timeout(30_000),
           })
-          if (result === undefined) throw new Error('real E2E tools runtime is missing')
+          const result = batch?.results[0]?.result
+          if (result === undefined) throw new Error('real E2E tools runtime result is missing')
           return result
         },
         callTool: async (name, args) => {
-          const result = await ctx.get('tools')?.execute({
-            callId: `real-e2e-${name}`,
-            name,
-            arguments: args,
+          const batch = await ctx.get('tools')?.execute({
+            calls: [{ type: 'tool-call', id: `real-e2e-${name}`, name, arguments: JSON.stringify(args) }],
             signal: AbortSignal.timeout(30_000),
           })
-          if (result === undefined) throw new Error('real E2E tools runtime is missing')
+          const result = batch?.results[0]?.result
+          if (result === undefined) throw new Error('real E2E tools runtime result is missing')
           if (result.isError) throw new Error(result.error?.message ?? `tool ${name} failed`)
           return result.value
         },

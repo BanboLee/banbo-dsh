@@ -5,6 +5,15 @@ All notable changes to `@banbolee/dsh-fish-shell` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5] - 2026-11-09
+
+### Changed
+
+- Require DSH `0.2.2-rc.1` through `^0.2.2-rc.1` peers, exact development
+  pins, and the bundled `@deepseek-ai/dsh-tool-terminal@0.2.2-rc.1` baseline.
+- Preserve Cordis `~4.1.0` and Schemastery `~3.19.0` compatibility.
+- Synchronize the English and Chinese support matrices with the new minimum.
+
 ## [0.8.4] - 2026-11-04
 
 This is a **patch** release (`0.8.3` → `0.8.4`): the bundle now targets the

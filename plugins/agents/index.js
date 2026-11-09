@@ -52,7 +52,7 @@ export const SHIPPED_PRESET_IDS = Object.freeze(['banbo', 'planner'])
  * declared presets can address it; `dshHomePath` is provided by the harness
  * host at boot.
  */
-export const inject = ['dshHomePath', 'agentPresets', 'settings']
+export const inject = ['dshHomePath', 'agentPresets']
 
 /** Where this package's own files live, taken from the module URL. */
 const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url))

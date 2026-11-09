@@ -1,9 +1,9 @@
 /**
  * The release journal — the durable record of one dispatch.
  *
- * The release lane is a multi-step, partially irreversible operation: six
- * packages are published one after another, and a failure in the fifth leaves
- * four versions on the registry that can never be withdrawn (npm has no
+ * The release lane is a multi-step, partially irreversible operation: four
+ * packages are published one after another, and a failure in the third leaves
+ * two versions on the registry that can never be withdrawn (npm has no
  * unpublish for a version that other packages may already depend on). The
  * journal exists so that fact is *observable* rather than inferred from a red
  * run:

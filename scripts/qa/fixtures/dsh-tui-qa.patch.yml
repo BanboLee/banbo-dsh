@@ -1,28 +1,5 @@
 - id: llm-deepseek
   disabled: true
-- id: llm-pi-ai-with-session
-  config:
-    sessionHeader: x-session-affinity
-    routes:
-      - route: qa-session
-        source: qa-loopback
-        displayName: QA Session
-- id: mcp-codegraph
-  config:
-    serverName: codegraph
-    transport: stdio
-    command: "{{QA_CODEGRAPH}}"
-    args: [serve, --mcp, --path, "{{QA_WORKSPACE}}"]
-    env:
-      CODEGRAPH_NO_DAEMON: "1"
-      CODEGRAPH_NO_UPDATE_CHECK: "1"
-    cwd: "{{QA_WORKSPACE}}"
-    failOnStartupError: true
-    reconnect:
-      enabled: false
-      initialDelayMs: 10
-      maxDelayMs: 10
-      maxAttempts: 1
 - id: lsp-diagnostics
   config:
     enabled: true

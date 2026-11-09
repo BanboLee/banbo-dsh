@@ -288,3 +288,22 @@ describe('CI provisions the pinned DSH CLI and TUI', () => {
     }
   })
 })
+
+describe('CI excludes deprecated release surfaces', () => {
+  it('does not dispatch or provision the frozen CodeGraph headless lane', () => {
+    expect(load().jobs).not.toHaveProperty('real-e2e')
+    const runs = Object.values(load().jobs).flatMap((job) => job.steps.map((step) => step.run ?? '')).join('\n')
+    expect(runs).not.toContain('test:e2e:headless')
+    expect(runs).not.toContain('codegraph')
+  })
+
+  it('keeps frozen plugin typechecks and the legacy E2E command out of root scripts', () => {
+    const manifest = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
+    expect(manifest.scripts).not.toHaveProperty('test:e2e:headless')
+    expect(manifest.scripts.typecheck).not.toContain('plugins/codegraph-mcp')
+    expect(manifest.scripts.typecheck).not.toContain('plugins/dsh-llm-pi-ai-with-session')
+    for (const directory of ['agents', 'fish-shell', 'dsh-lsp-diagnostics', 'rtk']) {
+      expect(manifest.scripts.typecheck).toContain(`plugins/${directory}/tsconfig.json`)
+    }
+  })
+})

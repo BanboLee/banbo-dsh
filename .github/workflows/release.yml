@@ -1,16 +1,16 @@
 name: Release
 
-# Publishing is MANUAL ONLY, and it is a six-package operation: this repository
-# ships `rtk`, `codegraph-mcp`, `fish-shell`, `lsp-diagnostics`,
-# `llm-pi-ai-with-session` and `agents`, and a release means all six at one
-# commit. Nothing reaches the registry without a human dispatch.
+# Publishing is MANUAL ONLY and releases the four maintained bundles:
+# `fish-shell`, `rtk`, `lsp-diagnostics` and `agents`, at one commit.
+# `codegraph-mcp` and `llm-pi-ai-with-session` are frozen at 0.3.4 and excluded.
+# Nothing reaches the registry without a human dispatch.
 #
 # The dispatch names an EXACT COMMIT (`release_sha`). That is not a convenience:
 # a tag or branch name can move between the moment a human decides to release and
 # the moment the runner checks out, and a release must publish the code somebody
 # actually reviewed.
 #
-# `dry_run` defaults to true. A dry run packs, validates and journals all six
+# `dry_run` defaults to true. A dry run packs, validates and journals all four
 # artefacts and touches nothing else; only an explicit `dry_run: false` publishes.
 on:
   workflow_dispatch:
@@ -29,7 +29,7 @@ on:
         type: string
         default: ''
 
-# `contents: write` is required: the lane creates six annotated tags and six
+# `contents: write` is required: the lane creates four annotated tags and four
 # GitHub Releases at the end. Without it the publish would succeed and the release
 # would stay untagged.
 #
@@ -42,7 +42,7 @@ permissions:
 
 # ONE release at a time, and never cancel one that is running.
 #
-# This is a correctness constraint, not a courtesy: the lane publishes six
+# This is a correctness constraint, not a courtesy: the lane publishes four
 # immutable versions under ONE candidate dist-tag and then promotes `latest`. Two
 # overlapping dispatches would interleave those steps — the second could publish
 # `0.3.2` while the first is promoting `latest`, and the shared candidate tag
@@ -60,20 +60,20 @@ env:
   # NODE_ENV=production install would silently skip them.
   NODE_ENV: development
   # The registry dist-tag a real publish uses. A candidate tag is what makes the
-  # release atomic-ish: nothing is visible as `latest` until all six versions are
+  # release atomic-ish: nothing is visible as `latest` until all four versions are
   # published and verified, so a partial failure never moves `latest` onto a
   # release a user cannot install.
   RELEASE_CANDIDATE_TAG: next
   # The Node/pnpm pair this lane is verified against, named explicitly so a
   # runner image change cannot silently move the release toolchain.
-  RELEASE_NODE_VERSION: '22'
+  RELEASE_NODE_VERSION: '26'
   RELEASE_PNPM_VERSION: '9.3.0'
   # npm CLI. This is a CORRECTNESS input, not a convenience: the lane publishes
   # with tokenless OIDC trusted publishing, and `npm dist-tag add|rm` only gained
   # OIDC support in **11.21.0** (verified by unpacking the published CLIs:
   # 11.20.0 has no OIDC in `lib/commands/dist-tag.js`, 11.21.0 does; in 12.x the
   # first is 12.2.0). Pinning 11.6.2 — the publish-only floor — would publish all
-  # six versions and then fail at the first dist-tag call, leaving six immutable
+  # four versions and then fail at the first dist-tag call, leaving four immutable
   # versions under a candidate tag that can never be promoted.
   RELEASE_NPM_VERSION: '11.21.0'
   # The DSH/TUI versions this lane's gates boot against, and the fish binary the
@@ -160,7 +160,7 @@ jobs:
           npm install --global "@deepseek-ai/dsh@${RELEASE_DSH_VERSION}"
           dsh --version
 
-      # `0.19.0` is the first dsh-tui whose peers include `0.2.2-rc.1`.
+      # Use the pinned TUI for the active DSH `0.2.2-rc.1` family.
       - name: Install the pinned DSH TUI
         run: |
           set -euo pipefail
@@ -203,7 +203,7 @@ jobs:
       - name: Run the deterministic test suite
         run: pnpm test
 
-      - name: Typecheck every plugin tsconfig
+      - name: Typecheck every maintained plugin tsconfig
         run: pnpm typecheck
 
       - name: Build the agents bundle artifacts
@@ -225,7 +225,7 @@ jobs:
       # missing journal must abort rather than silently start a fresh journal:
       # "I could not read what already happened" is not "nothing happened", and a
       # fresh journal would either try to re-publish (impossible) or report the
-      # release as clean while six versions may already be on the registry.
+      # release as clean while four versions may already be on the registry.
       #
       # Only the ABSENCE of an id means a fresh start, and that is a different
       # branch: both steps below are skipped entirely, so `RELEASE_PRIOR_JOURNAL`
@@ -285,10 +285,10 @@ jobs:
             "${prior_args[@]}" \
             --journal "${RELEASE_JOURNAL}"
 
-      # All six packages are packed ONCE, validated fail-closed, and recorded in
+      # All four packages are packed ONCE, validated fail-closed, and recorded in
       # the journal. fish-shell is packed from a staged tree because its bundled
       # dependency cannot be packed from the workspace's symlinked node_modules.
-      - name: Pack and validate all six tarballs
+      - name: Pack and validate all four tarballs
         run: |
           set -euo pipefail
           node scripts/release/release.mjs pack \
@@ -319,7 +319,7 @@ jobs:
       # 2FA on the account or organization is a publish prerequisite: npm checks
       # it registry-side, this repository cannot verify it, and provenance does
       # not replace it.
-      - name: Publish all six packages under the candidate tag
+      - name: Publish all four packages under the candidate tag
         if: ${{ !inputs.dry_run }}
         # env:
         #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -329,10 +329,10 @@ jobs:
             --journal "${RELEASE_JOURNAL}" \
             --artifacts "${RELEASE_ARTIFACTS}"
 
-      # Promotion happens only after ALL SIX versions are published and verified:
+      # Promotion happens only after ALL FOUR versions are published and verified:
       # `latest` is a single pointer per package, so moving it early would expose
       # a release that cannot be completed. This step also drops the candidate
-      # tag and creates the six annotated tags at the release commit.
+      # tag and creates the four annotated tags at the release commit.
       #
       # `--dry-run` is passed through even though this step only runs on a real
       # dispatch: it is the script's own defence, so a mis-wired workflow (or a
@@ -353,12 +353,12 @@ jobs:
 
       # One GitHub Release per package, all at the same commit. This is a script
       # subcommand rather than a shell loop because it must be IDEMPOTENT for a
-      # resumed dispatch: a run that created four releases and died on the fifth
+      # resumed dispatch: a run that created two releases and died on the third
       # has to finish, and `gh release create` fails outright on an existing one.
       # The script verifies an existing release against this dispatch (tag,
       # target, title) and refuses to reuse an identity that belongs to something
       # else.
-      - name: Create the six GitHub Releases
+      - name: Create the four GitHub Releases
         if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}

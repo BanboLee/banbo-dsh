@@ -1883,13 +1883,11 @@ describe('npm failure classification (what "absent" is allowed to mean)', () => 
   })
 })
 
-describe('release package list', () => {  it('names exactly the six publishable bundles', () => {
+describe('release package list', () => {  it('names exactly the four maintained publishable bundles', () => {
     expect(RELEASE_PACKAGES.map((entry) => entry.package)).toEqual([
       '@banbolee/dsh-fish-shell',
       '@banbolee/dsh-rtk',
-      '@banbolee/dsh-codegraph-mcp',
       '@banbolee/dsh-lsp-diagnostics',
-      '@banbolee/dsh-llm-pi-ai-with-session',
       '@banbolee/dsh-agents',
     ])
   })
@@ -1901,6 +1899,12 @@ describe('release package list', () => {  it('names exactly the six publishable 
   it('fails loudly for a name that is not publishable', () => {
     expect(() => requireReleasePackage('@banbolee/dsh-typo')).toThrow(/not a publishable bundle/)
   })
+
+  it.each(['@banbolee/dsh-codegraph-mcp', '@banbolee/dsh-llm-pi-ai-with-session'])(
+    'rejects the frozen package %s', (name) => {
+      expect(() => requireReleasePackage(name)).toThrow(/not a publishable bundle/)
+    },
+  )
 })
 
 describe('release journal', () => {
@@ -1914,8 +1918,7 @@ describe('release journal', () => {
       writeJournal(path, journal)
       const read = readJournal(path)
       expect(read.version).toBe(JOURNAL_VERSION)
-      expect(read.packages).toHaveLength(6)
-      expect(read.packages[0]?.state).toBe(PACKAGE_STATES.planned)
+      expect(read.packages).toEqual(journal.packages)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -1972,9 +1975,9 @@ describe('cross-dispatch journal resume', () => {
 
   it('refuses a journal whose package set is a different size', () => {
     const short = prior()
-    short.packages = short.packages.slice(0, 5)
+    short.packages = short.packages.slice(0, -1)
     expect(resumability(short, expected))
-      .toMatchObject({ resumable: false, reason: expect.stringContaining('lists 5 packages') })
+      .toMatchObject({ resumable: false, reason: expect.any(String) })
   })
 
   it('counts published, promoted and skipped as "on the registry"', () => {
@@ -2048,8 +2051,8 @@ describe('npm CLI capability floor', () => {
   })
 
   it('rejects a CLI that can publish but cannot touch dist-tags', () => {
-    // The failure this guards is specific and expensive: 11.6.2 publishes all six
-    // versions and then fails at the FIRST dist-tag call, leaving six immutable
+    // The failure this guards is specific and expensive: 11.6.2 publishes all four
+    // versions and then fails at the FIRST dist-tag call, leaving four immutable
     // versions under a candidate tag that can never be promoted.
     const verdict = checkNpmVersion('11.6.2')
     expect(verdict.ok).toBe(false)

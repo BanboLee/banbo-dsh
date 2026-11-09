@@ -1,6 +1,6 @@
 {
   "name": "@banbolee/dsh-rtk",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "General-purpose RTK integration for DeepSeek Harness: a plain function plugin that decorates the mounted shell executor's `execute` entry point through `rtk rewrite` and compresses model-facing grep output through `rtk pipe`. Decorates the live `ctx.shell`, so it coexists with any shell provider (bash, fish, ...) without a duplicate service registration.",
   "repository": {
     "type": "git",
@@ -33,20 +33,20 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-subprocess": "^0.2.1-rc.2"
+    "@deepseek-ai/dsh-subprocess": "^0.2.2-rc.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
-    "@deepseek-ai/dsh-bash-sandbox": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-llm": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-sandbox": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-sandbox-policy": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-scope": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-session-projection": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-settings": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-shell": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-subprocess": "^0.2.2-rc.1",
-    "@deepseek-ai/dsh-subprocess-local": "^0.2.2-rc.1"
+    "@deepseek-ai/dsh-bash-sandbox": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox-policy": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-scope": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-session-projection": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-settings": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-shell": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-subprocess-local": "0.2.2-rc.1"
   },
   "keywords": [
     "dsh",

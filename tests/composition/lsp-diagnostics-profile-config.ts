@@ -59,7 +59,7 @@ export interface LspDiagnosticsBootOptions {
   readonly extraRootEntries?: readonly string[]
   readonly additionalBundles?: readonly string[]
   readonly extraPatchEntries?: readonly string[]
-  readonly toolsMode?: 'native' | 'code' | 'ptc'
+  readonly toolsMode?: 'native' | 'ptc'
   readonly missingTypescript?: boolean
   readonly missingGo?: boolean
   readonly serverOverrides?: Partial<Record<LspProvider, LspServerOverride>>
@@ -104,13 +104,12 @@ export function installBundles(input: {
   }
 }
 
-function baseRootEntries(toolsMode: 'native' | 'code' | 'ptc', workspace: string): string[] {
-  const mode = toolsMode === 'code' ? 'ptc' : toolsMode
+function baseRootEntries(mode: 'native' | 'ptc', workspace: string): string[] {
   const entries = [
     '- id: tools',
     "  name: '@deepseek-ai/dsh-tools'",
-    '  config:',
-    `    mode: ${mode}`,
+    '- id: tool-executor',
+    `  name: '@deepseek-ai/dsh-tool-executor-${mode}'`,
     '- id: fs',
     "  name: '@deepseek-ai/dsh-fs-local'",
     '  config:',

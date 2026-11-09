@@ -18,9 +18,9 @@
  *
  * That distinction is the whole reason this module exists. A run on 11.6.2 — the
  * version this lane previously pinned, chosen only for `publish` — publishes all
- * six packages and then fails at the FIRST `dist-tag add`, because that call
+ * four packages and then fails at the FIRST `dist-tag add`, because that call
  * needs credentials the workflow deliberately does not have. The registry would
- * be left holding six published versions under a candidate tag that can never be
+ * be left holding four published versions under a candidate tag that can never be
  * promoted.
  *
  * The minimum below is therefore the maximum of the two capabilities.
@@ -101,8 +101,8 @@ export function checkNpmVersion(version) {
     detail:
       `npm ${version} cannot run this lane with tokenless OIDC; the release needs npm >= ${MIN_NPM_VERSION}.\n`
       + `Missing: ${missing.join('; ')}.\n`
-      + 'A run on an older CLI publishes all six versions and then fails at the first dist-tag call, '
-      + 'leaving six immutable versions under a candidate tag that cannot be promoted. '
+      + 'A run on an older CLI publishes all four versions and then fails at the first dist-tag call, '
+      + 'leaving four immutable versions under a candidate tag that cannot be promoted. '
       + 'Install a newer npm (`npm install --global npm@' + MIN_NPM_VERSION + '`) and re-run.',
   }
 }

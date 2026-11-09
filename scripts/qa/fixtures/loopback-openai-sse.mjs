@@ -132,7 +132,8 @@ export function createLoopbackServer(options = {}) {
         return
       }
       const affinityKey = record.affinity ?? `request-${records.length}`
-      if (toolIssued.has(affinityKey)) {
+      const hasToolResult = Array.isArray(parsed?.messages) && parsed.messages.some((message) => message?.role === 'tool')
+      if (toolIssued.has(affinityKey) || hasToolResult) {
         writeSse(response, [{
           id: 'qa',
           object: 'chat.completion.chunk',

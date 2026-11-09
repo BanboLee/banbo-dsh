@@ -2,6 +2,8 @@
 
 [English](./README.md) | **中文**
 
+> **已弃用——冻结在 0.3.4。** 这个未使用的 bundle 不再维护或发布，不参与 DSH 0.2.2-rc.1 的活动 workspace 安装、类型检查、测试与发布车道。源码、测试及下方旧版说明仅供参考，描述的是 DSH 0.2.1-rc.5 开发基线，不代表支持当前运行时。
+
 DSH profile bundle：通过官方 [`@deepseek-ai/dsh-mcp-client`] bridge 把 CodeGraph MCP 服务接入任意 DeepSeek Harness profile。它新增一行可配置的 row `mcp-codegraph`，以 `CODEGRAPH_NO_DAEMON=1` 通过 stdio 启动 `codegraph serve --mcp`。
 
 ## 前置条件
@@ -10,7 +12,7 @@ DSH profile bundle：通过官方 [`@deepseek-ai/dsh-mcp-client`] bridge 把 Cod
 
 ## 用法
 
-**从 npm 安装（推荐）** —— 无需 clone：
+**旧版 npm 安装** —— 仅供参考，不推荐用于当前 profile：
 
 ```sh
 dsh plugin --profile <name> add @banbolee/dsh-codegraph-mcp
@@ -21,14 +23,6 @@ dsh plugin --profile <name> add @banbolee/dsh-codegraph-mcp
 ```bash
 dsh plugin --profile <name> add -w ./plugins/codegraph-mcp
 ```
-
-若要用一条命令把两个本地 bundle（rtk 和 codegraph-mcp）安装到同一个隔离 profile：
-
-```bash
-DSH_HOME="$(mktemp -d)" scripts/sync-rtk-codegraph-to-profile.sh <name>
-```
-
-sync 辅助脚本要求设置 `DSH_HOME`，这样测试与手工 QA 始终作用于隔离的 profile 状态，而不是用户的默认 Harness home。
 
 ## 配置
 

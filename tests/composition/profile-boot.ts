@@ -149,13 +149,12 @@ export async function bootProfileWithBundles(bundles: readonly string[]): Promis
     },
     runShell: (command) => runShellForeground(ctx.shell, { command }),
     callTool: async (name, args) => {
-      const result = await ctx.get('tools')?.execute({
-        callId: `composition-${name}`,
-        name,
-        arguments: args,
+      const batch = await ctx.get('tools')?.execute({
+        calls: [{ type: 'tool-call', id: `composition-${name}`, name, arguments: JSON.stringify(args) }],
         signal: new AbortController().signal,
       })
-      if (result === undefined) throw new Error('missing tools runtime')
+      const result = batch?.results[0]?.result
+      if (result === undefined) throw new Error('missing tools runtime result')
       if (result.isError) throw new Error(result.error?.message ?? `tool ${name} failed`)
       return result.value
     },

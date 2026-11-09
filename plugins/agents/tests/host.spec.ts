@@ -32,7 +32,6 @@ import hostPlugin, {
   SHIPPED_PRESET_IDS,
   dependencyFamilyVersion,
   initialiseCatalog,
-  inject,
   name as pluginName,
 } from '../index.js'
 import { readCurrentGeneration } from '../preset-compiler.js'
@@ -438,9 +437,6 @@ describe('the Host plugin row', () => {
 
   it('declares the cordis metadata the bundle patch depends on', () => {
     expect(pluginName).toBe('banbo-agents')
-    expect(inject).toContain('agentPresets')
-    expect(inject).toContain('dshHomePath')
-    expect(inject).toContain('settings')
     expect(typeof hostPlugin).toBe('function')
     // The row Config IS the settings form in 0.1.7: the two editable fields are
     // volatile (so a write commits without a remount) and the deployment fields
@@ -482,6 +478,24 @@ describe('the Host plugin row', () => {
     // buys), so the next policy read sees it with no restart and no cache.
     current = { includeDefaults: false, agents: {} }
     expect(provided.settings.policy('banbo').effectiveEnabled).toBe(false)
+  })
+
+  it('activates through Cordis without the retired settings service and publishes its catalog', async () => {
+    const root = scratchDir()
+    const ctx = new Context()
+    ctx.provide('dshHomePath', () => root)
+    ctx.provide('agentPresets', {})
+
+    try {
+      await ctx.plugin(hostPlugin, {})
+      const catalog = ctx.get('banboAgentsCatalog') as { list(): Promise<{ agents: Array<{ id: string }> }> }
+      const published = await catalog.list()
+      expect(published.agents.map((agent) => agent.id).sort()).toEqual([
+        'banbo', 'executor', 'explorer', 'implement', 'planner', 'research', 'review',
+      ])
+    } finally {
+      await ctx.fiber.dispose()
+    }
   })
 
   it('refuses a settings entry naming an agent that was never published', async () => {

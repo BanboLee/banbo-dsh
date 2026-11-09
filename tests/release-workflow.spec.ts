@@ -190,13 +190,13 @@ describe('release workflow permissions and toolchain', () => {
 
   it('pins the Node, pnpm and npm versions explicitly', () => {
     const env = load().env ?? {}
-    expect(env.RELEASE_NODE_VERSION).toBe('22')
+    expect(env.RELEASE_NODE_VERSION).toBe('26')
     expect(env.RELEASE_PNPM_VERSION).toBe('9.3.0')
     // The npm pin is a CORRECTNESS floor, not a preference: `npm dist-tag add|rm`
     // only speaks tokenless OIDC from 11.21.0 (verified by unpacking the published
     // CLIs — 11.20.0 has no OIDC in lib/commands/dist-tag.js, 11.21.0 does; in
     // 12.x the first is 12.2.0). A publish-only floor (11.5.1) would publish all
-    // six versions and then fail at the first dist-tag call.
+    // four versions and then fail at the first dist-tag call.
     expect(env.RELEASE_NPM_VERSION).toBe(MIN_NPM_VERSION)
     expect(checkNpmVersion(env.RELEASE_NPM_VERSION ?? '').ok).toBe(true)
     // …and the floor itself is above the publish-only capability, so the two
@@ -249,7 +249,7 @@ describe('release workflow permissions and toolchain', () => {
 
   it('gives git an identity and push credentials before anything is published', () => {    const steps = job(load()).steps
     const identity = stepIndex(steps, /Configure the release git identity/)
-    const publish = stepIndex(steps, /^Publish all six/)
+    const publish = stepIndex(steps, /^Publish all four/)
     expect(identity, 'the git identity step must exist').toBeGreaterThan(-1)
     // Annotated tags are created AFTER publishing, so a missing identity must be
     // discovered before it.
@@ -267,7 +267,7 @@ describe('release workflow permissions and toolchain', () => {
     // CONTINUES that run. If the artifact cannot be downloaded or located, the
     // run must abort: "I could not read what already happened" is not "nothing
     // happened", and a fresh journal would either try to re-publish (impossible)
-    // or report the release clean while six versions sit on the registry.
+    // or report the release clean while four versions sit on the registry.
     const steps = job(load()).steps
     const download = steps.find((step) => /Download the prior release journal/.test(step.name ?? ''))
     const locate = steps.find((step) => /Locate the prior journal/.test(step.name ?? ''))
@@ -356,7 +356,7 @@ describe('release workflow ordering', () => {
     const steps = job(load()).steps
     const preflight = stepIndex(steps, /^Preflight/)
     const pack = stepIndex(steps, /^Pack and validate/)
-    const publish = stepIndex(steps, /^Publish all six/)
+    const publish = stepIndex(steps, /^Publish all four/)
     const promote = stepIndex(steps, /^Promote latest/)
     expect(preflight).toBeGreaterThan(-1)
     expect(preflight).toBeLessThan(pack)
@@ -366,12 +366,12 @@ describe('release workflow ordering', () => {
 
   it('publishes only under an explicit dry_run: false, and promotes after publishing', () => {
     const steps = job(load()).steps
-    const publish = steps.find((step) => /^Publish all six/.test(step.name ?? ''))
+    const publish = steps.find((step) => /^Publish all four/.test(step.name ?? ''))
     const promote = steps.find((step) => /^Promote latest/.test(step.name ?? ''))
     expect(publish?.if).toContain('!inputs.dry_run')
     expect(promote?.if).toContain('!inputs.dry_run')
     // Promotion must never be reachable before the publish step in the file.
-    expect(stepIndex(steps, /^Publish all six/)).toBeLessThan(stepIndex(steps, /^Promote latest/))
+    expect(stepIndex(steps, /^Publish all four/)).toBeLessThan(stepIndex(steps, /^Promote latest/))
   })
 })
 
@@ -391,7 +391,7 @@ describe('release workflow evidence', () => {
     expect(uploads.some((upload) => String(upload.with?.path ?? '') === '${{ env.RELEASE_JOURNAL }}')).toBe(true)
   })
 
-  it('creates six annotated tags and six GitHub Releases at the same commit', () => {
+  it('creates four annotated tags and four GitHub Releases at the same commit', () => {
     const text = readFileSync(workflowPath, 'utf8')
     expect(text).toContain('--no-follow-tags')
     // Releases are created by the script subcommand, which owns the idempotence

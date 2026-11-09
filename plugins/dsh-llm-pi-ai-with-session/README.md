@@ -2,6 +2,8 @@
 
 **English** | [中文](./README.zh.md)
 
+> **Deprecated — frozen at 0.3.4.** This unused bundle is no longer maintained or published. It is excluded from the active workspace install, typecheck, test and release lanes for DSH 0.2.2-rc.1. Source, tests and the legacy instructions below are retained for reference only; they describe the DSH 0.2.1-rc.5 development baseline, not support for the current runtime.
+
 A plugin that adds **session identity** to DeepSeek Harness LLM calls: every LLM
 request carries the current session id in an HTTP header, so your own gateway
 can correlate requests with dsh sessions.
@@ -16,7 +18,6 @@ duplicated. It uses only the public `ctx.llm.registerAdapter` extension point,
 never modifies harness core, needs no extra binary, and never touches the
 locked-down `sendSessionAffinityHeaders` switch.
 
-**Maintenance mode:** no new features are planned; the declared `@earendil-works/pi-ai` range (`^0.84.2 || ^1.0.0`) is kept installable and runnable, and new requirements should be served by a different solution.
 
 ## Why this plugin exists
 
@@ -47,7 +48,7 @@ session id.
 
 ## Install
 
-**Install from npm (recommended)** — no clone needed:
+**Legacy npm installation** — reference only, not recommended for current profiles:
 
 ```sh
 dsh plugin --profile <profile> add @banbolee/dsh-llm-pi-ai-with-session

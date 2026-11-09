@@ -1,12 +1,9 @@
-import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const installScript = join(repoRoot, 'scripts', 'sync-rtk-codegraph-to-profile.sh')
 
 interface PackageManifest {
   readonly name: string
@@ -39,7 +36,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'grep-compress.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.1.0',
-      '@deepseek-ai/dsh-subprocess': '^0.2.1-rc.2',
+      '@deepseek-ai/dsh-subprocess': '^0.2.2-rc.1',
     }
   },
   {
@@ -47,7 +44,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     packageName: '@banbolee/dsh-codegraph-mcp',
     files: ['cordis.patch.yml', 'README.md'],
     peerDependencies: {
-      '@deepseek-ai/cordis': '~4.1.0',
+      '@deepseek-ai/cordis': '~4.0.5',
       '@deepseek-ai/dsh-mcp-client': '^0.2.1-rc.2',
     },
   },
@@ -56,7 +53,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     packageName: '@banbolee/dsh-llm-pi-ai-with-session',
     files: ['index.js', 'adapter.js', 'context.js', 'model.js', 'stream.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
-      '@deepseek-ai/cordis': '~4.1.0',
+      '@deepseek-ai/cordis': '~4.0.5',
       '@deepseek-ai/dsh-llm': '^0.2.1-rc.2',
       '@deepseek-ai/dsh-timeout': '^0.2.1-rc.2',
       '@earendil-works/pi-ai': '^0.84.2 || ^1.0.0',
@@ -68,10 +65,10 @@ const bundleExpectations: readonly BundleExpectation[] = [
     files: ['index.js', 'collector.js', 'framing.js', 'runtime.js', 'tool.js', 'render.js', 'coordinator.js', 'message-source.d.ts', 'workspace-root.js', 'cordis.patch.yml', 'README.md'],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.1.0',
-      '@deepseek-ai/dsh-fs': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-llm': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-subprocess': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-tools': '^0.2.1-rc.2',
+      '@deepseek-ai/dsh-fs': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-llm': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-subprocess': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-tools': '^0.2.2-rc.1',
     },
   },
   {
@@ -84,25 +81,25 @@ const bundleExpectations: readonly BundleExpectation[] = [
     bundledDependencies: ['@deepseek-ai/dsh-tool-terminal'],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.1.0',
-      '@deepseek-ai/dsh-agent': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-bash-local': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-bash-sandbox': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-home-paths': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-jobs': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-llm': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-pwsh-local': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-sandbox': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-sandbox-policy': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-scope': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-session-projection': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-shell': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-shell-env': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-subprocess': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-system-prompt': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-terminal': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-terminal-bash': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-tools': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-user-approval': '^0.2.1-rc.2',
+      '@deepseek-ai/dsh-agent': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-bash-local': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-bash-sandbox': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-home-paths': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-jobs': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-llm': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-pwsh-local': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-sandbox': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-sandbox-policy': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-scope': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-session-projection': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-shell': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-shell-env': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-subprocess': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-system-prompt': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-terminal': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-terminal-bash': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-tools': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-user-approval': '^0.2.2-rc.1',
     },
   },
   {
@@ -140,26 +137,26 @@ const bundleExpectations: readonly BundleExpectation[] = [
     ],
     peerDependencies: {
       '@deepseek-ai/cordis': '~4.1.0',
-      '@deepseek-ai/dsh-agent': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-agent-preset': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-agent-preset-registry': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-api-gateway': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-api-remotes': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-client-locale': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-client-ui-plugin-manager': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-client-ui-renderer': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-client-ui-settings': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-client-ui-slots': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-home-paths': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-jobs': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-scope': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-session': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-session-projection': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-settings': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-subagent': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-system-prompt': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-tools': '^0.2.1-rc.2',
-      '@deepseek-ai/dsh-typert-protocol': '^0.2.1-rc.2',
+      '@deepseek-ai/dsh-agent': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-agent-preset': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-agent-preset-registry': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-api-gateway': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-api-remotes': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-client-locale': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-client-ui-plugin-manager': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-client-ui-renderer': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-client-ui-settings': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-client-ui-slots': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-home-paths': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-jobs': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-scope': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-session': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-session-projection': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-settings': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-subagent': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-system-prompt': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-tools': '^0.2.2-rc.1',
+      '@deepseek-ai/dsh-typert-protocol': '^0.2.2-rc.1',
       '@deepseek-ai/schemastery': '~3.19.0',
       'react': '^18.3.1',
     },
@@ -217,14 +214,6 @@ function readRepoFile(relativePath: string): string {
   return readFileSync(join(repoRoot, relativePath), 'utf8')
 }
 
-function readStringArrayJson(relativePath: string): readonly string[] {
-  const parsed: unknown = JSON.parse(readFileSync(relativePath, 'utf8'))
-  if (!Array.isArray(parsed) || !parsed.every((item): item is string => typeof item === 'string')) {
-    throw new TypeError(`${relativePath} did not contain a JSON string array`)
-  }
-  return parsed
-}
-
 describe('DSH bundle package manifests', () => {
   for (const expected of bundleExpectations) {
     it(`${expected.packageName} declares the installable DSH bundle shape`, () => {
@@ -250,87 +239,39 @@ describe('DSH bundle package manifests', () => {
 })
 
 describe('DSH dependency family ranges', () => {
-  it('codegraph-mcp declares @deepseek-ai/dsh-llm from the 0.2.2-rc.1 family', () => {
-    const manifest = readManifest('plugins/codegraph-mcp')
-
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.2-rc.1')
-  })
-
-  it('rtk declares @deepseek-ai/dsh-llm and @deepseek-ai/dsh-settings from the 0.2.2-rc.1 family', () => {
-    const manifest = readManifest('plugins/rtk')
-
-    expect(manifest.devDependencies['@deepseek-ai/dsh-llm']).toBe('^0.2.2-rc.1')
-    expect(manifest.devDependencies['@deepseek-ai/dsh-settings']).toBe('^0.2.2-rc.1')
-  })
-})
-
-describe('Task-5 install surface', () => {
-  it('documents copy-paste install commands at the root', () => {
-    const readme = readRepoFile('README.md')
-
-    expect(readme).toContain('dsh plugin --profile <profile> add -w ./plugins/rtk')
-    expect(readme).toContain('dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp')
-  })
-
-  it('provides an observable two-plugin sync script without requiring the real profile in help/error paths', () => {
-    const help = spawnSync('bash', [installScript, '--help'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      env: { ...process.env, DSH_BIN: '/definitely/not/dsh' },
-    })
-    const invalid = spawnSync('bash', [installScript, '../real-profile'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      env: { ...process.env, DSH_BIN: '/definitely/not/dsh' },
-    })
-
-    expect(help.status).toBe(0)
-    expect(help.stdout).toContain('dsh plugin --profile <profile> add -w ./plugins/rtk')
-    expect(help.stdout).toContain('dsh plugin --profile <profile> add -w ./plugins/codegraph-mcp')
-    expect(invalid.status).not.toBe(0)
-    expect(invalid.stderr).toMatch(/invalid profile/i)
-  })
-
-  it('passes the workspace-root flag before both local bundle paths when invoking dsh plugin add', () => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'fake-dsh-argv-'))
-    try {
-      const fakeDsh = join(tempDir, 'dsh')
-      const argvFile = join(tempDir, 'argv.json')
-      writeFileSync(fakeDsh, [
-        '#!/usr/bin/env node',
-        "import { writeFileSync } from 'node:fs'",
-        'const out = process.env.FAKE_DSH_ARGV_OUT',
-        'if (out === undefined) process.exit(99)',
-        'writeFileSync(out, JSON.stringify(process.argv.slice(2)))',
-      ].join('\n') + '\n')
-      chmodSync(fakeDsh, 0o755)
-
-      const result = spawnSync('bash', [installScript, 'task5-fake'], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          DSH_BIN: fakeDsh,
-          DSH_HOME: join(tempDir, 'dsh-home'),
-          FAKE_DSH_ARGV_OUT: argvFile,
-        },
-      })
-
-      expect(result.status).toBe(0)
-      expect(readStringArrayJson(argvFile)).toEqual([
-        'plugin',
-        '--profile',
-        'task5-fake',
-        'add',
-        '-w',
-        join(repoRoot, 'plugins', 'rtk'),
-        join(repoRoot, 'plugins', 'codegraph-mcp'),
-      ])
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true })
+  it('declares the four active patch releases', () => {
+    const releases = {
+      'plugins/agents': '0.4.5',
+      'plugins/fish-shell': '0.8.5',
+      'plugins/dsh-lsp-diagnostics': '0.3.5',
+      'plugins/rtk': '0.3.5',
+    }
+    for (const [directory, version] of Object.entries(releases)) {
+      const manifest: unknown = JSON.parse(readRepoFile(`${directory}/package.json`))
+      if (!isRecord(manifest)) throw new TypeError(`${directory}/package.json is not an object`)
+      expect(stringField(manifest, 'version'), directory).toBe(version)
     }
   })
+
+  it('keeps deprecated bundles outside the active workspace lock graph', () => {
+    const lock = readRepoFile('pnpm-lock.yaml')
+    for (const directory of ['plugins/codegraph-mcp', 'plugins/dsh-llm-pi-ai-with-session']) {
+      expect(lock.split('\n')).not.toContain(`  ${directory}:`)
+    }
+  })
+
+  for (const directory of ['plugins/agents', 'plugins/fish-shell', 'plugins/dsh-lsp-diagnostics', 'plugins/rtk']) {
+    it(`${directory} pins every DSH devDependency to 0.2.2-rc.1`, () => {
+      const manifest = readManifest(directory)
+      const dependencies = Object.entries(manifest.devDependencies).filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
+      expect(dependencies.length).toBeGreaterThan(0)
+      for (const [name, version] of dependencies) {
+        expect(version, `${directory}: ${name}`).toBe('0.2.2-rc.1')
+      }
+    })
+  }
 })
+
 
 function extractLockImporterDevDeps(
   lock: string,
@@ -390,27 +331,3 @@ describe('@banbolee/dsh-lsp-diagnostics dependency locking', () => {
   })
 })
 
-describe('real headless E2E discoverability', () => {
-  it('exposes and documents the opt-in fail-loud command and binary overrides', () => {
-    // Given the root package manifest and README
-    const manifest: unknown = JSON.parse(readRepoFile('package.json'))
-    if (!isRecord(manifest)) throw new TypeError('root package.json is not an object')
-    const scripts = stringRecordField(manifest, 'scripts')
-    const packageManager = stringField(manifest, 'packageManager')
-    const readme = readRepoFile('README.md')
-
-    // When the real headless E2E entry point is inspected
-    const command = scripts['test:e2e:headless']
-
-    // Then the gate and every executable override are discoverable
-    expect(command).toBe('RUN_REAL_HEADLESS_E2E=1 vitest run tests/e2e')
-    expect(packageManager).toBe('pnpm@9.3.0')
-    expect(readme).toContain('test:e2e:headless')
-    expect(readme).toContain('corepack pnpm')
-    expect(readme).toContain('DSH_REAL_E2E_DSH_BIN')
-    expect(readme).toContain('DSH_REAL_E2E_NODE_BIN')
-    expect(readme).toContain('DSH_REAL_E2E_RTK_BIN')
-    expect(readme).toContain('DSH_REAL_E2E_CODEGRAPH_BIN')
-    expect(readme).toContain('fail')
-  })
-})

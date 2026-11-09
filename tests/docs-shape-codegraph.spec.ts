@@ -30,6 +30,12 @@ import { parseConfigTable, section } from './docs-shape-codegraph/parsers'
 const README = readFileSync(fileURLToPath(new URL('../plugins/codegraph-mcp/README.md', import.meta.url)), 'utf8')
 
 describe('@banbolee/dsh-codegraph-mcp README shape', () => {
+  it('marks the retained legacy documentation as deprecated and frozen', () => {
+    expect(README).toContain('Deprecated — frozen at 0.3.4')
+    expect(README).toContain('excluded from the active workspace install, typecheck, test and release lanes')
+    expect(README).toContain('DSH 0.2.1-rc.5 development baseline')
+  })
+
   it('has every required section heading', () => {
     for (const heading of REQUIRED_HEADINGS) {
       expect(README, `missing required heading: ## ${heading}`).toContain(`## ${heading}`)

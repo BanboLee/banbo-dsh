@@ -2,11 +2,12 @@
 
 [English](./README.md) | **中文**
 
+> **已弃用——冻结在 0.3.4。** 这个未使用的 bundle 不再维护或发布，不参与 DSH 0.2.2-rc.1 的活动 workspace 安装、类型检查、测试与发布车道。源码、测试及下方旧版说明仅供参考，描述的是 DSH 0.2.1-rc.5 开发基线，不代表支持当前运行时。
+
 一个给 DeepSeek Harness 的 LLM 调用加上**会话标识（session identity）**的插件：每次 LLM 请求都会在 HTTP header 里带上当前 session id，方便你自建的网关把请求与 dsh 会话关联起来。
 
 它是官方 `llm-pi-ai` adapter 上的一个**通用 session wrapper**：注册显式的 session provider 路由——只注册 `routes` 中声明的路由——复用 pi-ai 的 **openai-completions** 线上实现，并在每次请求上加上一个可配置的会话 header（默认 `x-session-id`）。网关、凭据、静态 headers、模型与推理档位全部从 `llm-pi-ai.providers` 的 source provider **继承**；不重复任何配置。它只使用公开的 `ctx.llm.registerAdapter` 扩展点，从不修改 harness 内核，不需要额外的二进制，也从不碰被锁死的 `sendSessionAffinityHeaders` 开关。
 
-**维护模式：** 本 bundle 不再新增功能，只承诺已声明的 `@earendil-works/pi-ai` 区间（`^0.84.2 || ^1.0.0`）保持可安装、可运行；新需求请由其它方案承接。
 
 ## 为什么需要它
 
@@ -21,7 +22,7 @@ Harness 官方有两条 LLM 通路：
 
 ## 安装
 
-**从 npm 安装（推荐）**——无需 clone：
+**旧版 npm 安装**——仅供参考，不推荐用于当前 profile：
 
 ```sh
 dsh plugin --profile <profile> add @banbolee/dsh-llm-pi-ai-with-session

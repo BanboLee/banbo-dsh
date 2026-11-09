@@ -46,15 +46,14 @@ async function executeTool(
   cwd?: string,
 ): Promise<any> {
   const tools = booted.ctx.get('tools') as unknown as {
-    execute(input: { callId: string; name: string; arguments: unknown; agent?: unknown; signal: AbortSignal }): Promise<any>
+    execute(input: { calls: Array<{ type: 'tool-call'; id: string; name: string; arguments: string }>; agent?: unknown; signal: AbortSignal }): Promise<{ results: Array<{ callId: string; result: unknown }> }>
   }
-  const result = await tools.execute({
-    callId: `composition-${name}`,
-    name,
-    arguments: args,
+  const batch = await tools.execute({
+    calls: [{ type: 'tool-call', id: `composition-${name}`, name, arguments: JSON.stringify(args) }],
     ...cwd === undefined ? {} : { agent: syntheticAgent(booted, cwd) },
     signal: new AbortController().signal,
   })
+  const result = batch.results[0]?.result
   if (result === undefined) throw new Error('missing tools runtime')
   return result
 }
@@ -833,15 +832,18 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
     bootedProfiles.push(booted)
 
     const tools = booted.ctx.get('tools') as unknown as {
-      execute(input: { callId: string; name: string; arguments: unknown; agent?: unknown; signal: AbortSignal }): Promise<any>
+      execute(input: { calls: Array<{ type: 'tool-call'; id: string; name: string; arguments: string }>; agent?: unknown; signal: AbortSignal }): Promise<{ results: Array<{ callId: string; result: { isError: boolean; value: { result: { diagnostics: unknown[] } } } }> }>
     }
-    const result = await tools.execute({
-      callId: 'composition-run-code',
-      name: 'run_code',
-      arguments: {
-        code: 'await tools.write({ file_path: "src/from-code.ts", content: "const f: number = \\"oops\\";\\n" }); return await tools.lsp_diagnostics({ file_path: "src/from-code.ts" });',
-        description: 'Run the test program',
-      },
+    const batch = await tools.execute({
+      calls: [{
+        type: 'tool-call',
+        id: 'composition-run-code',
+        name: 'run_code',
+        arguments: JSON.stringify({
+          code: 'await tools.write({ file_path: "src/from-code.ts", content: "const f: number = \\"oops\\";\\n" }); return await tools.lsp_diagnostics({ file_path: "src/from-code.ts" });',
+          description: 'Run the test program',
+        }),
+      }],
       // The code-mode transport threads the agent down to nested tool calls,
       // which append dispatch events to the session. 0.2.1 resolves the nested
       // write's cwd through the `workingDirectory` service, which validates the
@@ -852,6 +854,8 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
       agent: syntheticAgent(booted, booted.workspace),
       signal: new AbortController().signal,
     })
+    const result = batch.results[0]?.result
+    if (result === undefined) throw new Error('missing tools runtime')
     expect(result.isError).toBe(false)
     // The nested write's plugin notice is deferred onto the outer run_code result.
     expect(pluginNoticeText(result)).toBe(expectedSingleFileNotice(booted.workspace, 'src/from-code.ts', [
@@ -926,8 +930,6 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
       extraRootEntries: [
         '- id: llm',
         "  name: '@deepseek-ai/dsh-llm'",
-        '- id: sessions',
-        "  name: '@deepseek-ai/dsh-session'",
         '- id: agents',
         "  name: '@deepseek-ai/dsh-agent'",
         '- id: agent-loop',
@@ -1073,10 +1075,6 @@ describe('@banbolee/dsh-lsp-diagnostics real composition', () => {
       extraRootEntries: [
         '- id: llm',
         "  name: '@deepseek-ai/dsh-llm'",
-        '- id: sessions',
-        "  name: '@deepseek-ai/dsh-session'",
-        '- id: session-projections',
-        "  name: '@deepseek-ai/dsh-session-projection'",
         '- id: agents',
         "  name: '@deepseek-ai/dsh-agent'",
         '- id: agent-loop',

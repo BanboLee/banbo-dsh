@@ -68,7 +68,9 @@ dsh-tui `0.19.0` — the release whose `@deepseek-ai/dsh-agent` peer admits `0.2
 - this bundle mounts under whichever registry row the profile composes — the Web profile's `agent-preset-registry` or the TUI's `dsh-tui-agent-preset-registry` — so it needs no TUI patch target at all, and the 0.1.5 `dsh-tui-agent-presets` seat is gone for good;
 - the TUI's roster default stays `standard`, so select ours explicitly: `DSH_TUI_PRESET=banbo dsh-tui`, or the TUI's own `/preset banbo` (a persisted preference wins over the default, and the environment variable wins over both).
 
-dsh-tui `0.15.0` and older are the 0.1.5-to-0.2.0 generation: their `@deepseek-ai/dsh-agent` peer stops at `0.2.0-rc.2`, so they cannot run this bundle's `^0.2.1-rc.2` family. **This bundle does not support them.** The peer range itself still admits an `rc.2` host, so `0.16.0`/`0.16.1` remain the lowest runnable releases there (`0.16.0` is the first release whose `@deepseek-ai/dsh-agent` peer admits `0.2.1-rc.2`). This repository's dependency family is pinned at `0.2.2-rc.1`, though, and `0.2.2-rc.1` is declared only by TUI `0.19.0` (`0.16.x` stop at `rc.2`, `0.17.0` at `rc.3`, `0.18.0` at `rc.5`) — so the combination verified in this round is `0.2.2-rc.1` + TUI `0.19.0`, while the `0.16.1` combination is not verified here.
+This release requires DSH `0.2.2-rc.1` or newer (`^0.2.2-rc.1` peers), with exact `0.2.2-rc.1` development pins. The minimum compatible dsh-tui release is `0.19.0`: `0.16.x`, `0.17.0`, and `0.18.0` declare only the older `0.2.1` prerelease family and are not supported by this release.
+
+Host settings are read from the plugin row's `Config`; activation does not require the retired global `settings` service.
 
 ## The team
 

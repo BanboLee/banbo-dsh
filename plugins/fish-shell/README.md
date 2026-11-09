@@ -119,10 +119,10 @@ below for the authoritative scope before deploying elsewhere.
 
 | Item | Supported | Verified |
 |---|---|---|
-| `@deepseek-ai/*` dsh family | `0.2.2-rc.1` — the exact pins live in the repository root `package.json` (`pnpm.overrides`) | yes: real isolated profiles in the S0 probe runs |
+| `@deepseek-ai/*` dsh family | minimum `0.2.2-rc.1` (`^0.2.2-rc.1` peers); exact development and bundled terminal pins are `0.2.2-rc.1` | real isolated-profile probes are required for this release |
 | `fish` | `3.7+` | yes on `3.7.1`; lower versions are unverified |
 | Platform | POSIX only: Linux and macOS. Windows is not supported (the `pwsh` family covers it) | Linux: the real lane with `DSH_REAL_FISH_PTY=1` in the `test` job; macOS: the `fish-pty-macos` job runs the real L2 lane, including the `workspace-write` denial outside the workspace |
-| Node.js | `>=22` (`engines.node`) | yes |
+| Node.js | `>=22` (`engines.node`); the DSH `0.2.2-rc.1` host requires `>=24.9.0` | Node 26 in CI and upgrade QA |
 
 ## Test coverage matrix
 

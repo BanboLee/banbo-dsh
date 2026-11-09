@@ -25,6 +25,12 @@ function passingResult(id: string): QaResult {
 }
 
 describe('G4-G6 plan result enforcement', () => {
+  it('excludes frozen CodeGraph and session-wrapper acceptance criteria', () => {
+    expect(MANDATORY_PLAN_IDS).toHaveLength(23)
+    expect(MANDATORY_PLAN_IDS.some((id) => id.startsWith('CG-') || id.startsWith('LLM-'))).toBe(false)
+    expect(MANDATORY_PLAN_IDS).not.toContain('TUI-06')
+  })
+
   it('maps every mandatory Plan ID to one named scenario when the contract is loaded', () => {
     // Given: the authoritative mandatory acceptance IDs.
     // When: the runner scenario map is inspected.

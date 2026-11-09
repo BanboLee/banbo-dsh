@@ -68,7 +68,9 @@ dsh-tui `0.19.0`——`@deepseek-ai/dsh-agent` peer 承认 `0.2.2-rc.1` 的那�
 - 本插件挂在 profile 组装的**哪一条** registry 行之下都能工作——Web profile 的 `agent-preset-registry` 或 TUI 的 `dsh-tui-agent-preset-registry`——因此完全不需要 TUI 专属 patch 行，0.1.5 的 `dsh-tui-agent-presets` 座位已彻底移除；
 - TUI 的 roster 默认仍是 `standard`，所以要显式选中我们的 preset：`DSH_TUI_PRESET=banbo dsh-tui`，或 TUI 自己的 `/preset banbo`（持久化的选择会盖过默认值，环境变量又盖过两者）。
 
-dsh-tui `0.15.0` 及更早是 0.1.5～0.2.0 世代：它们的 `@deepseek-ai/dsh-agent` peer 上限止于 `0.2.0-rc.2`，因此跑不了本插件的 `^0.2.1-rc.2` 依赖族。**本插件不支持它们。** peer 范围本身仍接受 rc.2 宿主，所以那类宿主上最低可运行的仍是 `0.16.0`/`0.16.1`（`0.16.0` 才是第一个 `@deepseek-ai/dsh-agent` peer 承认 `0.2.1-rc.2` 的版本）。而本仓库的依赖族已钉在 `0.2.2-rc.1`，`0.2.2-rc.1` 只被 TUI `0.19.0` 声明支持（`0.16.x` 止于 `rc.2`、`0.17.0` 止于 `rc.3`、`0.18.0` 止于 `rc.5`），因此本轮验证的组合是 `0.2.2-rc.1` + TUI `0.19.0`；`0.16.1` 的组合本轮未验证。
+本版本要求 DSH `0.2.2-rc.1` 或更新版本（peer 范围为 `^0.2.2-rc.1`），开发依赖精确钉在 `0.2.2-rc.1`。最低兼容的 dsh-tui 版本是 `0.19.0`：`0.16.x`、`0.17.0` 与 `0.18.0` 仅声明支持更早的 `0.2.1` 预发布依赖族，本版本不支持它们。
+
+Host 设置从插件行的 `Config` 读取；激活不依赖已退役的全局 `settings` 服务。
 
 ## 团队一览
 

@@ -160,20 +160,29 @@ export async function executeTool(
 ): Promise<unknown> {
   const tools = booted.ctx.get('tools') as unknown as {
     execute(input: {
-      readonly callId: string
-      readonly name: string
-      readonly arguments: unknown
+      readonly calls: readonly { readonly type: 'tool-call'; readonly id: string; readonly name: string; readonly arguments: string }[]
       readonly agent: unknown
       readonly signal: AbortSignal
-    }): Promise<unknown>
+    }): Promise<{ readonly results: readonly { readonly callId: string; readonly result: unknown }[] }>
   }
-  return tools.execute({
-    callId: `real-lsp-${name}`,
-    name,
-    arguments: args,
-    agent: { session: { header: { cwd: booted.workspace } } },
+  // Working-directory projections require the real Session cursor and caller scope.
+  const sessions = booted.ctx.get('sessions') as unknown as {
+    create(id: undefined, options: { meta: { cwd: string } }): { id: unknown }
+  }
+  const session = sessions.create(undefined, { meta: { cwd: booted.workspace } })
+  const batch = await tools.execute({
+    calls: [{ type: 'tool-call', id: `real-lsp-${name}`, name, arguments: JSON.stringify(args) }],
+    agent: {
+      id: session.id,
+      session,
+      ctx: {
+        fiber: { assertActive: () => {} },
+        effect: (body: unknown) => (typeof body === 'function' ? body() : body),
+      },
+    },
     signal: new AbortController().signal,
   })
+  return batch.results[0]?.result
 }
 
 export function noticeText(result: unknown): string | undefined {

@@ -39,6 +39,24 @@ describe('loopback OpenAI SSE fixture', () => {
     expect(JSON.stringify(fixture.evidence())).not.toContain('opaque-a')
   })
 
+  it('finishes the official provider tool turn without a session wrapper header', async () => {
+    const fixture = createLoopbackServer()
+    servers.push(fixture.server)
+    fixture.server.listen(0, '127.0.0.1')
+    await once(fixture.server, 'listening')
+    const address = fixture.server.address()
+    if (address === null || typeof address === 'string') throw new TypeError('missing loopback address')
+
+    await sendRequest(address.port, undefined)
+    await sendRequest(address.port, undefined, [{ role: 'tool', content: 'qa-tool-ok' }])
+
+    expect(fixture.evidence()).toMatchObject({
+      requestCount: 2,
+      headerPresent: false,
+      terminalStatuses: ['tool_calls', 'stop'],
+    })
+  })
+
   it('gates the bounded lsp-repair responses on diagnostic then clean feedback', async () => {
     // Given: the explicit finite LSP repair scenario.
     const fixture = createLoopbackServer({ scenario: 'lsp-repair' })
@@ -101,7 +119,7 @@ describe('loopback OpenAI SSE fixture', () => {
 
 async function sendRequest(
   port: number,
-  affinity: string,
+  affinity: string | undefined,
   messages: readonly { readonly role: string; readonly content: string }[] = [{ role: 'user', content: 'qa' }],
 ): Promise<{ readonly statusCode: number; readonly body: string }> {
   return new Promise((resolve, reject) => {
@@ -114,7 +132,7 @@ async function sendRequest(
       headers: {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(body),
-        'x-session-affinity': affinity,
+        ...(affinity === undefined ? {} : { 'x-session-affinity': affinity }),
       },
     }, (response) => {
       let responseBody = ''

@@ -144,12 +144,15 @@ interface ToolsRuntime {
   get(name: string, scope?: unknown): TerminalToolDefinition | undefined
   schemas(scope?: unknown): ReadonlyArray<{ readonly name: string }>
   execute(input: {
-    readonly callId: string
-    readonly name: string
-    readonly arguments: unknown
+    readonly calls: ReadonlyArray<{
+      readonly type: 'tool-call'
+      readonly id: string
+      readonly name: string
+      readonly arguments: string
+    }>
     readonly signal: AbortSignal
     readonly agent: RealAgent
-  }): Promise<ToolResult>
+  }): Promise<{ readonly results: ReadonlyArray<{ readonly callId: string; readonly result: ToolResult }> }>
 }
 
 interface SessionSnapshot {
@@ -440,13 +443,15 @@ async function executeTool(
   signalTimeoutMs = 120_000,
 ): Promise<ToolResult> {
   callCounter += 1
-  return lane.tools.execute({
-    callId: `${agent.id}-${callCounter}`,
-    name,
-    arguments: args,
+  const callId = `${agent.id}-${callCounter}`
+  const batch = await lane.tools.execute({
+    calls: [{ type: 'tool-call', id: callId, name, arguments: JSON.stringify(args) }],
     signal: AbortSignal.timeout(signalTimeoutMs),
     agent,
   })
+  const result = batch.results.find((entry) => entry.callId === callId)?.result
+  if (result === undefined) throw new Error(`${name} returned no result in the "${lane.name}" lane`)
+  return result
 }
 
 /** The failure detail a `ToolResult` carries, whatever form it took. */

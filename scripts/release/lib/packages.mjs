@@ -1,5 +1,5 @@
 /**
- * The six publishable bundles, in the order the release workflow publishes them.
+ * The four maintained bundles, in the order the release workflow publishes them.
  *
  * Order matters for two reasons:
  *   - `@banbolee/dsh-agents` is the only package with a build output (`lib/`) and
@@ -23,9 +23,7 @@
 export const RELEASE_PACKAGES = Object.freeze([
   { directory: 'plugins/fish-shell', package: '@banbolee/dsh-fish-shell' },
   { directory: 'plugins/rtk', package: '@banbolee/dsh-rtk' },
-  { directory: 'plugins/codegraph-mcp', package: '@banbolee/dsh-codegraph-mcp' },
   { directory: 'plugins/dsh-lsp-diagnostics', package: '@banbolee/dsh-lsp-diagnostics' },
-  { directory: 'plugins/dsh-llm-pi-ai-with-session', package: '@banbolee/dsh-llm-pi-ai-with-session' },
   { directory: 'plugins/agents', package: '@banbolee/dsh-agents' },
 ])
 
@@ -49,7 +47,7 @@ export const BUILT_PACKAGES = Object.freeze(new Set(['@banbolee/dsh-agents']))
  *
  * @param {string} packageName published npm name.
  * @returns {ReleasePackage} the matching entry.
- * @throws {Error} when the name is not one of the six publishable bundles.
+ * @throws {Error} when the name is not one of the four publishable bundles.
  */
 export function requireReleasePackage(packageName) {
   const entry = RELEASE_PACKAGES.find((candidate) => candidate.package === packageName)

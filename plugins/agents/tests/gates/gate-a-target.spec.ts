@@ -123,18 +123,13 @@ describe('A1 — dependency family is uniform', () => {
     const installed = [...family(manifest.dependencies), ...family(manifest.devDependencies)]
     expect(peers.length).toBeGreaterThan(0)
     expect(installed.length).toBeGreaterThan(0)
-    // Two exact ranges, deliberately different: the peer range keeps the
-    // `^0.2.1-rc.2` floor (it already admits `0.2.2-rc.1`, so it does not move),
-    // while every installed pin follows the family to `^0.2.2-rc.1`. Both
-    // patterns are anchored, so a caret range drifting to whatever rc.x is
-    // newest still fails on both sides. A package named in BOTH sections — every
-    // dsh peer is also a dev dependency — is checked against the pattern of the
-    // section it appears in, not against one pattern for the bare name.
+    // Peers require the supported host family; installed dependencies are
+    // exact pins so a newly published prerelease cannot change the graph.
     for (const [name, range] of peers) {
-      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.1-rc\.2$/)
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.2-rc\.1$/)
     }
     for (const [name, range] of installed) {
-      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.2-rc\.1$/)
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@0\.2\.2-rc\.1$/)
     }
   })
 })

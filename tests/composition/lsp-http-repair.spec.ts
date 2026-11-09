@@ -64,10 +64,6 @@ describe('LSP feedback through the real HTTP session adapter', () => {
       extraRootEntries: [
         '- id: llm',
         "  name: '@deepseek-ai/dsh-llm'",
-        '- id: sessions',
-        "  name: '@deepseek-ai/dsh-session'",
-        '- id: session-projections',
-        "  name: '@deepseek-ai/dsh-session-projection'",
         '- id: agents',
         "  name: '@deepseek-ai/dsh-agent'",
         '- id: agent-loop',

@@ -50,7 +50,7 @@ describe('fish-shell installed dependency graph', () => {
     const graph: unknown = JSON.parse(listed.stdout)
     const versions = collectDshVersions(graph)
 
-    // Then the formerly incompatible sandbox/LLM pair and the full family are rc.5
+    // Then the formerly incompatible sandbox/LLM pair and the full family are 0.2.2-rc.1
     expect(versions.get('@deepseek-ai/dsh-sandbox')).toEqual(new Set([DSH_VERSION]))
     expect(versions.get('@deepseek-ai/dsh-llm')).toEqual(new Set([DSH_VERSION]))
     for (const [name, resolved] of versions) {

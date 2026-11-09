@@ -2,6 +2,8 @@
 
 **English** | [中文](./README.zh.md)
 
+> **Deprecated — frozen at 0.3.4.** This unused bundle is no longer maintained or published. It is excluded from the active workspace install, typecheck, test and release lanes for DSH 0.2.2-rc.1. Source, tests and the legacy instructions below are retained for reference only; they describe the DSH 0.2.1-rc.5 development baseline, not support for the current runtime.
+
 DSH profile bundle that connects the CodeGraph MCP server to any DeepSeek
 Harness profile through the official [`@deepseek-ai/dsh-mcp-client`] bridge. It
 adds one configurable row, `mcp-codegraph`, which launches
@@ -17,7 +19,7 @@ installs CodeGraph; test against any current release (verified with 1.6.0).
 
 ## Usage
 
-**Install from npm (recommended)** — no clone needed:
+**Legacy npm installation** — reference only, not recommended for current profiles:
 
 ```sh
 dsh plugin --profile <name> add @banbolee/dsh-codegraph-mcp
@@ -31,16 +33,6 @@ local package inside the profile's generated workspace and install fails with
 ```bash
 dsh plugin --profile <name> add -w ./plugins/codegraph-mcp
 ```
-
-To install both local bundles (rtk and codegraph-mcp) into one isolated
-profile with a single command:
-
-```bash
-DSH_HOME="$(mktemp -d)" scripts/sync-rtk-codegraph-to-profile.sh <name>
-```
-
-The sync helper requires `DSH_HOME` so tests and manual QA always target
-isolated profile state instead of the user's default Harness home.
 
 ## Config
 

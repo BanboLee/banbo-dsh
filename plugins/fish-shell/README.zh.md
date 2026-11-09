@@ -24,10 +24,10 @@ DeepSeek Harness 的 fish shell executor 与工具：用 **fish** 而不是 bash
 
 | 项 | 支持范围 | 验证情况 |
 |---|---|---|
-| `@deepseek-ai/*` dsh 族 | `0.2.2-rc.1` —— 精确版本钉在仓库根 `package.json`（`pnpm.overrides`） | 是：S0 探针在真实隔离 profile 里跑过 |
+| `@deepseek-ai/*` dsh 族 | 最低 `0.2.2-rc.1`（peer 范围 `^0.2.2-rc.1`）；开发依赖与随包 terminal 均精确钉在 `0.2.2-rc.1` | 本版本需运行真实隔离 profile 探针 |
 | `fish` | `3.7+` | 是，实测 `3.7.1`；更低版本未验证 |
 | 平台 | 仅 POSIX：Linux 与 macOS。Windows 不支持（Windows 由 `pwsh` 系列覆盖） | Linux：`test` job 里 `DSH_REAL_FISH_PTY=1` 的真实 lane；macOS：`fish-pty-macos` job 跑真实 L2 lane，含 `workspace-write` 下 workspace 外写入被拒 |
-| Node.js | `>=22`（`engines.node`） | 是 |
+| Node.js | `>=22`（`engines.node`）；DSH `0.2.2-rc.1` 宿主要求 `>=24.9.0` | CI 与升级 QA 使用 Node 26 |
 
 ## 测试覆盖矩阵
 

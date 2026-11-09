@@ -135,6 +135,14 @@ function validateRtkReadmeContract(readme: string): string[] {
 }
 
 describe('@banbolee/dsh-rtk README shape', () => {
+  it('documents the active DSH peer minimum in both languages', () => {
+    const chinese = readFileSync(fileURLToPath(new URL('../plugins/rtk/README.zh.md', import.meta.url)), 'utf8')
+    for (const readme of [README, chinese]) {
+      expect(readme).toContain('^0.2.2-rc.1')
+      expect(readme).not.toContain('^0.2.1-rc.2')
+    }
+  })
+
   it('has every required section heading', () => {
     for (const heading of REQUIRED_HEADINGS) {
       expect(README, `missing required heading: ## ${heading}`).toContain(`## ${heading}`)

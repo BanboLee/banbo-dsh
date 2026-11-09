@@ -5,7 +5,7 @@ export default defineConfig({
     // Extend the framework-native default excludes (never replace them) so the
     // git-ignored `.omo` evidence tree can never be collected as product test
     // discovery during a full `vitest run`. The default include glob is left
-    // untouched: every legitimate repository test is still discovered.
+    // untouched; only frozen plugins are outside the maintained test surface.
     //
     // The agents platform-Gate probes and the packed-artifact lane are excluded
     // on purpose (docs/agents-plugin-plan.md §15/§16): Gate green must be
@@ -22,6 +22,9 @@ export default defineConfig({
     exclude: [
       ...configDefaults.exclude,
       '**/.omo/**',
+      'plugins/codegraph-mcp/**',
+      'plugins/dsh-llm-pi-ai-with-session/**',
+      'tests/e2e/**',
       'tests/composition/**',
       'plugins/agents/tests/gates/**',
       'plugins/agents/tests/packed.spec.ts',

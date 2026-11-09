@@ -6,7 +6,7 @@
  * plus the three INJECTED candidates — `--node-bin`, `--dsh-bin` and
  * `--dsh-tui-bin` (the lane no longer assumes the host's nvm-installed dsh;
  * a missing one fails loud with usage). The candidate-independent host tools
- * (pnpm, rtk, codegraph, the language servers, go) keep their host paths as
+ * (pnpm, rtk, the language servers, go) keep their host paths as
  * defaults and are overridable with their own `--<tool>-bin` flags.
  *
  * The report lands at `<qa-root>/evidence/upgrade.json` with `qaRoot`,
@@ -79,7 +79,6 @@ const CANDIDATE_OPTIONS = {
 export const EXTERNAL_TOOL_DEFAULTS = {
   pnpm: '/home/lixingxin/.local/share/pnpm/pnpm',
   rtk: '/data00/home/lixingxin/project/rtk/target/release/rtk',
-  codegraph: '/home/lixingxin/.codegraph/versions/v1.6.0/bin/codegraph',
   typescriptLanguageServer: '/data00/home/lixingxin/.local/share/nvim/mason/bin/typescript-language-server',
   gopls: '/home/lixingxin/.local/bin/trae-gopls',
   clangd: '/usr/bin/clangd',
@@ -91,7 +90,6 @@ export const EXTERNAL_TOOL_DEFAULTS = {
 const TOOL_OVERRIDE_OPTIONS = {
   pnpm: 'pnpm-bin',
   rtk: 'rtk-bin',
-  codegraph: 'codegraph-bin',
   typescriptLanguageServer: 'typescript-lsp-bin',
   gopls: 'gopls-bin',
   clangd: 'clangd-bin',
@@ -106,7 +104,7 @@ const USAGE = [
   '  --qa-root <isolated OS temp dir>',
   '  --matrix <matrix.json>',
   '  --node-bin <node> --dsh-bin <dsh> --dsh-tui-bin <dsh-tui>',
-  '  [--pnpm-bin <pnpm>] [--rtk-bin <rtk>] [--codegraph-bin <codegraph>]',
+  '  [--pnpm-bin <pnpm>] [--rtk-bin <rtk>]',
   '  [--typescript-lsp-bin <ts-ls>] [--gopls-bin <gopls>] [--clangd-bin <clangd>]',
   '  [--rust-analyzer-bin <rust-analyzer>] [--python-lsp-bin <pyright>] [--go-bin <go>]',
 ].join('\n')
@@ -246,9 +244,8 @@ const EXPECTED_ROWS = [
   'tool-fish',
   'fish-preset-policy',
   'rtk',
-  'mcp-codegraph',
-  'llm-pi-ai-with-session',
   'lsp-diagnostics',
+  'banbo-agents',
 ]
 /** `_getState` in cordis/lib/index.js: 2 running, 3 activation error, 0 pending. */
 export const RUNNING_FIBER_STATE = 2
@@ -650,10 +647,6 @@ async function main() {
       if (['clangd', 'rustAnalyzer', 'pythonLanguageServer'].includes(label)) continue
       assertExecutable(tools[label], label)
     }
-    const codegraphRealpath = realpathSync(tools.codegraph)
-    if (!codegraphRealpath.includes('/.codegraph/versions/')) {
-      throw new Error(`QA_CODEGRAPH is not an official bundled release: ${codegraphRealpath}`)
-    }
     const wrappers = writeToolWrappers(layout, {
       node: tools.node,
       dsh: tools.dsh,
@@ -663,7 +656,6 @@ async function main() {
       qaRoot,
       runtimeHome: layout.runtimeHome,
       nodeBin: dirname(tools.node),
-      codegraph: codegraphRealpath,
       rtk: tools.rtk,
       typescriptLanguageServer: tools.typescriptLanguageServer,
       gopls: tools.gopls,
@@ -675,7 +667,7 @@ async function main() {
     const tarballs = await packBundles(repoRoot, layout, tools.pnpm, environment, targetTui)
     await installProfile({ wrapper: wrappers.dsh, dshBin: tools.dsh }, tarballs, repoRoot, environment)
     // Fixture state, recorded as such: the QA home is not a first-run user, so
-    // dsh-tui 0.18 must not open its onboarding wizard on it.
+    // the candidate dsh-tui must not open its onboarding wizard on it.
     const fixtures = renderProfileFiles(repoRoot, layout, environment)
     evidence.fixtures = fixtures
     evidence.tarballCount = tarballs.length

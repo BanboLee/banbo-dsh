@@ -213,12 +213,15 @@ interface ToolsRuntime {
   get(name: string, scope?: unknown): ToolDefinition | undefined
   schemas(scope?: unknown): ReadonlyArray<{ readonly name: string }>
   execute(input: {
-    readonly callId: string
-    readonly name: string
-    readonly arguments: unknown
+    readonly calls: ReadonlyArray<{
+      readonly type: 'tool-call'
+      readonly id: string
+      readonly name: string
+      readonly arguments: string
+    }>
     readonly signal: AbortSignal
     readonly agent: RealAgent
-  }): Promise<ToolResult>
+  }): Promise<{ readonly results: ReadonlyArray<{ readonly callId: string; readonly result: ToolResult }> }>
 }
 
 interface SessionSnapshot {
@@ -532,13 +535,14 @@ async function bootLane(input: {
 
 async function callTool<T>(target: Lane, name: string, args: unknown, signalTimeoutMs = 120_000): Promise<T> {
   callCounter += 1
-  const result = await target.tools.execute({
-    callId: `${SESSION_NAME}-${callCounter}`,
-    name,
-    arguments: args,
+  const callId = `${SESSION_NAME}-${callCounter}`
+  const batch = await target.tools.execute({
+    calls: [{ type: 'tool-call', id: callId, name, arguments: JSON.stringify(args) }],
     signal: AbortSignal.timeout(signalTimeoutMs),
     agent: target.agent,
   })
+  const result = batch.results.find((entry) => entry.callId === callId)?.result
+  if (result === undefined) throw new Error(`${name} returned no result in the real minimal-preset lane`)
   if (result.isError) {
     const detail = result.error?.message
       ?? result.content?.map((block) => block.text ?? '').join('')

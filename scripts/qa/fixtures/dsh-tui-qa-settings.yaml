@@ -9,7 +9,7 @@ llm-pi-ai:
           contextWindow: 32768
           maxTokens: 4096
 agent-default-model:
-  provider: qa-session
+  provider: qa-loopback
   model: qa-model
 dsh-tui:
   lang: en

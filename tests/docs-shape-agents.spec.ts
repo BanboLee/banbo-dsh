@@ -29,6 +29,14 @@ const STATE_DIR = '$DSH_HOME/banbo-agents'
 const TEAM = ['banbo', 'planner', 'executor', 'implement', 'review', 'research', 'explorer'] as const
 
 describe('agents README — install surface', () => {
+  it('documents the active DSH peer minimum and compatible TUI in both languages', () => {
+    for (const readme of [EN, ZH]) {
+      expect(readme).toContain('^0.2.2-rc.1')
+      expect(readme).toContain('0.19.0')
+      expect(readme).not.toContain('^0.2.1-rc.2')
+    }
+  })
+
   it('documents the published install, source install, and uninstall commands', () => {
     for (const readme of [ZH, EN]) {
       expect(readme).toContain(`dsh plugin --profile <profile> add ${PACKAGE_NAME}`)

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * The six-package release lane — one CLI, four subcommands.
+ * The four-package release lane — one CLI, four subcommands.
  *
  * Why a script and not raw `run:` blocks: the lane is a stateful sequence over
- * six packages with three properties a shell block makes hard to hold:
+ * four maintained packages with three properties a shell block makes hard to hold:
  *
  *   - **fail closed, per package.** Every package is validated (manifest, tar
  *     safety, its own special hazard) before ANY publish, and a published
@@ -18,7 +18,7 @@
  *
  *   preflight  verify the dispatch may proceed at all (sha, branch, clean tree)
  *              and classify every version against the registry.
- *   pack       pack all six, validate each tarball, write the journal.
+ *   pack       pack all four, validate each tarball, write the journal.
  *   publish    publish the packed tarballs serially under a candidate dist-tag,
  *              verifying registry integrity per package.
  *   finalize   promote `latest`, drop the candidate tag, create the annotated
@@ -177,10 +177,10 @@ function readManifest(directory) {
 }
 
 /**
- * Read the six packages' versions from the checkout.
+ * Read the four packages' versions from the checkout.
  *
  * The release list is authoritative: a package that disappeared from the
- * checkout is a hard error rather than a silent five-package release.
+ * checkout is a hard error rather than a silent three-package release.
  *
  * @returns {Array<{ directory: string, package: string, version: string, manifest: object }>}
  */
@@ -301,7 +301,7 @@ function persistJournal(path, journal) {
  * Assert this checkout can create annotated tags and push them.
  *
  * Both facts are prerequisites of the LAST step of an irreversible sequence, so
- * discovering them there is the worst possible time: the six versions are already
+ * discovering them there is the worst possible time: the four versions are already
  * on the registry, `latest` is already moved, and the release has no tag.
  *
  * What is checked, and why each one:
@@ -327,7 +327,7 @@ function assertGitIdentity() {
       'this checkout has no git identity, so the annotated release tags cannot be created.\n'
       + `user.name=${name.ok ? JSON.stringify(name.stdout) : 'unset'}, user.email=${email.ok ? JSON.stringify(email.stdout) : 'unset'}\n`
       + 'Set them (the workflow does this with `git config user.name/user.email`) and re-run. '
-      + 'This is checked before publishing because the tags are created after six irreversible publishes.',
+      + 'This is checked before publishing because the tags are created after four irreversible publishes.',
     )
   }
   const remote = tryRun('git', ['remote', 'get-url', 'origin'])
@@ -375,7 +375,7 @@ function preflight(flags) {
 
   // Toolchain first: everything below can only be judged against the CLI that
   // will actually publish. A too-old npm is the one failure that CANNOT be
-  // recovered after the fact (six immutable versions, unpromotable), so it is
+  // recovered after the fact (four immutable versions, unpromotable), so it is
   // checked before a single tarball is built.
   const npmVersion = run('npm', ['--version'])
   assertNpmCapability(npmVersion)
@@ -383,7 +383,7 @@ function preflight(flags) {
 
   // Git identity and push credentials are checked HERE, not when the first tag is
   // created: `git tag -a` fails without `user.email`/`user.name`, and that failure
-  // would arrive after six irreversible publishes.
+  // would arrive after four irreversible publishes.
   assertGitIdentity()
 
   const head = run('git', ['rev-parse', 'HEAD'])
@@ -523,7 +523,7 @@ function summariseStateCounts(journal) {
 /* ------------------------------------------------------------------ pack --- */
 
 /**
- * Pack and validate all six packages.
+ * Pack and validate all four maintained packages.
  *
  * Packing happens ONCE per dispatch, before any publish, so the tarballs that
  * get uploaded are the ones the journal describes. fish-shell is packed from a
@@ -791,7 +791,7 @@ function publish(flags) {
  * Promote `latest`, drop the candidate tag, and create tags + GitHub Releases.
  *
  * Ordering matters and is the reason this is one subcommand rather than several
- * workflow steps: `latest` is only promoted once ALL SIX versions are published
+ * workflow steps: `latest` is only promoted once ALL FOUR versions are published
  * and verified, so a partial failure can never move the `latest` pointer to a
  * release the user cannot install.
  *
@@ -1247,8 +1247,8 @@ export function tagName(entry) {
  *
  * `gh release create` fails when the release already exists, which is the right
  * default but the wrong behaviour for a RESUMED dispatch: a run that created the
- * first four releases and died on the fifth must be able to finish, not to
- * discover that four of its six targets are now "in the way".
+ * first two releases and died on the third must be able to finish, not to
+ * discover that two of its four targets are now "in the way".
  *
  * Idempotence here is verified, not assumed. A release that already exists is
  * accepted ONLY when it agrees with this dispatch on all three identity facts:

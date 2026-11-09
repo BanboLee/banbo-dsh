@@ -6,6 +6,8 @@ RTK 改写装饰器（DeepSeek Harness 插件）：一个普通的 Cordis 函数
 
 ## 前置条件
 
+本版本要求 DSH `0.2.2-rc.1` 或更新版本（peer 范围 `^0.2.2-rc.1`）；开发依赖精确钉在 `0.2.2-rc.1`。
+
 `rtk` CLI 必须**预先安装**并可在 `PATH` 上访问（或通过 `rtkBinary` 配置固定），本 bundle 才会产生任何效果。没有 `rtk` 时，插件仍可安装并运行，但每条命令都会 fail open 到直通（passthrough）—— 不会发生 `rtk rewrite`，`grep` 输出也永远不会被压缩。本 bundle 从不下载或安装 `rtk` 本身；请针对任意当前 `rtk` 发行版进行测试（已在 0.47.0 上验证）。
 
 ## 用法
