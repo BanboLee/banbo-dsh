@@ -1,8 +1,8 @@
 {
-  "dshVersion": "0.2.2-rc.1",
-  "standardDigest": "sha256:b3e50605878803f47f2e4f80c4d63c0e22da3beaca9a5f8db55779d6450fe9ed",
+  "dshVersion": "0.2.2-rc.3",
+  "standardDigest": "sha256:a9c8a73c82820d24917c4a76722f3de9369ee2a508b25348bf819bab0fba3a8d",
   "templateProbe": "probe",
-  "templateDigest": "sha256:40647d8ad36091530d937763fc0a1c28c0a53109177dc57cc296df46761fefd1",
+  "templateDigest": "sha256:b152d91a12a12c60bf0d19c0ae48fbe9daf36d215ebad875059e7226d6a6b79e",
   "rows": [
     {
       "id": "persona",
@@ -56,7 +56,12 @@
     },
     {
       "id": "skill-filesystem",
-      "name": "@deepseek-ai/dsh-skill-filesystem"
+      "name": "@deepseek-ai/dsh-skill-filesystem",
+      "config": {
+        "customSkillDirs": [
+          "process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')"
+        ]
+      }
     },
     {
       "id": "tool-skill",
@@ -121,7 +126,10 @@
     },
     {
       "id": "tool-subagent-control",
-      "name": "@deepseek-ai/dsh-tool-subagent-control"
+      "name": "@deepseek-ai/dsh-tool-subagent-control",
+      "config": {
+        "interrupt": false
+      }
     },
     {
       "id": "tool-subagent",
@@ -174,6 +182,10 @@
     {
       "id": "present",
       "name": "@deepseek-ai/dsh-tool-present"
+    },
+    {
+      "id": "tool-office",
+      "name": "@deepseek-ai/dsh-tool-office"
     },
     {
       "id": "tool-plugin-manager",

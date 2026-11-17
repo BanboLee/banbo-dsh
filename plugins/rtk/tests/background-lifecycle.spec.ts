@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -125,7 +125,7 @@ describe('background lifecycle (start)', () => {
 
       await proc.done
       expect(proc.exitCode).toBe(0)
-      expect(proc.readOutput()).toEqual({ delta: `${workdir}:request-env:dsh-env\n`, lossy: false })
+      expect(proc.readOutput()).toEqual({ delta: `${realpathSync(workdir)}:request-env:dsh-env\n`, lossy: false })
     } finally {
       rmSync(workdir, { recursive: true, force: true })
     }

@@ -24,10 +24,10 @@ DeepSeek Harness 的 fish shell executor 与工具：用 **fish** 而不是 bash
 
 | 项 | 支持范围 | 验证情况 |
 |---|---|---|
-| `@deepseek-ai/*` dsh 族 | 最低 `0.2.2-rc.1`（peer 范围 `^0.2.2-rc.1`）；开发依赖与随包 terminal 均精确钉在 `0.2.2-rc.1` | 本版本需运行真实隔离 profile 探针 |
+| `@deepseek-ai/*` dsh 族 | peer 范围 `^0.2.2-rc.1`（`rc.1`/`rc.2` 宿主仍可挂载）；开发依赖与随包 terminal 均精确钉在 `0.2.2-rc.3` | 本版本在 `0.2.2-rc.3` 上验证，需运行真实隔离 profile 探针 |
 | `fish` | `3.7+` | 是，实测 `3.7.1`；更低版本未验证 |
 | 平台 | 仅 POSIX：Linux 与 macOS。Windows 不支持（Windows 由 `pwsh` 系列覆盖） | Linux：`test` job 里 `DSH_REAL_FISH_PTY=1` 的真实 lane；macOS：`fish-pty-macos` job 跑真实 L2 lane，含 `workspace-write` 下 workspace 外写入被拒 |
-| Node.js | `>=22`（`engines.node`）；DSH `0.2.2-rc.1` 宿主要求 `>=24.9.0` | CI 与升级 QA 使用 Node 26 |
+| Node.js | `>=22`（`engines.node`）；DSH `0.2.2-rc.3` 宿主要求 `>=24.9.0` | CI 与升级 QA 使用 Node 26 |
 
 ## 测试覆盖矩阵
 
@@ -92,7 +92,7 @@ prompt setup 走 `-C` 参数（与 `terminal-fish.js` 导出的 `FISH_PROMPT_SET
 
 **为什么一次性路径一行没动。** 追加的 group 是纯增量的。它上面的 host 平面 row 保持逐字不变（`bash-sandbox`/`tool-bash` 禁用，`fish-shell`/`tool-fish`/`fish-preset-policy` 插入），并且 `ctx.shell`（`index.js`）、一次性 `fish` 工具（`tool.js`）、`minimal` preset 的持久工具（`persistent.js`）与 `terminal-fish.js` 库都保持原样的代码路径：交互式 surface 的存在不改变一次性命令的任何行为。
 
-**随包分发的 `@deepseek-ai/dsh-tool-terminal`。** `terminal-tools` row 从本包内部解析官方工具包，而不是从 profile 平面解析：`@deepseek-ai/dsh-tool-terminal@0.2.2-rc.1` 声明在 `dependencies` 与 `bundledDependencies` 里，所以打包会把它及其传递依赖作为实体文件放进 tarball 内的 `node_modules/` 下。这正是离线 profile 能安装成功的原因。它**不能**被挪到 `peerDependencies`：peer 解析会去找 profile 平面的副本，而那正是本设计要避免的。版本、来源与许可证见 `./THIRD-PARTY-NOTICES.md`。
+**随包分发的 `@deepseek-ai/dsh-tool-terminal`。** `terminal-tools` row 从本包内部解析官方工具包，而不是从 profile 平面解析：`@deepseek-ai/dsh-tool-terminal@0.2.2-rc.3` 声明在 `dependencies` 与 `bundledDependencies` 里，所以打包会把它及其传递依赖作为实体文件放进 tarball 内的 `node_modules/` 下。这正是离线 profile 能安装成功的原因。它**不能**被挪到 `peerDependencies`：peer 解析会去找 profile 平面的副本，而那正是本设计要避免的。版本、来源与许可证见 `./THIRD-PARTY-NOTICES.md`。
 
 自 dsh `0.2.1-rc.2` 起，该 row 的名字是 **`@banbolee/dsh-fish-shell/tool-terminal`**，而不是裸包名。dsh 安装本身现在也带 `@deepseek-ai/dsh-tool-terminal`（由 `@deepseek-ai/dsh-experimental-terminal-bundle` 声明），而 profile 平面的 runtime resolution 只为"安装面**没有**供应的名字"记录条目——所以裸包名会选中 harness 的那份，随包分发的那份永远不会被加载。`tool-terminal.js` 是本包对自己那份副本的句柄：它用 `createRequire(import.meta.url)` 解析依赖（打包后是紧挨着它的那份副本，源码检出时是仓库指向同一精确版本的链接），并原样 re-export 插件接口。离线车道会断言解析结果确实位于已安装的 bundle 内。
 
@@ -143,7 +143,7 @@ prompt setup 走 `-C` 参数（与 `terminal-fish.js` 导出的 `FISH_PROMPT_SET
 
 ### `@deepseek-ai/dsh-tool-terminal` 报 `ERR_MODULE_NOT_FOUND`
 
-bundled 的工具包没有进安装产物，或它被当成 peer（profile 平面）依赖解析了。用 hoisted linker 构建：先 `pnpm install --prod --config.node-linker=hoisted`，再 `pnpm pack --config.node-linker=hoisted`。不带它 pnpm 会拒绝打包 bundled 依赖，并报 `ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`。检查产物：tarball 必须包含 `package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json`。有一条上游原因不在我们能修的范围内：`@deepseek-ai/dsh-tool-terminal@0.2.2-rc.1` 声明的 `exports` 里有 `./src/*`，而实际发布的 tarball 并不包含它，因此任何按该子路径解析的代码都会 `ERR_MODULE_NOT_FOUND`。
+bundled 的工具包没有进安装产物，或它被当成 peer（profile 平面）依赖解析了。用 hoisted linker 构建：先 `pnpm install --prod --config.node-linker=hoisted`，再 `pnpm pack --config.node-linker=hoisted`。不带它 pnpm 会拒绝打包 bundled 依赖，并报 `ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`。检查产物：tarball 必须包含 `package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json`。有一条上游原因不在我们能修的范围内：`@deepseek-ai/dsh-tool-terminal@0.2.2-rc.3` 声明的 `exports` 里有 `./src/*`，而实际发布的 tarball 并不包含它，因此任何按该子路径解析的代码都会 `ERR_MODULE_NOT_FOUND`。
 
 ### `ERR_PNPM_NO_OFFLINE_TARBALL`
 

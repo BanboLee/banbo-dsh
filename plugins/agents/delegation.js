@@ -663,12 +663,18 @@ async function startOneShot(runtime, prepared, options, holder, lease) {
     // (the only kind `spawn` produces) is selected by supplying `childId`. A
     // one-shot keeps caller delivery so no parent completion notice is
     // announced, which is what the foreground/background terminal contracts
-    // below already assume.
+    // below already assume. 0.2.2-rc.3 then dropped the `request` wrapper: the
+    // request fields ARE the spec. `request` is kept as well so the same call
+    // still satisfies a 0.2.2-rc.1/rc.2 host, whose runtime reads
+    // `spec.request.parent`, `spec.request.maxDepth` and
+    // `spec.request.outputSchema`; rc.3 ignores the extra key. Both shapes are
+    // asserted in delegate-one.spec.ts.
     run = await runtime.subagents.startActivation({
+      ...built.request,
+      request: built.request,
       provider: DELEGATION_PROVIDER,
       label: built.label,
       childId,
-      request: built.request,
       signal: holder.signal,
       delivery: 'caller',
     })
@@ -854,12 +860,14 @@ async function startContinuable(runtime, prepared, options, lease) {
     // 0.2.1: a provider with `prepareContinuable` (spawn, fork) runs a local
     // activation the parent can keep messaging. `delivery: 'parent'` is what
     // makes the completion notice reach the delegating agent, matching the
-    // background semantics this path has always had.
+    // background semantics this path has always had. The `request` copy is the
+    // 0.2.2-rc.1/rc.2 shape; rc.3 reads the flat fields and ignores it.
     const started = await runtime.subagents.startActivation({
+      ...built.request,
+      request: built.request,
       provider: DELEGATION_PROVIDER,
       label: built.label,
       childId,
-      request: built.request,
       signal: options.signal,
       delivery: 'parent',
     })

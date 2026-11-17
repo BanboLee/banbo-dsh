@@ -440,8 +440,8 @@ describe('injected candidate launchers', () => {
 
   it('records requested path and realpath for every injected candidate', () => {
     // Given: launchers under a candidate prefix.
-    const dsh = createFakeCandidate(join(scratch, 'describe'), '@deepseek-ai/dsh', '0.2.2-rc.1', '0.2.2-rc.1')
-    const dshTui = createFakeCandidate(join(scratch, 'describe'), TUI_PACKAGE_NAME, '0.19.0', '0.19.0')
+    const dsh = createFakeCandidate(join(scratch, 'describe'), '@deepseek-ai/dsh', '0.2.2-rc.3', '0.2.2-rc.3')
+    const dshTui = createFakeCandidate(join(scratch, 'describe'), TUI_PACKAGE_NAME, '0.20.1', '0.20.1')
     const tools = { node: process.execPath, dsh, dshTui }
 
     // When: the candidates are described.
@@ -457,9 +457,9 @@ describe('injected candidate launchers', () => {
   it('derives package identity and raw --version output from the candidates', async () => {
     // Given: an rc.5 dsh launcher and a TUI launcher that prints name+version.
     const prefix = join(scratch, 'inspect')
-    const dsh = createFakeCandidate(prefix, '@deepseek-ai/dsh', '0.2.2-rc.1', '0.2.2-rc.1\n')
-    const dshTui = createFakeCandidate(prefix, TUI_PACKAGE_NAME, '0.19.0', `${TUI_PACKAGE_NAME} 0.19.0\n`)
-    const matrix = { nodeMajor, dsh: '0.2.2-rc.1', dshTui: '0.19.0' }
+    const dsh = createFakeCandidate(prefix, '@deepseek-ai/dsh', '0.2.2-rc.3', '0.2.2-rc.3\n')
+    const dshTui = createFakeCandidate(prefix, TUI_PACKAGE_NAME, '0.20.1', `${TUI_PACKAGE_NAME} 0.20.1\n`)
+    const matrix = { nodeMajor, dsh: '0.2.2-rc.3', dshTui: '0.20.1' }
 
     // When: the candidates are inspected against the matrix.
     const evidence = await inspectCandidates({ node: process.execPath, dsh, dshTui }, matrix) as {
@@ -472,35 +472,35 @@ describe('injected candidate launchers', () => {
     expect(evidence.node.versionOutput).toBe(`v${process.versions.node}`)
     expect(evidence.dsh).toMatchObject({
       packageName: '@deepseek-ai/dsh',
-      packageVersion: '0.2.2-rc.1',
-      versionOutput: '0.2.2-rc.1',
+      packageVersion: '0.2.2-rc.3',
+      versionOutput: '0.2.2-rc.3',
       packageRoot: realpathSync(join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh')),
     })
     expect(evidence.dshTui).toMatchObject({
       packageName: TUI_PACKAGE_NAME,
-      packageVersion: '0.19.0',
-      versionOutput: `${TUI_PACKAGE_NAME} 0.19.0`,
+      packageVersion: '0.20.1',
+      versionOutput: `${TUI_PACKAGE_NAME} 0.20.1`,
     })
   })
 
   it('rejects a candidate whose version is not the matrix version', async () => {
-    // Given: an rc.4 launcher with a matrix that requires 0.2.2-rc.1.
+    // Given: an rc.4 launcher with a matrix that requires 0.2.2-rc.3.
     const prefix = join(scratch, 'mismatch')
     const dsh = createFakeCandidate(prefix, '@deepseek-ai/dsh', '0.2.1-rc.4', '0.2.1-rc.4\n')
-    const dshTui = createFakeCandidate(prefix, TUI_PACKAGE_NAME, '0.19.0', '0.19.0\n')
+    const dshTui = createFakeCandidate(prefix, TUI_PACKAGE_NAME, '0.20.1', '0.20.1\n')
 
     // When/Then: the mismatch is named, never accepted.
     await expect(inspectCandidates(
       { node: process.execPath, dsh, dshTui },
-      { nodeMajor, dsh: '0.2.2-rc.1', dshTui: '0.19.0' },
-    )).rejects.toThrow(/--dsh-bin reports "0\.2\.1-rc\.4".*requires 0\.2\.2-rc\.1/)
+      { nodeMajor, dsh: '0.2.2-rc.3', dshTui: '0.20.1' },
+    )).rejects.toThrow(/--dsh-bin reports "0\.2\.1-rc\.4".*requires 0\.2\.2-rc\.3/)
   })
 })
 
 // ── The G5 activation step against a real QA-packed profile ──────────────────
 
 const TUI_BUNDLE = TUI_PACKAGE_NAME
-const TUI_HINT = 'install it with `npm install -g @deepseek-harness-tui/dsh-tui@0.19.0` (the package root is derived from the `dsh-tui` launcher on PATH)'
+const TUI_HINT = 'install it with `npm install -g @deepseek-harness-tui/dsh-tui@0.20.1` (the package root is derived from the `dsh-tui` launcher on PATH)'
 const repoRoot = resolve(import.meta.dirname, '..', '..')
 
 function findExecutableOnPath(name: string): string | undefined {

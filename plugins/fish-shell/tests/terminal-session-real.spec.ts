@@ -535,7 +535,7 @@ beforeAll(async () => {
         ? ['  - `fish` is not on PATH: install it (`apt-get install fish` on Linux, `brew install fish` on macOS) and re-run.']
         : []),
       ...(dshBinary === undefined
-        ? ['  - the `dsh` CLI is not on PATH: `npm install -g @deepseek-ai/dsh@0.2.2-rc.1`.']
+        ? ['  - the `dsh` CLI is not on PATH: `npm install -g @deepseek-ai/dsh@0.2.2-rc.3`.']
         : []),
       `PATH searched: ${process.env.PATH ?? ''}`,
       'This lane refuses to skip silently once its gate is open.',

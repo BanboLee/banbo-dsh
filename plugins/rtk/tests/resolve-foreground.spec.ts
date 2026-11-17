@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -80,7 +80,7 @@ describe('oracle execution context', () => {
       }))
 
       expect(result.exitCode).toBe(0)
-      expect(result.stdout.text).toBe(`${workdir}:request-env:dsh-env\n`)
+      expect(result.stdout.text).toBe(`${realpathSync(workdir)}:request-env:dsh-env\n`)
     } finally {
       rmSync(workdir, { recursive: true, force: true })
     }

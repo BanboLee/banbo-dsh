@@ -33,17 +33,17 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # The gates lane needs this, not the composition suite (which is its own
-      # job): Gate B resolves `@deepseek-ai/dsh-app-boot` and the real 0.2.2-rc.1
+      # job): Gate B resolves `@deepseek-ai/dsh-app-boot` and the real 0.2.2-rc.3
       # packages beside the global `dsh`, and the install/uninstall gate shells
       # out to `dsh`. The version must match the plugin dependency family
       # (AGENTS.md).
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.2.2-rc.1
+        run: npm install -g @deepseek-ai/dsh@0.2.2-rc.3
 
       # gate-b's B4 probes resolve `dsh-tui` beside the global `dsh`; without it
-      # they skip, so use the pinned TUI for the active 0.2.2-rc.1 family.
+      # they skip, so use the pinned TUI for the active 0.2.2-rc.3 family.
       - name: Install dsh TUI
-        run: npm install -g @deepseek-harness-tui/dsh-tui@0.19.0
+        run: npm install -g @deepseek-harness-tui/dsh-tui@0.20.1
 
       # The real fish PTY lane runs in this job (`DSH_REAL_FISH_PTY=1` below),
       # so the binary has to be here; that spec still skips itself when fish is
@@ -123,7 +123,7 @@ jobs:
       # so the CLI must be on PATH at the version the plugin family is pinned to
       # (AGENTS.md). Without it that spec fails instead of skipping.
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.2.2-rc.1
+        run: npm install -g @deepseek-ai/dsh@0.2.2-rc.3
 
       # The real L2 spec FAILS LOUD when fish is missing, so this is the step
       # that makes the lane execute.
@@ -198,7 +198,7 @@ jobs:
       # its isolated profile) as well as the `pnpm` set up above, so the CLI must
       # be on PATH at the version the plugin family is pinned to (AGENTS.md).
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.2.2-rc.1
+        run: npm install -g @deepseek-ai/dsh@0.2.2-rc.3
 
       # This single step is the gate: the script stages the bundle, packs it with
       # the hoisted linker, installs the tarball with `--offline` into a profile
@@ -238,7 +238,7 @@ jobs:
       # These specs shell out to the `dsh` CLI to boot profiles, so it must be on
       # PATH at the version the plugin family is pinned to (AGENTS.md).
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh@0.2.2-rc.1
+        run: npm install -g @deepseek-ai/dsh@0.2.2-rc.3
 
       # `tests/composition/fish-pty-dsh-tui.spec.ts` needs the REAL global
       # dsh-tui beside that CLI: it resolves the package the way the QA infra
@@ -252,7 +252,7 @@ jobs:
       # sibling package is absent turns the same lane into 1 skipped.
       # Same pin the `test` job uses for its dsh-tui probes.
       - name: Install dsh TUI
-        run: npm install -g @deepseek-harness-tui/dsh-tui@0.19.0 --no-audit --no-fund
+        run: npm install -g @deepseek-harness-tui/dsh-tui@0.20.1 --no-audit --no-fund
 
       # fish-shell is the only shell these profiles mount, so without the binary
       # the sandbox executor refuses to run anything: fish-rtk-coexist.spec.ts

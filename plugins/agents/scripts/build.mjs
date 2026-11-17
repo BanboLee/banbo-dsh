@@ -60,6 +60,7 @@ export declare function Remote(option: string | { readonly mode: 'stream' }): Re
       'lib/typert.host.d.ts',
       'lib/typert.remote-client.js',
       'lib/typert.remote-client.d.ts',
+      'lib/typert.remote-client.d.ts.map',
     ],
   }
   writeFileSync(join(staged, 'package.json'), `${JSON.stringify(stagedManifest, null, 2)}\n`)
@@ -99,6 +100,12 @@ export declare function Remote(option: string | { readonly mode: 'stream' }): Re
   writeFileSync(join(lib, 'typert.host.d.ts'), artifact.dts)
   writeFileSync(join(lib, 'typert.remote-client.js'), artifact.remote.js)
   writeFileSync(join(lib, 'typert.remote-client.d.ts'), artifact.remote.dts)
+  // 0.2.2-rc.3's generator emits a declaration map for the Remote face and
+  // rejects a manifest whose `files` list omits it, so ship it with the .d.ts.
+  const remoteMap = /** @type {{ dtsMap?: string }} */ (artifact.remote).dtsMap
+  if (typeof remoteMap === 'string') {
+    writeFileSync(join(lib, 'typert.remote-client.d.ts.map'), remoteMap)
+  }
 } finally {
   rmSync(scratch, { recursive: true, force: true })
 }

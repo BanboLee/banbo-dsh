@@ -278,9 +278,12 @@ describe('E4 — the Plugins page seat this card occupies', () => {
     expect(contract).toMatch(/keyed by the bundle's package name/)
     expect(contract).toMatch(/'plugins\.bundle\.config':\s*\{[\s\S]{0,240}?owner:\s*PluginConfigViewProps/)
     // And the page renders it as a `page` (a bundle's configuration has no
-    // summary view), looked up by the bundle's package name.
+    // summary view), looked up by the bundle's package name. 0.2.2-rc.3 ships a
+    // differently minified client (backtick literals, shorter identifiers), so
+    // the assertion matches the seat, the view and the `entryKey: <x>.name`
+    // lookup rather than one exact serialization.
     const page = readFileSync(join(managerRoot, 'lib', 'client.js'), 'utf8')
-    expect(page).toMatch(/renderSlot\(\s*"plugins\.bundle\.config"\s*,\s*\{\s*view:\s*"page"\s*\}\s*,\s*\{\s*entryKey:\s*pkg\.name\s*\}\s*\)/)
+    expect(page).toMatch(/renderSlot\(\s*[`"]plugins\.bundle\.config[`"]\s*,\s*\{\s*view:\s*[`"]page[`"]\s*\}\s*,\s*\{\s*entryKey:\s*[A-Za-z_$][\w$]*\.name\s*\}\s*\)/)
     expect(page).toMatch(/ledger\.bundles\.has\(openPkg\.name\)/)
   })
 

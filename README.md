@@ -10,7 +10,7 @@ The maintained bundles install into a DSH profile without cloning this MIT-licen
 
 ## Quick install (users)
 
-Prerequisites: `dsh` 0.2.2-rc.1, `dsh-tui` 0.19.0 for TUI profiles, Node.js >= 24.9.0 (CI and upgrade QA use Node 26), pnpm 9.x.
+Prerequisites: `dsh` 0.2.2-rc.3, `dsh-tui` 0.20.1 for TUI profiles, Node.js >= 24.9.0 (CI and upgrade QA use Node 26), pnpm 9.x.
 
 Install whichever bundles you need:
 
@@ -30,7 +30,7 @@ dsh plugin --profile <profile> add @banbolee/dsh-agents
 | [`@banbolee/dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | After `write`/`edit`/`str_replace_editor` mutations, appends a persistent LSP diagnostics notice to the next model inference; also registers a model-callable `lsp_diagnostics(file_path)` tool | `typescript-language-server`, `gopls` (opt-in: `clangd`, `rust-analyzer`, `pyright-langserver`) |
 | [`@banbolee/dsh-agents`](plugins/agents/README.md) | Define your own Agent team in YAML: named `agent_<id>` tools, a persona and a tool surface per Agent, an explicit delegation graph, and absolute depth/concurrency budgets; ships its presets as `@deepseek-ai/dsh-agent-preset` rows on the profile's preset registry | none |
 
-**Deprecated / frozen at 0.3.4:** [`@banbolee/dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) and [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md). Their source, legacy docs and tests remain for reference, but they are excluded from workspace installs, active tests, typechecks, upgrades and publication. Their DSH 0.2.1 baseline is not part of the DSH 0.2.2-rc.1 support boundary; do not add them to current profiles.
+**Deprecated / frozen at 0.3.4:** [`@banbolee/dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) and [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md). Their source, legacy docs and tests remain for reference, but they are excluded from workspace installs, active tests, typechecks, upgrades and publication. Their DSH 0.2.1 baseline is not part of the DSH 0.2.2-rc.3 support boundary; do not add them to current profiles.
 
 See each plugin README for full details.
 

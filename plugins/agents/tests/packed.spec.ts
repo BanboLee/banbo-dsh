@@ -46,6 +46,7 @@ const REQUIRED_ENTRIES = [
   'package/lib/typert.host.d.ts',
   'package/lib/typert.remote-client.js',
   'package/lib/typert.remote-client.d.ts',
+  'package/lib/typert.remote-client.d.ts.map',
   'package/lib/types/catalog-remote.d.ts',
   'package/lib/types/client/index.d.ts',
 ]

@@ -32,7 +32,7 @@ dsh plugin --profile <profile> add -w ./plugins/agents
 
 ### Preset 声明与自定义预设
 
-本插件把自带的两个 preset（`banbo` 与 `planner`）声明为 [`cordis.patch.yml`](./cordis.patch.yml) 里的两条 `@deepseek-ai/dsh-agent-preset` 行。preset 是**声明**而不是目录：`config.id` 是 Session 保存的 preset 身份，`config.plugins` 是它挂载的 composition。roster 本身属于 profile 的 `agent-preset-registry` 行（config `{ default, selectedDefault }`），DSH Web `0.2.2-rc.1` 以 `default: standard` 插入它；本插件刻意既不声明也不 patch 这一行，所以别的 Bundle patch 它也无法拿走这里的 preset。
+本插件把自带的两个 preset（`banbo` 与 `planner`）声明为 [`cordis.patch.yml`](./cordis.patch.yml) 里的两条 `@deepseek-ai/dsh-agent-preset` 行。preset 是**声明**而不是目录：`config.id` 是 Session 保存的 preset 身份，`config.plugins` 是它挂载的 composition。roster 本身属于 profile 的 `agent-preset-registry` 行（config `{ default, selectedDefault }`），DSH Web `0.2.2-rc.3` 以 `default: standard` 插入它；本插件刻意既不声明也不 patch 这一行，所以别的 Bundle patch 它也无法拿走这里的 preset。
 
 要加自己的 preset，把同样形状的行写进你自己的 profile patch —— `$DSH_HOME/profiles/<profile>/cordis.patch.yml` —— 或安装一个自带该行的 Bundle：
 
@@ -59,16 +59,16 @@ dsh plugin --profile <profile> add -w ./plugins/agents
 两条要清楚的结果：
 
 - 用户主 Agent 的 YAML 里写了 `main.presetId: my-lead`，就必须有一条 `config.id` 为 `my-lead` 的 preset 行；没有它该 Agent 仍在 catalog（与 ABI）里，但它的 runtime 会拒绝激活并以 `preset mapping mismatch` fail-loud；
-- profile 若没有组装任何 `agent-preset-registry` 行，这些 preset 行会一直 pending，本插件也会一直等 `agentPresets` 服务——Web profile `0.2.2-rc.1` 是组装了它的。
+- profile 若没有组装任何 `agent-preset-registry` 行，这些 preset 行会一直 pending，本插件也会一直等 `agentPresets` 服务——Web profile `0.2.2-rc.3` 是组装了它的。
 
 ### dsh-tui
 
-dsh-tui `0.19.0`——`@deepseek-ai/dsh-agent` peer 承认 `0.2.2-rc.1` 的那一版（`0.16.x` 止于 `rc.2`、`0.17.0` 止于 `rc.3`、`0.18.0` 止于 `rc.5`），因此也是本仓库验证所用的那一版——已经在同一套 0.1.7 模型上。它自己的 bundle patch 声明了自己的 roster 行 `dsh-tui-agent-preset-registry`（包名 `@deepseek-ai/dsh-agent-preset-registry`，config `{ default: standard }`），并在该包可解析时让 0.1.2 时代的 `dsh-tui-agent-presets` roster 退场（`cordis.patch.yml` 原话："0.1.7 replaces directory discovery with declarations in a registry"）。由此两条结论：
+dsh-tui `0.20.1`——`@deepseek-ai/dsh-agent` peer 承认 `0.2.2-rc.3` 的第一个版本（`0.19.0` 止于 `rc.1`、`0.20.0` 止于 `rc.2`），因此也是本仓库验证所用的那一版——已经在同一套 0.1.7 模型上。它自己的 bundle patch 声明了自己的 roster 行 `dsh-tui-agent-preset-registry`（包名 `@deepseek-ai/dsh-agent-preset-registry`，config `{ default: standard }`），并在该包可解析时让 0.1.2 时代的 `dsh-tui-agent-presets` roster 退场（`cordis.patch.yml` 原话："0.1.7 replaces directory discovery with declarations in a registry"）。由此两条结论：
 
 - 本插件挂在 profile 组装的**哪一条** registry 行之下都能工作——Web profile 的 `agent-preset-registry` 或 TUI 的 `dsh-tui-agent-preset-registry`——因此完全不需要 TUI 专属 patch 行，0.1.5 的 `dsh-tui-agent-presets` 座位已彻底移除；
 - TUI 的 roster 默认仍是 `standard`，所以要显式选中我们的 preset：`DSH_TUI_PRESET=banbo dsh-tui`，或 TUI 自己的 `/preset banbo`（持久化的选择会盖过默认值，环境变量又盖过两者）。
 
-本版本要求 DSH `0.2.2-rc.1` 或更新版本（peer 范围为 `^0.2.2-rc.1`），开发依赖精确钉在 `0.2.2-rc.1`。最低兼容的 dsh-tui 版本是 `0.19.0`：`0.16.x`、`0.17.0` 与 `0.18.0` 仅声明支持更早的 `0.2.1` 预发布依赖族，本版本不支持它们。
+本版本在 DSH `0.2.2-rc.3` 上验证；peer 范围仍是 `^0.2.2-rc.1`，所以 `rc.1`/`rc.2` 宿主仍可挂载本插件；开发依赖精确钉在 `0.2.2-rc.3`。对 `0.2.2-rc.3` 宿主最低兼容的 dsh-tui 版本是 `0.20.1`：`0.16.x`、`0.17.0` 与 `0.18.0` 仅声明支持更早的 `0.2.1` 预发布依赖族，而 `0.19.0` 止于 `rc.1`，只适合继续与 `rc.1` 宿主配对。
 
 Host 设置从插件行的 `Config` 读取；激活不依赖已退役的全局 `settings` 服务。
 

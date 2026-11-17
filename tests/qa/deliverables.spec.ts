@@ -12,7 +12,7 @@ const requiredArtifacts = [
   'scripts/qa/run-dsh-tui-real.mjs',
   'scripts/qa/run-lsp-real-servers.mjs',
   'scripts/qa/run-dsh-tui-upgrade.mjs',
-  'scripts/qa/matrices/dsh-0.2.2-rc.1_tui-0.19.0.json',
+  'scripts/qa/matrices/dsh-0.2.2-rc.3_tui-0.20.1.json',
   'scripts/qa/fixtures/loopback-openai-sse.mjs',
   'scripts/qa/fixtures/dsh-tui-qa-settings.yaml',
   'scripts/qa/fixtures/dsh-tui-qa.patch.yml',
@@ -21,8 +21,8 @@ const requiredArtifacts = [
 describe('dsh-tui QA deliverables', () => {
   it('pins the active matrix to the four maintained manifests', () => {
     const matrix = JSON.parse(readFileSync(resolve(repoRoot, requiredArtifacts[5]), 'utf8'))
-    expect(matrix.dsh).toBe('0.2.2-rc.1')
-    expect(matrix.dshTui).toBe('0.19.0')
+    expect(matrix.dsh).toBe('0.2.2-rc.3')
+    expect(matrix.dshTui).toBe('0.20.1')
     expect(matrix.bundles).toEqual(Object.fromEntries(BUNDLES.map(([directory, name]) => {
       const manifest = JSON.parse(readFileSync(resolve(repoRoot, directory, 'package.json'), 'utf8'))
       return [name, manifest.version]

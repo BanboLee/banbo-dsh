@@ -99,6 +99,12 @@
 
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
+  # Official `standard` behavior since 0.2.2-rc.3: the preset package's own
+  # `skills/` directory joins skill discovery. Copied verbatim, `!!js` gate
+  # included — the loader evaluates it, not this template.
+  config:
+    customSkillDirs:
+      - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@deepseek-ai/dsh-agent-preset/package.json')), 'skills')
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'

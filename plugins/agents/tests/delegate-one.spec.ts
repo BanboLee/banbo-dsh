@@ -176,6 +176,15 @@ describe('foreground one-shot', () => {
       childId: 'reserved-child',
       delivery: 'caller',
     }))
+    // Compatibility pin: 0.2.2-rc.3's runtime reads the request fields off the
+    // spec itself, while 0.2.2-rc.1/rc.2 read them under `spec.request`. Both
+    // shapes must ride on the SAME call or one of the two supported hosts
+    // breaks, so neither may be dropped as "unused" in a later cleanup.
+    expect(rt.subagents.startActivation).toHaveBeenCalledWith(expect.objectContaining({
+      parent: expect.anything(),
+      prompt: expect.any(Array),
+      request: expect.objectContaining({ parent: expect.anything(), prompt: expect.any(Array) }),
+    }))
     expect(rt.holders.size).toBe(1)
     expect(rt.budgets.running('root-session')).toBe(1)
     expect(rt.liveIdentities.get('child-one')).toMatchObject({ agentId: 'worker', rootSessionId: 'root-session' })

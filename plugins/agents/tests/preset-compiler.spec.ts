@@ -74,19 +74,41 @@ const byId = (rows: readonly InventoryRow[]): Map<string, InventoryRow> =>
   new Map(rows.filter((row) => row.id !== undefined).map((row) => [row.id as string, row]))
 
 /**
- * The installed official `standard` preset's child rows, or undefined.
+ * The installed official `standard` preset, plus the version of the package
+ * that carries it.
  *
  * Two anchors, like the module resolution the Loader itself performs: this
  * package's own `require` (a profile that installed the web bundle), then the
  * global `dsh` installation, which carries `@deepseek-ai/dsh-web-app` as a
- * dependency. The drift gate is meaningful only against a real official file,
- * so an unresolvable one skips rather than comparing against nothing.
+ * dependency. The drift gate is meaningful only against the release the
+ * inventory records, so the version travels with the rows.
  */
-function officialStandardRows(): Array<Record<string, unknown>> | undefined {
+function officialComposition(): { rows: Array<Record<string, unknown>>, version?: string } | undefined {
   const path = standardCompositionPath()
-  if (path !== undefined) return standardPresetPlugins(readFileSync(path, 'utf8'))
+  if (path !== undefined) {
+    return {
+      rows: standardPresetPlugins(readFileSync(path, 'utf8')),
+      version: manifestVersion(join(dirname(dirname(path)), 'package.json')),
+    }
+  }
   const file = globalDshFile('@deepseek-ai/dsh-web-app', join('presets', 'standard.patch.yml'))
-  return file === undefined ? undefined : standardPresetPlugins(readFileSync(file, 'utf8'))
+  if (file === undefined) return undefined
+  const manifest = globalDshFile('@deepseek-ai/dsh-web-app', 'package.json')
+  return {
+    rows: standardPresetPlugins(readFileSync(file, 'utf8')),
+    version: manifest === undefined ? undefined : manifestVersion(manifest),
+  }
+}
+
+/** The `version` field of one package manifest, or undefined when unreadable. */
+function manifestVersion(path: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null || !('version' in parsed)) return undefined
+    return typeof parsed.version === 'string' ? parsed.version : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** Resolve one file inside a package installed beside the global `dsh`. */
@@ -408,26 +430,45 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
   // The official `standard` composition lives in the `preset-standard` row of
   // `@deepseek-ai/dsh-web-app` in 0.1.7. It is not a dependency of this bundle,
   // so the comparison runs wherever that bundle is installed — CI installs the
-  // `dsh` CLI (which carries it) before the unit lane.
-  const officialRows = officialStandardRows()
-  describe.skipIf(officialRows === undefined)('against the installed official standard preset row', () => {
-    const official = computeStandardInventory(officialRows!)
+  // `dsh` CLI (which carries it) before the unit lane. A checkout whose `dsh`
+  // is a different release SKIPS instead of failing: the recorded inventory is
+  // the target release, and comparing it against another host's preset would
+  // report a drift that does not exist. The always-on test below keeps that
+  // skip honest by pinning the recorded version to the CLI pin in CI.
+  const shippedRaw: unknown = JSON.parse(readFileSync(inventoryPath, 'utf8'))
+  const shippedVersion = typeof shippedRaw === 'object' && shippedRaw !== null && 'dshVersion' in shippedRaw
+    && typeof shippedRaw.dshVersion === 'string' ? shippedRaw.dshVersion : undefined
+
+  it('records the host the repository is pinned to', () => {
+    // Always-on: the version-specific comparison below may skip on a checkout
+    // whose `dsh` is another release, but the recorded version itself must
+    // always equal the CLI pin CI installs — otherwise a pin change could
+    // silently disarm the digest gate.
+    const ci = readFileSync(fileURLToPath(new URL('../../../.github/workflows/ci.yml', import.meta.url)), 'utf8')
+    expect(ci).toContain(`npm install -g @deepseek-ai/dsh@${shippedVersion}`)
+  })
+
+  const official = officialComposition()
+  const hostMatches = official !== undefined && shippedVersion !== undefined && official.version === shippedVersion
+  describe.skipIf(!hostMatches)(`against the installed official standard preset row (dsh ${official?.version ?? 'absent'})`, () => {
+    const officialInventory = computeStandardInventory(official!.rows)
     const managed = computeStandardInventory(renderComposition(templateText, 'probe'))
+
 
     it('the shipped inventory matches the official rows and digest', () => {
       const shipped = JSON.parse(readFileSync(inventoryPath, 'utf8'))
-      expect(official.digest).toBe(shipped.standardDigest)
-      expect(official.rows).toEqual(shipped.rows)
+      expect(officialInventory.digest).toBe(shipped.standardDigest)
+      expect(officialInventory.rows).toEqual(shipped.rows)
     })
 
     it('removes only general delegation creation tools from the standard ABI', () => {
       // `list_subagent_models` is derived from the subagent row's discovery gate
       // (`modelDiscovery` in 0.2.2; it was `modelSelectionSettings` before), and
       // this copy drops that row entirely.
-      const removed = official.tools.filter((name) => !managed.tools.includes(name))
+      const removed = officialInventory.tools.filter((name) => !managed.tools.includes(name))
       expect(removed).toEqual([
         'list_subagent_models',
-        ...FORBIDDEN_DELEGATION_TOOLS.filter((name) => official.tools.includes(name)),
+        ...FORBIDDEN_DELEGATION_TOOLS.filter((name) => officialInventory.tools.includes(name)),
       ].sort())
     })
 
@@ -439,7 +480,7 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
       // `prefix` from the `persona` row left the whole suite green while every
       // real profile failed with
       //   `preset "banbo" failed to mount: $.prefix missing required value`.
-      const officialById = byId(official.rows)
+      const officialById = byId(officialInventory.rows)
       const managedById = byId(managed.rows)
 
       // Rows this bundle deliberately drops from the copy. They cannot appear in
@@ -486,14 +527,29 @@ describe('computeStandardInventory — the §8.3 drift gate', () => {
         persona: ['suffix'],
       }
 
+      // Rows where this bundle DELIBERATELY keeps an official key at its
+      // default instead of copying the value. Each entry names the exact key
+      // path, so any other drift in the same row still fails.
+      //
+      // `tool-subagent-control.interrupt` became `false` in 0.2.2-rc.3's
+      // `standard`, which makes `@deepseek-ai/dsh-tool-subagent-control` skip
+      // the `interrupt_agent` registration entirely. This bundle keeps the
+      // default `true`: stopping a child mid-run is part of the delegation
+      // contract its README documents (`send_message` / `interrupt_agent` /
+      // `list_agents`), so the key is omitted on purpose, not forgotten.
+      const deliberateOmissions: Readonly<Record<string, readonly string[]>> = {
+        'tool-subagent-control': ['interrupt'],
+      }
+
       for (const id of shared) {
         const expected = officialById.get(id)!
         const actual = managedById.get(id)!
         const extras = deliberateExtras[id] ?? []
+        const omissions = deliberateOmissions[id] ?? []
         expect(
           configKeyPaths(actual.config).filter((path) => !extras.includes(path)),
           `row ${id}: config shape drifted from official`,
-        ).toEqual(configKeyPaths(expected.config))
+        ).toEqual(configKeyPaths(expected.config).filter((path) => !omissions.includes(path)))
         expect(actual.isolate, `row ${id}: isolate drifted from official`).toEqual(expected.isolate)
         expect(actual.disabled, `row ${id}: disabled gate drifted from official`).toEqual(expected.disabled)
       }
@@ -512,7 +568,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
   const options = (root: string, definitions: unknown[], extra: Record<string, unknown> = {}) => ({
     rootDir: root,
     definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-    dshVersion: '0.2.2-rc.1',
+    dshVersion: '0.2.2-rc.3',
     selfVersion: '0.0.0',
     ...extra,
   })
@@ -579,7 +635,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
     expect(abi.agents[0].presetId).toBe('my-lead')
     expect(abi.agents[0].hasMain).toBe(true)
     expect(abi.agents[0].toolName).toBe('agent_my_lead')
-    expect(abi.dshVersion).toBe('0.2.2-rc.1')
+    expect(abi.dshVersion).toBe('0.2.2-rc.3')
     // The marker names no preset count any more: presets are not compiled here.
     expect(JSON.parse(readFileSync(join(result.generationDir, COMPLETE_MARKER), 'utf8')))
       .not.toHaveProperty('presets')
@@ -827,7 +883,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.2.2-rc.1',
+        dshVersion: '0.2.2-rc.3',
         selfVersion: '0.0.0',
       } as never)
 
@@ -878,7 +934,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.2.2-rc.1',
+        dshVersion: '0.2.2-rc.3',
         selfVersion: '0.0.0',
       } as never)
 

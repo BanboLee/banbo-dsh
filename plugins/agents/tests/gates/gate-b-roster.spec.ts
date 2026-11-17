@@ -1,6 +1,6 @@
 /**
  * Gate B — preset-ROW platform probes (the 0.1.7 model, unchanged at the
- * runtime this bundle now targets, dsh 0.2.2-rc.1).
+ * runtime this bundle now targets, dsh 0.2.2-rc.3).
  *
  * 0.1.7 replaced the 0.1.5 roster model wholesale: `@deepseek-ai/dsh-agent-presets`
  * does not exist at 0.1.7-rc.2, presets are no longer directories discovered
@@ -10,8 +10,8 @@
  * row owns. This file locks only platform facts about that model:
  *
  *   - the rows this bundle declares are VALID according to the real packages
- *     the `dsh` on PATH ships — 0.2.2-rc.1 as verified here, the version this
- *     bundle's `^0.2.1-rc.2` family resolves to — (their own schema and entry-list
+ *     the `dsh` on PATH ships — 0.2.2-rc.3 as verified here, the version this
+ *     bundle's `^0.2.2-rc.1` family resolves to — (their own schema and entry-list
  *     validator), not according to a copy of it;
  *   - they compose cleanly with the official `dsh-web-app` layer, which is the
  *     layer that declares the registry row and the four official presets;
@@ -301,8 +301,8 @@ describe('B3 — the 0.1.5 directory-roster model is gone', () => {
  * profile Loader reads it — never assumed.
  *
  * dsh-tui 0.11.1 was the release that adopted the 0.1.7 model this bundle
- * targets; 0.19.0 is the release installed and verified here, whose
- * `@deepseek-ai/dsh-agent` peer admits the `0.2.2-rc.1` runtime (0.11.2's peer
+ * targets; 0.20.1 is the release installed and verified here, whose
+ * `@deepseek-ai/dsh-agent` peer admits the `0.2.2-rc.3` runtime (0.11.2's peer
  * stops at `0.2.0-rc.1`). Its patch declares its OWN registry row
  * (`dsh-tui-agent-preset-registry`, package
  * `@deepseek-ai/dsh-agent-preset-registry`, config `{ default: standard }`) and
@@ -316,13 +316,13 @@ describe('B3 — the 0.1.5 directory-roster model is gone', () => {
  *
  * Which side of that boundary a range falls on is a SEMVER question, never a
  * substring one: a range need not name a version it admits (`>=0.2.0-rc.0`),
- * and naming one can mean the opposite (`<0.2.2-rc.1`: it spells the target out).
+ * and naming one can mean the opposite (`<0.2.2-rc.3`: it spells the target out).
  */
 describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => {
   const TUI_PACKAGE = '@deepseek-harness-tui/dsh-tui'
 
-  /** The runtime this bundle's `^0.2.1-rc.2` family resolves to. */
-  const TARGET_DSH_VERSION = '0.2.2-rc.1'
+  /** The runtime this bundle's `^0.2.2-rc.1` family resolves to. */
+  const TARGET_DSH_VERSION = '0.2.2-rc.3'
   /** A runtime nothing here claims, so "it was accepted" can be shown to fail. */
   const UNSUPPORTED_DSH_VERSION = '0.3.0'
 
@@ -395,7 +395,7 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
   const PEER_RANGE_PROBES = [
     { range: '>=0.2.0-rc.0 <0.3.0', names: false, admits: true },
     { range: '>=0.2.0-rc.0', names: false, admits: true },
-    { range: '<0.2.2-rc.1', names: true, admits: false },
+    { range: '<0.2.2-rc.3', names: true, admits: false },
   ] as const
 
   it('decides a peer range by semver, not by whether it names the target', async () => {
@@ -446,7 +446,7 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
    * fields and manifests, and both runtimes.
    */
   const FALLBACK_PROBES: ReadonlyArray<{ label: string, manifest: unknown, runtime?: string }> = [
-    { label: 'caret range', manifest: peerManifest('^0.2.1-rc.2') },
+    { label: 'caret range', manifest: peerManifest('^0.2.2-rc.1') },
     { label: 'exact pin of the target', manifest: peerManifest(TARGET_DSH_VERSION) },
     { label: 'workspace:^', manifest: peerManifest('workspace:^') },
     { label: 'workspace:~', manifest: peerManifest('workspace:~') },
@@ -456,7 +456,7 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
     { label: 'blank range', manifest: peerManifest('   ') },
     { label: 'no peers declared', manifest: PROBE_IDENTITY },
     { label: 'no dsh peer declared', manifest: { ...PROBE_IDENTITY, peerDependencies: { lodash: 'not a range' } } },
-    { label: 'the bare @deepseek-ai/dsh peer', manifest: { ...PROBE_IDENTITY, peerDependencies: { '@deepseek-ai/dsh': '^0.2.1-rc.2' } } },
+    { label: 'the bare @deepseek-ai/dsh peer', manifest: { ...PROBE_IDENTITY, peerDependencies: { '@deepseek-ai/dsh': '^0.2.2-rc.1' } } },
     { label: 'a name that only looks like a dsh peer', manifest: { ...PROBE_IDENTITY, peerDependencies: { '@deepseek-ai/dshxy': 'not a range' } } },
     { label: 'peerDependencies is a number', manifest: { ...PROBE_IDENTITY, peerDependencies: 5 } },
     { label: 'peerDependencies is a string', manifest: { ...PROBE_IDENTITY, peerDependencies: 'range' } },
@@ -470,10 +470,10 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
     { label: 'manifest is a number', manifest: 5 },
     { label: 'manifest is an array', manifest: [] },
     ...PEER_RANGE_PROBES.map((probe) => ({ label: `counterexample ${probe.range}`, manifest: peerManifest(probe.range) })),
-    { label: 'caret range at an unsupported runtime', manifest: peerManifest('^0.2.1-rc.2'), runtime: UNSUPPORTED_DSH_VERSION },
+    { label: 'caret range at an unsupported runtime', manifest: peerManifest('^0.2.2-rc.1'), runtime: UNSUPPORTED_DSH_VERSION },
     { label: 'workspace:^ at an unsupported runtime', manifest: peerManifest('workspace:^'), runtime: UNSUPPORTED_DSH_VERSION },
     { label: 'floor at an unsupported runtime', manifest: peerManifest('>=0.2.0-rc.0'), runtime: UNSUPPORTED_DSH_VERSION },
-    { label: 'incompatible with no identity to name', manifest: { peerDependencies: { '@deepseek-ai/dsh-agent': '^0.2.1-rc.2' } }, runtime: UNSUPPORTED_DSH_VERSION },
+    { label: 'incompatible with no identity to name', manifest: { peerDependencies: { '@deepseek-ai/dsh-agent': '^0.2.2-rc.1' } }, runtime: UNSUPPORTED_DSH_VERSION },
   ]
 
   describe('when the official evaluator does not resolve', () => {
@@ -490,10 +490,10 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
         },
       }
       const admits = await peerChecker(appBootMissing, () => semver)
-      expect(admits(peerManifest('^0.2.1-rc.2'), TARGET_DSH_VERSION)).toBe(true)
+      expect(admits(peerManifest('^0.2.2-rc.1'), TARGET_DSH_VERSION)).toBe(true)
       expect(admits(peerManifest(TARGET_DSH_VERSION), TARGET_DSH_VERSION)).toBe(false)
       expect(asked).toEqual([
-        { version: TARGET_DSH_VERSION, range: '^0.2.1-rc.2', includePrerelease: true },
+        { version: TARGET_DSH_VERSION, range: '^0.2.2-rc.1', includePrerelease: true },
         { version: TARGET_DSH_VERSION, range: TARGET_DSH_VERSION, includePrerelease: true },
       ])
     })
@@ -533,7 +533,7 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
       }
       // A range that is not a string is refused for EVERY peer, a non-dsh one
       // included: the official loop type-checks before it filters names.
-      for (const range of [5, null, ['^0.2.1-rc.2'], { range: '^0.2.1-rc.2' }]) {
+      for (const range of [5, null, ['^0.2.2-rc.1'], { range: '^0.2.2-rc.1' }]) {
         expect(() => admits({ ...PROBE_IDENTITY, peerDependencies: { '@deepseek-ai/dsh-agent': range } }, TARGET_DSH_VERSION), JSON.stringify(range)).toThrow()
         expect(() => admits({ ...PROBE_IDENTITY, peerDependencies: { lodash: range } }, TARGET_DSH_VERSION), JSON.stringify(range)).toThrow()
       }
@@ -551,7 +551,7 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
       const admits = await peerChecker(appBootMissing)
       // A normal caret range still ADMITS the target: the fallback is not a
       // blanket refusal either.
-      expect(admits(peerManifest('^0.2.1-rc.2'), TARGET_DSH_VERSION)).toBe(true)
+      expect(admits(peerManifest('^0.2.2-rc.1'), TARGET_DSH_VERSION)).toBe(true)
       for (const probe of PEER_RANGE_PROBES) {
         expect(admits(peerManifest(probe.range), TARGET_DSH_VERSION), probe.range).toBe(probe.admits)
       }
@@ -609,6 +609,24 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
   }
 
   const tui = tuiBundle()
+  /**
+   * The `dsh` release installed beside the TUI above.
+   *
+   * The peer-admission assertion below is a statement about the PAIR on this
+   * machine, so it is only meaningful when the installed CLI is the release
+   * this repository targets. CI installs exactly that CLI (`ci-workflow.spec`
+   * pins it), and a developer checkout on another release records the TUI
+   * generation without claiming admission.
+   */
+  const installedDshVersion = ((): string | undefined => {
+    try {
+      const manifest: unknown = JSON.parse(readFileSync(join(packageRoot('@deepseek-ai/dsh'), 'package.json'), 'utf8'))
+      if (typeof manifest !== 'object' || manifest === null || !('version' in manifest)) return undefined
+      return typeof manifest.version === 'string' ? manifest.version : undefined
+    } catch {
+      return undefined
+    }
+  })()
 
   it.skipIf(tui === undefined)('records which dsh-tui generation is installed, and that it is consistent', async () => {
     const admits = await peerChecker()
@@ -616,16 +634,18 @@ describe('B4 — dsh-tui: which side of the 0.1.7 boundary is installed', () => 
     const registry = rows.find((row) => row.name === PRESET_REGISTRY)
     const legacy = rows.find((row) => row.name === '@deepseek-ai/dsh-agent-presets')
     if (registry !== undefined) {
-      // 0.1.7 generation (registry seat from 0.11.0; verified against 0.19.0).
+      // 0.1.7 generation (registry seat from 0.11.0; verified against 0.20.1).
       expect(atLeast(tui!.version, [0, 11, 0]), `registry seat from 0.11.0, installed ${tui!.version}`).toBe(true)
       expect(registry.config).toMatchObject({ default: 'standard' })
-      expect(
-        admits(tui!.manifest, TARGET_DSH_VERSION),
-        `installed dsh-tui ${tui!.version} declares peer ${JSON.stringify(tui!.peer)}, which must admit ${TARGET_DSH_VERSION}`,
-      ).toBe(true)
-      // A probe that cannot fail proves nothing: the same manifest against a
-      // runtime no TUI release claims must be refused, peer by peer.
-      expect(admits(tui!.manifest, UNSUPPORTED_DSH_VERSION)).toBe(false)
+      if (installedDshVersion === TARGET_DSH_VERSION) {
+        expect(
+          admits(tui!.manifest, TARGET_DSH_VERSION),
+          `installed dsh-tui ${tui!.version} declares peer ${JSON.stringify(tui!.peer)}, which must admit ${TARGET_DSH_VERSION}`,
+        ).toBe(true)
+        // A probe that cannot fail proves nothing: the same manifest against a
+        // runtime no TUI release claims must be refused, peer by peer.
+        expect(admits(tui!.manifest, UNSUPPORTED_DSH_VERSION)).toBe(false)
+      }
       // The legacy roster survives only for a profile the registry cannot
       // serve: its disable expression names the registry package.
       expect(legacy, 'the legacy row is still declared for old profiles').toBeDefined()

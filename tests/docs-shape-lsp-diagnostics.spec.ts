@@ -407,7 +407,7 @@ function validateLspDiagnosticsReadmeContract(readme: string): string[] {
   }
 
   // rc.1 and dsh-tools peer boundary.
-  if (!sentencesContaining(f, '0.2.2-rc.1').some((s) => s.includes('^0.2.2-rc.1'))) {
+  if (!sentencesContaining(f, '0.2.2-rc.3').some((s) => s.includes('^0.2.2-rc.1'))) {
     failures.push('the peer range ^0.2.2-rc.1 must be documented')
   }
   if (!f.includes('@deepseek-ai/dsh-tools')) {
@@ -561,7 +561,7 @@ describe('@banbolee/dsh-lsp-diagnostics README shape', () => {
   })
 
   it('documents the rc.1 and dsh-tools peer boundary', () => {
-    expect(README).toContain('0.2.2-rc.1')
+    expect(README).toContain('0.2.2-rc.3')
     expect(README).toContain('^0.2.2-rc.1')
     expect(README).toContain('@deepseek-ai/dsh-tools')
   })

@@ -13,8 +13,8 @@ mounted executor.
 
 ## Prerequisites
 
-This release requires DSH `0.2.2-rc.1` or newer (`^0.2.2-rc.1` peers).
-Development dependencies are pinned exactly to `0.2.2-rc.1`.
+This release is verified against DSH `0.2.2-rc.3`; its peers are `^0.2.2-rc.1`, so an `rc.1` or `rc.2` host keeps working.
+Development dependencies are pinned exactly to `0.2.2-rc.3`.
 
 The `rtk` CLI must be **pre-installed** and reachable on `PATH` (or pinned via
 the `rtkBinary` config) for this bundle to have any effect. Without `rtk`, the

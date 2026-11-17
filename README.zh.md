@@ -8,7 +8,7 @@ DeepSeek Harness（DSH）插件集合：4 个持续维护的插件发布在 npm�
 
 ## 快速安装（用户）
 
-前置条件：已安装 `dsh` 0.2.2-rc.1，TUI profile 使用 `dsh-tui` 0.19.0，以及 Node.js ≥ 24.9.0（CI 与升级 QA 使用 Node 26）、pnpm 9.x。
+前置条件：已安装 `dsh` 0.2.2-rc.3，TUI profile 使用 `dsh-tui` 0.20.1，以及 Node.js ≥ 24.9.0（CI 与升级 QA 使用 Node 26）、pnpm 9.x。
 
 想装哪个装哪个：
 
@@ -28,7 +28,7 @@ dsh plugin --profile <profile> add @banbolee/dsh-agents
 | [`@banbolee/dsh-lsp-diagnostics`](plugins/dsh-lsp-diagnostics/README.md) | `write`/`edit`/`str_replace_editor` 改动落盘后，自动把 LSP 诊断结果附到下轮模型推理；另注册模型可调用的 `lsp_diagnostics(file_path)` 工具 | `typescript-language-server`、`gopls`（可选 `clangd`、`rust-analyzer`、`pyright-langserver`） |
 | [`@banbolee/dsh-agents`](plugins/agents/README.md) | 用 YAML 定义自己的 Agent 团队：具名 `agent_<id>` 工具、每个 Agent 的 persona 与工具面、显式委派图、绝对深度/并发预算；把自带 preset 作为 `@deepseek-ai/dsh-agent-preset` 行声明在 profile 的 preset registry 上 | 无 |
 
-**已弃用 / 冻结在 0.3.4：** [`@banbolee/dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) 与 [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md)。源码、旧版文档与测试仅保留供参考，不参与 workspace 安装、活动测试、类型检查、升级与发布。其 DSH 0.2.1 基线不属于 DSH 0.2.2-rc.1 支持边界，请勿加入当前 profile。
+**已弃用 / 冻结在 0.3.4：** [`@banbolee/dsh-codegraph-mcp`](plugins/codegraph-mcp/README.md) 与 [`@banbolee/dsh-llm-pi-ai-with-session`](plugins/dsh-llm-pi-ai-with-session/README.md)。源码、旧版文档与测试仅保留供参考，不参与 workspace 安装、活动测试、类型检查、升级与发布。其 DSH 0.2.1 基线不属于 DSH 0.2.2-rc.3 支持边界，请勿加入当前 profile。
 
 每个插件的完整说明见各自的 README。
 

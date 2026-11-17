@@ -43,7 +43,7 @@ const options = (root: string, id: string) => ({
     allowedChildren: [],
     main: { presetId: id, persona: 'prompts/probe.md', tools: [], maxDepth: 0 },
   }]]),
-  dshVersion: '0.2.2-rc.1',
+  dshVersion: '0.2.2-rc.3',
   selfVersion: '0.0.0',
 })
 

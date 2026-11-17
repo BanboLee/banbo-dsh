@@ -59,7 +59,11 @@ async function subagentFixture(start: SubagentProvider['start']) {
   // 0.2.2 made `sessionProjections` a hard dependency of SubagentRuntime (its
   // init registers the catalog, timing, and identity units), so the probe
   // supplies a registering stand-in instead of a real projection registry.
-  ctx.provide('sessionProjections', { register: async () => () => {} } as never)
+  // 0.2.2-rc.3 reads them back through `stateOf(session)`, so each registration
+  // must return that accessor; the probe has no lineage state to project.
+  ctx.provide('sessionProjections', {
+    register: async () => ({ stateOf: () => ({ identity: undefined }) }),
+  } as never)
   ctx.provide('workingDirectory', {
     defaultDirectory: process.cwd(),
     get: () => process.cwd(),
@@ -96,7 +100,7 @@ describe('D1 — SubagentRun settlement and provider ownership', () => {
     fixture.ctx.on('subagent/start', () => { order.push('start') })
     fixture.ctx.on('subagent/end', () => { order.push('end') })
 
-    const run = await fixture.ctx.subagents.startActivation({ provider: 'probe', label: 'probe', request: fixture.request as never, signal: new AbortController().signal, delivery: 'caller' })
+    const run = await fixture.ctx.subagents.startActivation({ ...(fixture.request as object), provider: 'probe', label: 'probe', signal: new AbortController().signal, delivery: 'caller' })
     run.result.then(() => { order.push('result-observed') })
     expect(order).toEqual(['start'])
 
@@ -111,10 +115,10 @@ describe('D1 — SubagentRun settlement and provider ownership', () => {
     const result = deferred<SubagentResult>()
     const dispose = vi.fn(async () => {})
     const fixture = await subagentFixture(async () => remoteRun(result.promise, dispose))
-    const run = await fixture.ctx.subagents.startActivation({ provider: 'probe', label: 'probe', request: fixture.request as never, signal: new AbortController().signal, delivery: 'caller' })
+    const run = await fixture.ctx.subagents.startActivation({ ...(fixture.request as object), provider: 'probe', label: 'probe', signal: new AbortController().signal, delivery: 'caller' })
     await Promise.resolve(fixture.remove())
 
-    await expect(fixture.ctx.subagents.startActivation({ provider: 'probe', label: 'probe', request: fixture.request as never, signal: new AbortController().signal, delivery: 'caller' }))
+    await expect(fixture.ctx.subagents.startActivation({ ...(fixture.request as object), provider: 'probe', label: 'probe', signal: new AbortController().signal, delivery: 'caller' }))
       .rejects.toMatchObject({ name: 'SubagentError', code: 'NO_PROVIDER' })
     result.resolve(completed)
     await expect(run.result).resolves.toEqual(completed)

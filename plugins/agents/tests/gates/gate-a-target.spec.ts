@@ -70,7 +70,7 @@ afterEach(() => {
 /* ------------------------------------------------------------------ A1 --- */
 
 describe('A1 — dependency family is uniform', () => {
-  it('the workspace lockfile resolves no 0.2.1-rc.5 package alongside 0.2.2-rc.1', () => {
+  it('the workspace lockfile resolves no 0.2.1-rc.5 package alongside 0.2.2-rc.3', () => {
     // PARSED, never grepped: a legal declaration still SPELLS the old release
     // (`^0.2.1-rc.2` peer ranges, the `specifier:` fields, the override values),
     // so a text probe either misses the real drift or fires on every peer range.
@@ -80,7 +80,7 @@ describe('A1 — dependency family is uniform', () => {
       packages?: Record<string, unknown>
       snapshots?: Record<string, unknown>
     }
-    const target = '0.2.2-rc.1'
+    const target = '0.2.2-rc.3'
     const previous = '0.2.1-rc.5'
     const resolved = [...Object.keys(lock.packages ?? {}), ...Object.keys(lock.snapshots ?? {})]
       .map((key) => /^(@deepseek-ai\/dsh-[a-z0-9-]+)@([^()]+)/u.exec(key))
@@ -129,7 +129,7 @@ describe('A1 — dependency family is uniform', () => {
       expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.2-rc\.1$/)
     }
     for (const [name, range] of installed) {
-      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@0\.2\.2-rc\.1$/)
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@0\.2\.2-rc\.3$/)
     }
   })
 })
@@ -157,14 +157,16 @@ describe('A2 — required public API surface exists', () => {
     expect((subagent as Record<string, unknown>)['completions']).toBeUndefined()
   })
 
-  it('the subagent runtime class exposes the 0.2.1 activation surface', () => {
+  it('the subagent runtime class exposes the 0.2.2 activation surface', () => {
     const runtime = subagent.SubagentRuntime as unknown as { prototype: Record<string, unknown> }
-    for (const method of ['startActivation', 'waitForChildren', 'registerProvider', 'getProvider', 'list', 'sendMessage', 'interrupt']) {
+    for (const method of ['startActivation', 'waitForTreeWork', 'rootOf', 'namesOf', 'registerProvider', 'getProvider', 'sendMessage', 'interrupt', 'resolveMaxDepth']) {
       expect(typeof runtime.prototype[method], `missing SubagentRuntime#${method}`).toBe('function')
     }
     // 0.2.1 removed the two creation entry points this bundle used to call;
     // their return type (`SubagentRun` with `id`/`localAgent`) is gone with them.
-    for (const method of ['start', 'startContinuable']) {
+    // 0.2.2-rc.3 then replaced `waitForChildren(parent)` with
+    // `waitForTreeWork(root)`, so the old name must stay absent.
+    for (const method of ['start', 'startContinuable', 'waitForChildren']) {
       expect(runtime.prototype[method], `SubagentRuntime#${method} was removed upstream`).toBeUndefined()
     }
   })
@@ -532,15 +534,14 @@ describe('A9 — one-shot run identity and its post-start keying window', () => 
       const controller = new AbortController()
       // 0.2.1's creation entry point. A local child is selected by reserving its
       // id, and `delivery: 'caller'` keeps the completion notice away from the
-      // parent — the shape this bundle's one-shot path uses.
+      // parent — the shape this bundle's one-shot path uses. 0.2.2-rc.3 dropped
+      // the `request` wrapper: the request fields are the spec.
       const activation = await ctx.subagents.startActivation({
         provider: 'spawn',
         label: 'gate-a9',
         childId: 'gate-a9-child' as never,
-        request: {
-          parent,
-          prompt: [{ type: 'text', text: 'gate-a9 prompt' }],
-        },
+        parent,
+        prompt: [{ type: 'text', text: 'gate-a9 prompt' }],
         signal: controller.signal,
         delivery: 'caller',
       } as never)
