@@ -70,7 +70,7 @@ afterEach(() => {
 /* ------------------------------------------------------------------ A1 --- */
 
 describe('A1 — dependency family is uniform', () => {
-  it('the workspace lockfile resolves no 0.2.1-rc.5 package alongside 0.2.2-rc.3', () => {
+  it('the workspace lockfile resolves no 0.2.1-rc.5 package alongside 0.2.2-rc.5', () => {
     // PARSED, never grepped: a legal declaration still SPELLS the old release
     // (`^0.2.1-rc.2` peer ranges, the `specifier:` fields, the override values),
     // so a text probe either misses the real drift or fires on every peer range.
@@ -80,7 +80,7 @@ describe('A1 — dependency family is uniform', () => {
       packages?: Record<string, unknown>
       snapshots?: Record<string, unknown>
     }
-    const target = '0.2.2-rc.3'
+    const target = '0.2.2-rc.5'
     const previous = '0.2.1-rc.5'
     const resolved = [...Object.keys(lock.packages ?? {}), ...Object.keys(lock.snapshots ?? {})]
       .map((key) => /^(@deepseek-ai\/dsh-[a-z0-9-]+)@([^()]+)/u.exec(key))
@@ -129,7 +129,7 @@ describe('A1 — dependency family is uniform', () => {
       expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@\^0\.2\.2-rc\.1$/)
     }
     for (const [name, range] of installed) {
-      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@0\.2\.2-rc\.3$/)
+      expect(`${name}@${range}`).toMatch(/^@deepseek-ai\/dsh-[a-z0-9-]+@0\.2\.2-rc\.5$/)
     }
   })
 })

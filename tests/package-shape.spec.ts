@@ -76,7 +76,7 @@ const bundleExpectations: readonly BundleExpectation[] = [
     packageName: '@banbolee/dsh-fish-shell',
     files: ['index.js', 'local.js', 'tool.js', 'policy.js', 'terminal.js', 'terminal-fish.js', 'persistent.js', 'job-kind.d.ts', 'terminal-tools.js', 'tool-terminal.js', 'cordis.patch.yml', 'README.md', 'README.zh.md', 'THIRD-PARTY-NOTICES.md', 'CHANGELOG.md'],
     dependencies: {
-      '@deepseek-ai/dsh-tool-terminal': '0.2.2-rc.3',
+      '@deepseek-ai/dsh-tool-terminal': '0.2.2-rc.5',
     },
     bundledDependencies: ['@deepseek-ai/dsh-tool-terminal'],
     peerDependencies: {
@@ -242,10 +242,10 @@ describe('DSH bundle package manifests', () => {
 describe('DSH dependency family ranges', () => {
   it('declares the four active patch releases', () => {
     const releases = {
-      'plugins/agents': '0.4.6',
-      'plugins/fish-shell': '0.8.6',
-      'plugins/dsh-lsp-diagnostics': '0.3.6',
-      'plugins/rtk': '0.3.6',
+      'plugins/agents': '0.4.7',
+      'plugins/fish-shell': '0.8.7',
+      'plugins/dsh-lsp-diagnostics': '0.3.7',
+      'plugins/rtk': '0.3.7',
     }
     for (const [directory, version] of Object.entries(releases)) {
       const manifest: unknown = JSON.parse(readRepoFile(`${directory}/package.json`))
@@ -262,12 +262,12 @@ describe('DSH dependency family ranges', () => {
   })
 
   for (const directory of ['plugins/agents', 'plugins/fish-shell', 'plugins/dsh-lsp-diagnostics', 'plugins/rtk']) {
-    it(`${directory} pins every DSH devDependency to 0.2.2-rc.3`, () => {
+    it(`${directory} pins every DSH devDependency to 0.2.2-rc.5`, () => {
       const manifest = readManifest(directory)
       const dependencies = Object.entries(manifest.devDependencies).filter(([name]) => name.startsWith('@deepseek-ai/dsh-'))
       expect(dependencies.length).toBeGreaterThan(0)
       for (const [name, version] of dependencies) {
-        expect(version, `${directory}: ${name}`).toBe('0.2.2-rc.3')
+        expect(version, `${directory}: ${name}`).toBe('0.2.2-rc.5')
       }
     })
   }

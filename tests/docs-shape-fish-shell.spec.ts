@@ -181,7 +181,7 @@ describe('@banbolee/dsh-fish-shell README shape — the four L2 sections', () =>
   it('documents the active DSH peer minimum in both languages', () => {
     for (const readme of [EN, ZH]) {
       expect(readme).toContain('^0.2.2-rc.1')
-      expect(readme).toContain('@deepseek-ai/dsh-tool-terminal@0.2.2-rc.3')
+      expect(readme).toContain('@deepseek-ai/dsh-tool-terminal@0.2.2-rc.5')
     }
   })
 

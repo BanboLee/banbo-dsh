@@ -18795,7 +18795,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			xid: () => xid,
 			xor: () => xor
 		});
-		// ../../node_modules/.pnpm/@deepseek-ai+dsh-typert-protocol@0.2.2-rc.3_@deepseek-ai+cordis@4.1.0_@deepseek-ai+cordis-plu_hn54ifrgfm2pgyx4xyjwj7lxoi/node_modules/@deepseek-ai/dsh-typert-protocol/lib/types/remote-info.js
+		// ../../node_modules/.pnpm/@deepseek-ai+dsh-typert-protocol@0.2.2-rc.5_@deepseek-ai+cordis@4.1.0_@deepseek-ai+cordis-plu_5dlel4yv4mfjqmfpg5u3nyph24/node_modules/@deepseek-ai/dsh-typert-protocol/lib/types/remote-info.js
 		/** Lazy assembly of generated Remote definitions using caller-supplied Zod; no runtime imports. */
 		/**
 		* Retain one generated definition per endpoint without constructing parsers or projections.

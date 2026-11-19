@@ -25,7 +25,7 @@
 
 - 持续维护和发布四个插件：`rtk`、`fish-shell`、`dsh-lsp-diagnostics`、`agents`。
 - `codegraph-mcp` 与 `dsh-llm-pi-ai-with-session` 已弃用，冻结在 `0.3.4`；保留源码及历史文档，不再升级依赖，不参与 workspace 安装、类型检查或发布。
-- 新宿主组合固定为 `dsh 0.2.2-rc.3` 与 `@deepseek-harness-tui/dsh-tui 0.20.1`；四个维护插件的 DSH peer 基线仍为 `^0.2.2-rc.1`（同一 tuple 的预发布版按 semver 规则被该范围接受，所以插件在 rc.1 宿主上依旧可用）。
+- 新宿主组合固定为 `dsh 0.2.2-rc.5` 与 `@deepseek-harness-tui/dsh-tui 0.20.2`；四个维护插件的 DSH peer 基线仍为 `^0.2.2-rc.1`（同一 tuple 的预发布版按 semver 规则被该范围接受，所以插件在 rc.1 宿主上依旧可用）。
 
 ## 文档语言约定（强制）
 
@@ -69,12 +69,12 @@
 
 ## 其它约定
 
-- 四个维护插件的依赖族固定在 `@deepseek-ai/* 0.2.2-rc.3`（与 dsh 0.2.2-rc.3 对齐）：根 `pnpm.overrides` 与该族全部 `dependencies`/`devDependencies` 精确钉 `0.2.2-rc.3`，`peerDependencies` 仍为 `^0.2.2-rc.1`；两个弃用插件保留旧版 manifest 并排除出 workspace。升级依赖族时同步更新测试断言与文档。全族的精确版本钉在根 `package.json` 的 `pnpm.overrides`（**不要**搬到 `pnpm-workspace.yaml`：本仓 `packageManager` 固定 pnpm@9.3.0，实测只有 `package.json` 里的 overrides 生效）。整体重建只针对维护插件；活动会话引用的旧 `node_modules` 不得删除，先排空引用者再重建。
+- 四个维护插件的依赖族固定在 `@deepseek-ai/* 0.2.2-rc.5`（与 dsh 0.2.2-rc.5 对齐）：根 `pnpm.overrides` 与该族全部 `dependencies`/`devDependencies` 精确钉 `0.2.2-rc.5`，`peerDependencies` 仍为 `^0.2.2-rc.1`；两个弃用插件保留旧版 manifest 并排除出 workspace。升级依赖族时同步更新测试断言与文档。全族的精确版本钉在根 `package.json` 的 `pnpm.overrides`（**不要**搬到 `pnpm-workspace.yaml`：本仓 `packageManager` 固定 pnpm@9.3.0，实测只有 `package.json` 里的 overrides 生效）。整体重建只针对维护插件；活动会话引用的旧 `node_modules` 不得删除，先排空引用者再重建。
   - `0.2.0-rc.2 → 0.2.1-rc.2` 有两个例外，**不要**再把它们加回 overrides 或任何 manifest（上游已下架，`npm view <pkg>@0.2.1-rc.2` 返回 404）：`@deepseek-ai/dsh-invariants`（最后一版 `0.2.0-rc.2`；该族每个包的 `lib/types/invariant.*` 与 peer 声明同时被删除）与 `@deepseek-ai/dsh-subagent-in-process-driver`（最后一版 `0.2.1-alpha.1`；`dsh-subagent-spawn-in-process@0.2.1-rc.2` 已不再声明该 peer）。
   - 同一族的 peer 基线随之上移：`@deepseek-ai/cordis` `~4.1.0`、`@deepseek-ai/schemastery` `~3.19.0`。
   - `0.2.1-rc.2` 的 `ctx.subagents` 只提供 `startActivation()`：`start()` / `startContinuable()` 已删除，`SubagentRun` 的 `id`/`localAgent` 换成 `SubagentActivation` 的 `childId`，且 `SubagentStartRequest` 不再接受 `persona`/`toolFilter`（子代理组合改由 preset 或创建窗口自行施加）。插件里不要再用旧名字。
   - `0.2.2-rc.1` 有三处会直接让测试面编译/运行不过，升级时必须一起改：`ToolRuntime` 删除了 `mode` / `maxParallelSubCalls` 配置（`z.never()`，挂载即校验失败），执行器改为在 composition 里单独挂插件——本仓测试挂 `@deepseek-ai/dsh-tool-executor-native`（该包已加入根 overrides 与 agents/fish-shell 的 devDependencies）；`ctx.tools.execute()` 从单次调用变成 batch（入参 `{ calls, signal, agent }`，返回 `{ results: [{ callId, result }] }`，`arguments` 是 JSON 字符串）；`AgentRegistry` 与 `SubagentRuntime` 把 `sessionProjections` 变成硬依赖，只做探针的 fixture 需要提供 `register()` 桩。
-  - `0.2.2-rc.3` 有一处会让 `pnpm build:agents` 直接失败：`@deepseek-ai/dsh-typert-generator` 现在为 Remote 面额外产出 `typert.remote-client.d.ts.map`，并**校验发布清单的 `files` 必须包含它**（`lib/typert.remote-client.js` / `.d.ts` / `.d.ts.map` 三件齐全，缺一即 `TypertAnalysisError`）。`plugins/agents/scripts/build.mjs` 既把 map 写进 `lib/`，也把它加进 staged 清单的 `files`——只改真正的 `package.json` 不够，因为校验读的是 staged 包。同一版本起 `@deepseek-ai/dsh-web-app` 作为 devDependency 钉进 agents，让 standard preset 的 digest 门禁始终对着目标版本比对，而不是 PATH 上的任意 `dsh`。
+  - `0.2.2-rc.3` 有一处会让 `pnpm build:agents` 直接失败：`@deepseek-ai/dsh-typert-generator` 现在为 Remote 面额外产出 `typert.remote-client.d.ts.map`，并**校验发布清单的 `files` 必须包含它**（`lib/typert.remote-client.js` / `.d.ts` / `.d.ts.map` 三件齐全，缺一即 `TypertAnalysisError`）。`plugins/agents/scripts/build.mjs` 既把 map 写进 `lib/`，也把它加进 staged 清单的 `files`——只改真正的 `package.json` 不够，因为校验读的是 staged 包。`@deepseek-ai/dsh-web-app` 不是 agents 的依赖：standard preset 的 digest 门禁通过 `preset-compiler.spec.ts` 的 `globalDshFile()` 从 **PATH 上安装的 `dsh`** 里解析该包（`dsh` 自己带着它），解析到的版本不等于 inventory 记录的 `dshVersion` 时整组跳过，另有一条常开用例把 `dshVersion` 钉死在 `.github/workflows/ci.yml` 安装的那个 `dsh` 版本上——所以本地宿主不同只会跳过、不会静默换基准，而 CI 上永远对着目标版本比对。
   - `0.2.2-rc.3` 的 subagent 契约另有三处必须同时兼容：`SubagentActivationSpec` 去掉了 `request` 包装（请求字段直接就是 spec 字段，而 rc.1/rc.2 只读 `spec.request.*`），所以 delegation 的两次 `startActivation()` 都**同时**带扁平字段和 `request` 副本——删掉任一侧都会让另一侧宿主运行期报 `Cannot read properties of undefined (reading 'id')`；`SubagentRuntime#waitForChildren(parent)` 换成 `waitForTreeWork(root)`；`sessionProjections.register()` 的返回值新增 `stateOf(session)`，只提供 `register()` 桩的 fixture 会挂在 `identityProjection.stateOf is not a function`。
 - 插件核心约束：不修改 deepseek-harness 内核、不 monkey-patch 官方对象、只通过公开扩展点（`ctx.llm.registerAdapter`、`tools/post-execute` 等）工作；确定性测试不得依赖网络/真实二进制（可选真实 lane 用环境变量显式开启）。
 - `.omo/`、`research/`、`dist/`、`node_modules/` 为本地证据/草稿/产物，永不提交。

@@ -119,10 +119,10 @@ below for the authoritative scope before deploying elsewhere.
 
 | Item | Supported | Verified |
 |---|---|---|
-| `@deepseek-ai/*` dsh family | peers `^0.2.2-rc.1` (so an `rc.1`/`rc.2` host still mounts); exact development and bundled terminal pins are `0.2.2-rc.3` | this release is verified on `0.2.2-rc.3`; real isolated-profile probes are required for it |
+| `@deepseek-ai/*` dsh family | peers `^0.2.2-rc.1` (so an `rc.1`/`rc.2` host still mounts); exact development and bundled terminal pins are `0.2.2-rc.5` | this release is verified on `0.2.2-rc.5`; real isolated-profile probes are required for it |
 | `fish` | `3.7+` | yes on `3.7.1`; lower versions are unverified |
 | Platform | POSIX only: Linux and macOS. Windows is not supported (the `pwsh` family covers it) | Linux: the real lane with `DSH_REAL_FISH_PTY=1` in the `test` job; macOS: the `fish-pty-macos` job runs the real L2 lane, including the `workspace-write` denial outside the workspace |
-| Node.js | `>=22` (`engines.node`); the DSH `0.2.2-rc.3` host requires `>=24.9.0` | Node 26 in CI and upgrade QA |
+| Node.js | `>=22` (`engines.node`); the DSH `0.2.2-rc.5` host requires `>=24.9.0` | Node 26 in CI and upgrade QA |
 
 ## Test coverage matrix
 
@@ -282,7 +282,7 @@ an interactive surface exists.
 
 **The bundled `@deepseek-ai/dsh-tool-terminal`.** The `terminal-tools` row
 resolves the official tool package from inside this package, not from the
-profile plane: `@deepseek-ai/dsh-tool-terminal@0.2.2-rc.3` is declared in
+profile plane: `@deepseek-ai/dsh-tool-terminal@0.2.2-rc.5` is declared in
 `dependencies` and `bundledDependencies`, so packing ships it, and its
 transitive dependencies, as real files under `node_modules/` inside the
 tarball. That is what makes an offline profile install work. It must not be
@@ -487,7 +487,7 @@ bundled dependency and fails with
 `ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED`. Check the artefact: the
 tarball must contain
 `package/node_modules/@deepseek-ai/dsh-tool-terminal/package.json`. One
-upstream cause is not ours to fix: `@deepseek-ai/dsh-tool-terminal@0.2.2-rc.3`
+upstream cause is not ours to fix: `@deepseek-ai/dsh-tool-terminal@0.2.2-rc.5`
 declares `exports` entries for `./src/*` that the published tarball does not
 contain, so anything resolving through that subpath fails with
 `ERR_MODULE_NOT_FOUND`.

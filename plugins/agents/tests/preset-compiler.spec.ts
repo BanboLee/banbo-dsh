@@ -568,7 +568,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
   const options = (root: string, definitions: unknown[], extra: Record<string, unknown> = {}) => ({
     rootDir: root,
     definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-    dshVersion: '0.2.2-rc.3',
+    dshVersion: '0.2.2-rc.5',
     selfVersion: '0.0.0',
     ...extra,
   })
@@ -635,7 +635,7 @@ describe('compilePresets — immutable ABI generation with a current pointer', (
     expect(abi.agents[0].presetId).toBe('my-lead')
     expect(abi.agents[0].hasMain).toBe(true)
     expect(abi.agents[0].toolName).toBe('agent_my_lead')
-    expect(abi.dshVersion).toBe('0.2.2-rc.3')
+    expect(abi.dshVersion).toBe('0.2.2-rc.5')
     // The marker names no preset count any more: presets are not compiled here.
     expect(JSON.parse(readFileSync(join(result.generationDir, COMPLETE_MARKER), 'utf8')))
       .not.toHaveProperty('presets')
@@ -883,7 +883,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.2.2-rc.3',
+        dshVersion: '0.2.2-rc.5',
         selfVersion: '0.0.0',
       } as never)
 
@@ -934,7 +934,7 @@ describe('installPointerLink — the replace ladder of §8.7', () => {
       compile({
         rootDir: root,
         definitions: new Map((definitions as Array<{ id: string }>).map((definition) => [definition.id, definition])),
-        dshVersion: '0.2.2-rc.3',
+        dshVersion: '0.2.2-rc.5',
         selfVersion: '0.0.0',
       } as never)
 

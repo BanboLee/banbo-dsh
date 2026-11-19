@@ -9,16 +9,16 @@ import {
 
 const matrix = {
   nodeMajor: 26,
-  dsh: '0.2.2-rc.3',
-  dshTui: '0.20.1',
+  dsh: '0.2.2-rc.5',
+  dshTui: '0.20.2',
   cordis: '4.1.0',
   piAi: '1.5.0',
   bundles: {
-    '@banbolee/dsh-fish-shell': '0.8.6',
-    '@banbolee/dsh-rtk': '0.3.6',
-    '@banbolee/dsh-lsp-diagnostics': '0.3.6',
+    '@banbolee/dsh-fish-shell': '0.8.7',
+    '@banbolee/dsh-rtk': '0.3.7',
+    '@banbolee/dsh-lsp-diagnostics': '0.3.7',
     // The active matrix pins all four maintained bundles.
-    '@banbolee/dsh-agents': '0.4.6',
+    '@banbolee/dsh-agents': '0.4.7',
   },
 } as const
 
